@@ -29,9 +29,10 @@ rather than participating in the loop itself. Everything else in this repo
 npm install
 npx tsx agents/file-agent.ts             # run the file-summarizer demo agent
 npx tsx agents/customer-service-agent.ts # run the customer-service demo agent
+npx tsx agents/rag-agent.ts              # run the retrieval-augmented demo agent
 ```
 
-Both demo agents use a **simulated** model call (no `ANTHROPIC_API_KEY` is
+All demo agents use a **simulated** model call (no `ANTHROPIC_API_KEY` is
 wired up) — see "Wiring a real model" below.
 
 ## Defining your own agent
@@ -100,6 +101,35 @@ for the tool names you expect the server to expose (check its docs, or
 connect once and call `listTools()` yourself), the same way you'd write
 rules for a hand-written tool. Anything the server exposes that you didn't
 write a rule for still safely falls through to `defaultDecision`.
+
+## Retrieval (RAG)
+
+RAG is just another tool — the model decides when to call it, `run-agent.ts`
+doesn't know or care that "executing" this particular tool means a vector
+search instead of a filesystem read or an MCP round-trip:
+
+```ts
+const searchDocs: ToolDefinition = {
+  name: 'search_docs',
+  description: 'Search the knowledge base for relevant passages',
+  input_schema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+  execute: async (input) => {
+    const hits = index.search(input.query as string, 3) // top-3 chunks
+    return hits.map((h) => h.text).join('\n\n')
+  },
+}
+```
+
+`agents/rag-agent.ts` is a complete example, backed by `vector-index.ts` — a
+small, dependency-free in-memory vector index (feature-hashing embeddings,
+cosine-similarity search) good enough to prove the retrieval mechanics
+end-to-end without wiring up a real embedding API. Swap `embed()` for a real
+embedding model, or swap `VectorIndex` for a real vector DB client, and the
+`search_docs` tool works unchanged — same "host provides the real
+implementation, the package proves the pipeline" pattern as ContextClip's
+`Summarizer` or ActAuth's `Approver`. The retrieved text comes back as an
+ordinary tool result, subject to the same ActAuth gating, ToolLane
+scheduling, and ContextClip budget tracking as any other tool call.
 
 ## Running an agent
 
@@ -199,8 +229,9 @@ and any tool-specific secrets set as environment variables.
 ## Wiring a real model
 
 Every example agent (`agents/file-agent.ts`, `agents/customer-service-agent.ts`,
-`agents/mcp-filesystem-agent.ts`) still uses a canned, turn-counting `ModelCall` so
-the whole loop is runnable and testable with no API key. To go live, swap it
+`agents/mcp-filesystem-agent.ts`, `agents/rag-agent.ts`) still uses a canned,
+turn-counting `ModelCall` so the whole loop is runnable and testable with no
+API key. To go live, swap it
 for `createAnthropicModelCall` (`anthropic-model-call.ts`), the one real
 `ModelCall` implementation this repo ships:
 
@@ -241,12 +272,14 @@ agent-config.ts            AgentConfig type — the thing you fill in to define 
 run-agent.ts                The generic ReAct loop every agent and adapter runs through
 load-agent.ts               Resolves AgentConfig.mcpServers into real tools (no-op without it)
 mcp-tools.ts                 Wraps one MCP server's tools as ToolDefinition[]
+vector-index.ts             Dependency-free embeddings + cosine-similarity search, for RAG
 agent-registry.ts          Maps agent name -> {config, createModelCall}, via load-agent.ts
 session-store.ts           SessionStore: FileSessionStore, RedisSessionStore, createSessionStore()
 anthropic-model-call.ts    createAnthropicModelCall — the one real ModelCall this repo ships
 agents/file-agent.ts               Example agent: summarizes text files
 agents/customer-service-agent.ts  Example agent: order lookup / refund / email
 agents/mcp-filesystem-agent.ts    Example agent: every tool comes from a real MCP server, zero hand-written
+agents/rag-agent.ts                Example agent: retrieves from an in-memory vector index
 adapters/cli.ts             Channel adapter: command line
 adapters/http.ts            Channel adapter: HTTP API
 skills/                     SKILL.md files discoverable by agents

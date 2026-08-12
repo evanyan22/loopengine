@@ -16,6 +16,7 @@ import { loadAgent } from './load-agent.js'
 import { config as fileAgentConfig, createModelCall as createFileAgentModelCall } from './agents/file-agent.js'
 import { config as customerServiceConfig, createModelCall as createCustomerServiceModelCall } from './agents/customer-service-agent.js'
 import { config as mcpFilesystemConfig, createModelCall as createMcpFilesystemModelCall } from './agents/mcp-filesystem-agent.js'
+import { config as ragAgentConfig, createModelCall as createRagAgentModelCall } from './agents/rag-agent.js'
 
 export interface RegistryEntry {
   config: AgentConfig
@@ -38,6 +39,7 @@ const loaders: Record<string, Loader> = {
   'file-agent': makeLoader(fileAgentConfig, createFileAgentModelCall),
   'customer-service': makeLoader(customerServiceConfig, createCustomerServiceModelCall),
   'mcp-filesystem-agent': makeLoader(mcpFilesystemConfig, createMcpFilesystemModelCall),
+  'rag-agent': makeLoader(ragAgentConfig, createRagAgentModelCall),
 }
 
 const resolved = new Map<string, Promise<RegistryEntry>>()
