@@ -284,6 +284,102 @@ describe('runAgent', () => {
     expect(result.history.length).toBeLessThan(22)
   })
 
+  it('newMessages is exactly this turn\'s content, decoupled from how history was reshaped', async () => {
+    let call = 0
+    const modelCall: ModelCall = vi.fn(async () => {
+      call++
+      if (call === 1) return toolUseResponse({ id: 't1', name: 'echo', input: { msg: 'hi' } })
+      return textResponse('done')
+    })
+
+    const echo: ToolDefinition = {
+      name: 'echo',
+      description: '',
+      input_schema: { type: 'object', properties: {} },
+      execute: async () => 'echoed',
+    }
+    const config = baseConfig({
+      tools: [echo],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'echo', decision: 'allow' }],
+    })
+
+    const priorHistory: Message[] = [
+      { role: 'user', content: 'old question' },
+      { role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+    ]
+
+    const result = await runAgent(config, modelCall, 'new question', priorHistory)
+
+    // newMessages should be exactly: new user message, assistant
+    // tool_use, user tool_result, final assistant text — none of
+    // priorHistory, since none of that is new this turn.
+    expect(result.newMessages).toEqual([
+      { role: 'user', content: 'new question' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'echo', input: { msg: 'hi' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '"echoed"', is_error: false }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+    ])
+    // history is still priorHistory + newMessages, in order.
+    expect(result.history).toEqual([...priorHistory, ...result.newMessages])
+  })
+
+  it('recovery never touches this turn\'s own content, even when a single turn produces more messages than the tail-preservation window, and still compacts real prior history', async () => {
+    // Real prior history to compact — recovery is a no-op ('unchanged')
+    // when there's nothing but this-turn content to consider, which
+    // would defeat the point of this test.
+    const priorHistory: Message[] = []
+    for (let i = 0; i < 10; i++) {
+      priorHistory.push({ role: 'user', content: `old turn ${i} question` })
+      priorHistory.push({ role: 'assistant', content: [{ type: 'text', text: `old turn ${i} answer` }] })
+    }
+
+    // Two rounds of tool calls (4 messages: assistant tool_use, user
+    // tool_result, twice) plus the initial user message = 5 messages
+    // already pushed by the time the THIRD modelCall attempt throws —
+    // past tailMessages (4), so a naive "reuse the synthetic head"
+    // reconciliation would risk this turn's own earliest message getting
+    // silently dropped (ContextClip's drain stage deletes outright, no
+    // synthetic replacement) instead of protected outright.
+    let call = 0
+    const modelCall: ModelCall = vi.fn(async () => {
+      call++
+      if (call === 1) return toolUseResponse({ id: 't1', name: 'echo', input: { round: 1 } })
+      if (call === 2) return toolUseResponse({ id: 't2', name: 'echo', input: { round: 2 } })
+      if (call === 3) throw { status: 400, message: 'prompt is too long: exceeds maximum context length' }
+      return textResponse('all done')
+    })
+
+    const echo: ToolDefinition = {
+      name: 'echo',
+      description: '',
+      input_schema: { type: 'object', properties: {} },
+      execute: async () => 'ok',
+    }
+    const config = baseConfig({
+      tools: [echo],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'echo', decision: 'allow' }],
+      contextBudgetTokens: 100, // tiny — forces real compaction of priorHistory
+    })
+
+    const result = await runAgent(config, modelCall, 'start multi-round', priorHistory)
+
+    // Every one of this turn's own messages survives, structurally
+    // intact (not flattened into a synthetic summary) — the property the
+    // whole prior/new split exists to guarantee.
+    expect(result.newMessages).toEqual([
+      { role: 'user', content: 'start multi-round' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'echo', input: { round: 1 } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '"ok"', is_error: false }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'echo', input: { round: 2 } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: '"ok"', is_error: false }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'all done' }] },
+    ])
+    // The real prior history (20 messages) genuinely got compacted, not
+    // just left alone because there was nothing new to protect it from.
+    expect(result.history.length).toBeLessThan(20 + result.newMessages.length)
+    expect(result.text).toBe('all done')
+  })
+
   it('continues an existing conversation from the history it is passed', async () => {
     const modelCall: ModelCall = vi.fn(async () => textResponse('follow-up answer'))
     const priorHistory: Message[] = [

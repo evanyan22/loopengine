@@ -28,15 +28,22 @@ import { SessionKnit, FileStorage, type Storage, type SessionEntry } from 'sessi
 import type { Message } from './run-agent.js'
 
 export interface SessionResult<T> {
-  history: Message[]
+  /** Exactly what this turn added — durably appended as-is, in order.
+   * This has to come from the caller explicitly (runAgent's own
+   * RunAgentResult.newMessages) rather than being inferred by diffing a
+   * returned `history` against what withSession loaded: that only works
+   * if history only ever grows, which isn't true once ContextClip
+   * recovery can shrink/rewrite it mid-turn — see RunAgentResult's own
+   * doc comment for the full reasoning. */
+  newMessages: Message[]
   result: T
 }
 
 export interface SessionStore {
   /** Loads history for sessionId, runs fn exclusively — no other
    * withSession call for the same sessionId runs concurrently, in this
-   * process or (for RedisSessionStore) any other — appends the new
-   * messages fn's result adds, and resolves with fn's result. */
+   * process or (for RedisSessionStore) any other — durably appends
+   * fn's result.newMessages in order, and resolves with fn's result. */
   withSession<T>(sessionId: string, fn: (history: Message[]) => Promise<SessionResult<T>>): Promise<T>
   close(): Promise<void>
 }
@@ -98,14 +105,10 @@ class SessionKnitStore implements SessionStore {
   async withSession<T>(sessionId: string, fn: (history: Message[]) => Promise<SessionResult<T>>): Promise<T> {
     return this.lock(sessionId, async () => {
       const { messages, leafId } = await this.knit.resume(sessionId)
-      const { history: nextHistory, result } = await fn(messages)
+      const { newMessages, result } = await fn(messages)
 
-      // Everything fn's history grew by beyond what resume() handed it —
-      // this naturally excludes the synthetic continuation message too
-      // (it's already counted in messages.length), which is exactly right:
-      // it's a resend-only hint, never meant to be durably stored.
       let parentId = leafId
-      for (const message of nextHistory.slice(messages.length)) {
+      for (const message of newMessages) {
         const id = randomUUID()
         await this.knit.append(sessionId, { id, parentId, message })
         parentId = id

@@ -25,7 +25,7 @@ describe('FileSessionStore', () => {
 
     await store.withSession('s1', async (history) => {
       seen.push(history)
-      return { history: [...history, { role: 'user', content: 'hi' }], result: null }
+      return { newMessages: [{ role: 'user', content: 'hi' }], result: null }
     })
 
     expect(seen).toEqual([[]])
@@ -36,15 +36,18 @@ describe('FileSessionStore', () => {
     const dir = tmpDir()
     const store = new FileSessionStore(dir)
 
-    await store.withSession('s1', async (history) => ({
-      history: [...history, { role: 'user', content: 'first' }, { role: 'assistant', content: 'reply' }],
+    await store.withSession('s1', async () => ({
+      newMessages: [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: 'reply' },
+      ],
       result: null,
     }))
 
     const seen: Message[][] = []
     await store.withSession('s1', async (history) => {
       seen.push(history)
-      return { history, result: null }
+      return { newMessages: [], result: null }
     })
 
     expect(seen[0]).toEqual([
@@ -57,15 +60,15 @@ describe('FileSessionStore', () => {
   it('keeps different sessionIds independent', async () => {
     const store = new FileSessionStore(tmpDir())
 
-    await store.withSession('s1', async (history) => ({
-      history: [...history, { role: 'user', content: 'in session 1' }],
+    await store.withSession('s1', async () => ({
+      newMessages: [{ role: 'user', content: 'in session 1' }],
       result: null,
     }))
 
     const seen: Message[][] = []
     await store.withSession('s2', async (history) => {
       seen.push(history)
-      return { history, result: null }
+      return { newMessages: [], result: null }
     })
 
     expect(seen[0]).toEqual([])
@@ -76,15 +79,15 @@ describe('FileSessionStore', () => {
     const store = new FileSessionStore(tmpDir())
     const order: string[] = []
 
-    const first = store.withSession('s1', async (history) => {
+    const first = store.withSession('s1', async () => {
       order.push('first:start')
       await new Promise((resolve) => setTimeout(resolve, 30))
       order.push('first:end')
-      return { history: [...history, { role: 'user', content: 'a' }], result: null }
+      return { newMessages: [{ role: 'user', content: 'a' }], result: null }
     })
-    const second = store.withSession('s1', async (history) => {
+    const second = store.withSession('s1', async () => {
       order.push('second:start')
-      return { history: [...history, { role: 'user', content: 'b' }], result: null }
+      return { newMessages: [{ role: 'user', content: 'b' }], result: null }
     })
 
     await Promise.all([first, second])
@@ -122,7 +125,7 @@ describe('FileSessionStore', () => {
     const seen: Message[][] = []
     await store.withSession('s1', async (history) => {
       seen.push(history)
-      return { history, result: null }
+      return { newMessages: [], result: null }
     })
 
     const resumed = seen[0]
@@ -140,9 +143,8 @@ describe('FileSessionStore', () => {
     const dir = tmpDir()
     const store = new FileSessionStore(dir)
 
-    await store.withSession('s1', async (history) => ({
-      history: [
-        ...history,
+    await store.withSession('s1', async () => ({
+      newMessages: [
         { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }] },
         { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok', is_error: false }] },
       ],
@@ -152,13 +154,46 @@ describe('FileSessionStore', () => {
     const seen: Message[][] = []
     await store.withSession('s1', async (history) => {
       seen.push(history)
-      return { history, result: null }
+      return { newMessages: [], result: null }
     })
 
     const flagged = seen[0].some(
       (m) => typeof m.content === 'string' && m.content.includes('resumed after an interruption'),
     )
     expect(flagged).toBe(false)
+    await store.close()
+  })
+
+  it('durably persists a compacted turn instead of losing it (regression: recovery used to make history shorter than what was loaded, silently dropping the whole turn)', async () => {
+    const dir = tmpDir()
+    const store = new FileSessionStore(dir)
+
+    // Seed 5 messages of prior "durable" history directly.
+    const rawStorage = new FileStorage<Message>(dir)
+    let parentId: string | null = null
+    for (let i = 0; i < 5; i++) {
+      const id = randomUUID()
+      await rawStorage.append('s1', { id, parentId, message: { role: 'user', content: `turn ${i}` } })
+      parentId = id
+    }
+    await rawStorage.flush('s1')
+
+    // Simulate what a compacting runAgent call now returns: newMessages
+    // is short and self-contained, completely decoupled from however
+    // large `history` was.
+    await store.withSession('s1', async (history) => {
+      expect(history).toHaveLength(5)
+      return { newMessages: [{ role: 'assistant', content: 'compacted reply' }], result: null }
+    })
+
+    const seen: Message[][] = []
+    await store.withSession('s1', async (history) => {
+      seen.push(history)
+      return { newMessages: [], result: null }
+    })
+
+    expect(seen[0]).toHaveLength(6)
+    expect(seen[0][5]).toEqual({ role: 'assistant', content: 'compacted reply' })
     await store.close()
   })
 })

@@ -62,6 +62,13 @@ export interface RunAgentResult {
    * `history` on the next call to continue the conversation. Opaque to
    * the caller: store/transmit it, don't inspect or mutate it. */
   history: Message[]
+  /** Exactly what this turn added — safe to durably append regardless of
+   * whether ContextClip recovery reshaped `history` mid-turn. A caller
+   * that persists conversations (see session-store.ts) should use this
+   * instead of diffing `history` by length against what it loaded: that
+   * only works if `history` only ever grows, which stops being true the
+   * moment recovery can shrink/rewrite it, not just extend it. */
+  newMessages: Message[]
 }
 
 /** ContextClip only ever needs a flat string per message to estimate
@@ -108,22 +115,43 @@ export async function runAgent(
 
   let messages: Message[] = [...history, { role: 'user', content: userMessage }]
 
+  // Tracked in parallel with `messages`, but never rewritten wholesale by
+  // recovery the way `messages` is — this is the actual, authoritative
+  // answer to "what did this turn add," independent of how many times (if
+  // any) the head of `messages` got drained/summarized along the way. See
+  // pushMessage() below and the reconciliation inside onPromptTooLong.
+  let newMessages: Message[] = [{ role: 'user', content: userMessage }]
+
+  function pushMessage(message: Message): void {
+    messages.push(message)
+    newMessages.push(message)
+  }
+
   const reflow = new Reflow<Message[]>({
     onPromptTooLong: async (currentMessages) => {
-      const result = await contextClip.recover(currentMessages.map(flattenForContextClip))
-      log('reflow:recover', { from: currentMessages.length, to: result.messages.length })
+      // newMessages (this turn's own content — not durably stored
+      // anywhere else yet) must never be handed to ContextClip at all.
+      // An earlier version of this reconciliation tried to recover
+      // newMessages *after* compaction by reusing whatever ContextClip's
+      // synthetic head contained — that's unsound: ContextClip's cheap
+      // "drain" stage doesn't produce a head at all, it just deletes old
+      // messages outright, trusting there's a durable copy elsewhere.
+      // That trust is only valid for the *prior* portion; only that
+      // portion is safe to compact at all.
+      const priorCount = currentMessages.length - newMessages.length
+      const priorPortion = currentMessages.slice(0, priorCount)
+
+      const result = await contextClip.recover(priorPortion.map(flattenForContextClip))
+      log('reflow:recover', { from: currentMessages.length, to: result.messages.length + newMessages.length })
       if (result.action === 'unchanged') return currentMessages
 
-      // recover() guarantees the most recent `tailMessages` are never
-      // touched — reuse the original structured messages for that slice,
-      // so tool_use/tool_result fidelity survives recovery. Only the
-      // collapsed head becomes new, synthetic plain-text messages;
-      // draining/summarizing genuinely destroys per-message structure,
-      // so there's nothing more precise to preserve there.
-      const preservedTailCount = Math.min(tailMessages, currentMessages.length)
-      const structuredTail = currentMessages.slice(currentMessages.length - preservedTailCount)
+      // Same tail-preservation reuse as before, just scoped to
+      // priorPortion alone now — newMessages is appended back whole,
+      // always, regardless of how large it's grown this turn.
+      const preservedTailCount = Math.min(tailMessages, priorPortion.length)
+      const structuredTail = priorPortion.slice(priorPortion.length - preservedTailCount)
       const newHead = result.messages.slice(0, result.messages.length - preservedTailCount)
-      const recovered = [...newHead, ...structuredTail]
+      const recovered = [...newHead, ...structuredTail, ...newMessages]
 
       // Reflow.call() only ever returns {value, recoveries, truncated} —
       // it never hands back whatever `currentMessages` became after a
@@ -134,7 +162,8 @@ export async function runAgent(
       // subsequent contextClip.check() in this loop, and the `history`
       // this function eventually returns, both see the compacted
       // conversation from this point on — not the original, ever-growing
-      // one.
+      // one. newMessages itself needs no reconciliation at all — it was
+      // never part of what could be compacted away.
       messages = recovered
       return recovered
     },
@@ -158,7 +187,7 @@ export async function runAgent(
   for (;;) {
     const budget = contextClip.check(messages.map(flattenForContextClip))
     log('contextclip:check', budget)
-    if (budget.action === 'nudge' && budget.nudge) messages.push(budget.nudge)
+    if (budget.action === 'nudge' && budget.nudge) pushMessage(budget.nudge)
 
     const { value: response, recoveries } = await reflow.call(
       (msgs) => modelCall(msgs, systemPrompt, toolSchemas),
@@ -171,14 +200,14 @@ export async function runAgent(
     // tool_use block emitted here gets a matching tool_result pushed
     // below before the loop continues; a real model API expects exactly
     // that pairing on the next request, not a prose summary of it.
-    messages.push({ role: 'assistant', content: response.content })
+    pushMessage({ role: 'assistant', content: response.content })
 
     const toolUseBlocks = response.content.filter((b) => b.type === 'tool_use')
 
     if (toolUseBlocks.length === 0) {
       const text = response.content.find((b) => b.type === 'text')?.text ?? ''
       log('loop:done', text)
-      return { text, history: messages }
+      return { text, history: messages, newMessages }
     }
 
     const resultBlocks: ModelContentBlock[] = []
@@ -235,6 +264,6 @@ export async function runAgent(
       })
     }
 
-    messages.push({ role: 'user', content: resultBlocks })
+    pushMessage({ role: 'user', content: resultBlocks })
   }
 }

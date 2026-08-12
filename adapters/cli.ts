@@ -63,7 +63,7 @@ async function main() {
       const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
         onEvent: (event, detail) => console.error(`[${event}]`, detail),
       })
-      return { history: result.history, result: result.text }
+      return { newMessages: result.newMessages, result: result.text }
     })
     console.log(text)
   } finally {

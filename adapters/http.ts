@@ -137,7 +137,7 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
   const text = await sessions.withSession(storageSessionId, async (history) => {
     // Fresh modelCall per request — see agent-registry.ts.
     const result = await runAgent(entry.config, entry.createModelCall(), message, history)
-    return { history: result.history, result: result.text }
+    return { newMessages: result.newMessages, result: result.text }
   })
 
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ text, sessionId: rawSessionId }))
@@ -171,7 +171,7 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
         onEvent: (event, detail) => writeSseEvent(res, event, detail),
       })
       writeSseEvent(res, 'done', { text: result.text })
-      return { history: result.history, result: result.text }
+      return { newMessages: result.newMessages, result: result.text }
     })
   } catch (err) {
     // Headers are already sent by this point, so an error becomes an SSE
