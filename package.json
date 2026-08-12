@@ -1,0 +1,32 @@
+{
+  "name": "loopengine",
+  "private": true,
+  "type": "module",
+  "description": "A minimal framework for defining and running tool-using AI agents over CLI, HTTP, or both.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evanyan22/loopengine.git"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/adapters/http.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "actauth": "^0.0.2",
+    "contextclip": "^0.0.1",
+    "ioredis": "^6.0.0",
+    "reflowkit": "^0.0.1",
+    "sessionknit": "^0.0.2",
+    "skillgarden": "^0.0.1",
+    "toollane": "^0.0.1"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/server-filesystem": "^2026.7.10",
+    "@types/node": "^26.2.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

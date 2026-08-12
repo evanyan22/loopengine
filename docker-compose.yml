@@ -1,0 +1,15 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+
+  agent-api:
+    build: .
+    ports:
+      - '8787:8787'
+    environment:
+      REDIS_URL: redis://redis:6379
+      # ANTHROPIC_API_KEY: set this once run-agent.ts's ModelCall is wired to the real API.
+    depends_on:
+      - redis
