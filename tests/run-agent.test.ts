@@ -181,7 +181,7 @@ describe('runAgent', () => {
     })
 
     const events: Array<{ event: string; detail: unknown }> = []
-    const config = baseConfig({ skillsDirs: ['skills'] })
+    const config = baseConfig({ skillsDirs: ['skills/file-agent'] })
 
     const result = await runAgent(config, modelCall, 'summarize', [], {
       onEvent: (event, detail) => events.push({ event, detail }),
@@ -195,6 +195,44 @@ describe('runAgent', () => {
     expect(events.some((e) => e.event === 'skillgarden:invoke')).toBe(true)
     expect(events.some((e) => e.event === 'actauth:decision')).toBe(false)
     expect(events.some((e) => e.event === 'toollane:result')).toBe(false)
+
+    // The model can only ever spontaneously call a tool it was actually
+    // told about — this is the fix for the gap where Skill was handled on
+    // the output side but never declared as a callable tool at all.
+    const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
+    expect(toolsSentToModel).toContainEqual(
+      expect.objectContaining({ name: 'Skill', input_schema: expect.objectContaining({ required: ['skill'] }) }),
+    )
+  })
+
+  it('does not declare a Skill tool when the agent has no skillsDirs', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('no skills here'))
+
+    await runAgent(baseConfig(), modelCall, 'hi')
+
+    const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
+    expect(toolsSentToModel.some((t: { name: string }) => t.name === 'Skill')).toBe(false)
+  })
+
+  it('passes args through to the invoked skill for $ARGUMENTS/$1/$2 substitution', async () => {
+    let call = 0
+    const modelCall: ModelCall = vi.fn(async () => {
+      call++
+      if (call === 1) {
+        return toolUseResponse({ id: 't1', name: 'Skill', input: { skill: 'summarize-files', args: 'foo.txt' } })
+      }
+      return textResponse('done')
+    })
+
+    const config = baseConfig({ skillsDirs: ['skills/file-agent'] })
+    const result = await runAgent(config, modelCall, 'summarize foo.txt', [])
+
+    // summarize-files' SKILL.md has no $ARGUMENTS placeholder, so passing
+    // args through shouldn't change its body — this just confirms the
+    // call succeeds with an args value present, not that substitution
+    // itself does anything for this particular skill.
+    const results = toolResults(result.history)
+    expect(results[0].content).toContain('Summarize files')
   })
 
   it('still gates and runs a sibling tool requested alongside a Skill call in the same turn', async () => {
@@ -219,7 +257,7 @@ describe('runAgent', () => {
 
     const events: Array<{ event: string; detail: unknown }> = []
     const config = baseConfig({
-      skillsDirs: ['skills'],
+      skillsDirs: ['skills/file-agent'],
       tools: [echo],
       rules: [{ scopePattern: 'default/production/test-agent', tool: 'echo', decision: 'allow' }],
     })

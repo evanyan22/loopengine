@@ -49,7 +49,14 @@ export const config: AgentConfig = {
       return true
     },
   },
-  skillsDirs: ['skills'],
+  // Scoped to this agent's own subdirectory, not the shared skills/ root —
+  // SkillGarden's discovery recursively walks whatever root it's given
+  // with no per-agent filtering, so pointing at skills/ itself would mean
+  // this agent picks up (and exposes to the model as callable) any other
+  // agent's skills dropped in there too. Nesting depth becomes the
+  // namespace relative to *this* root, so summarize-files still gets the
+  // plain name 'summarize-files' below, not 'file-agent:summarize-files'.
+  skillsDirs: ['skills/file-agent'],
   isSafeTool: (call) => call.name === 'read_file' || call.name === 'list_dir',
 }
 

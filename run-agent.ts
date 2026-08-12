@@ -180,6 +180,31 @@ export async function runAgent(
     input_schema,
   }))
 
+  // The system prompt below only ever listed skill names/descriptions as
+  // prose — nothing told a real model it could actually call a tool named
+  // "Skill" to invoke one, so it never would have. One shared schema, not
+  // one per skill: the skill's own name is an *input*, exactly what keeps
+  // the tool list cheap regardless of how many skills exist — the whole
+  // point of SkillGarden's index-now-load-later design. See the
+  // toolUseBlocks loop below for where this is actually answered.
+  if (skillIndex.length) {
+    toolSchemas.push({
+      name: 'Skill',
+      description: 'Invoke one of the available skills listed in the system prompt, by name.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          skill: { type: 'string', description: 'Name of the skill to invoke, exactly as listed.' },
+          args: {
+            type: 'string',
+            description: 'Optional arguments for the skill body — substituted for $ARGUMENTS/$1/$2 placeholders.',
+          },
+        },
+        required: ['skill'],
+      },
+    })
+  }
+
   const systemPrompt = skillIndex.length
     ? `${config.systemPrompt}\n\nAvailable skills:\n${skillIndex.map((s) => `- ${s.name}: ${s.description}`).join('\n')}`
     : config.systemPrompt
@@ -219,7 +244,7 @@ export async function runAgent(
       // scheduling — but it's still a tool_use block the model emitted,
       // so it still needs a tool_result to answer it, same as any other.
       if (block.name === 'Skill' && skillGarden) {
-        const body = skillGarden.invoke(block.input!.skill as string)
+        const body = skillGarden.invoke(block.input!.skill as string, block.input?.args as string | undefined)
         log('skillgarden:invoke', block.input!.skill)
         resultBlocks.push({ type: 'tool_result', tool_use_id: block.id!, content: body })
         continue

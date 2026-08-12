@@ -377,9 +377,17 @@ durably compacting what gets stored or resent next turn.
 Agents can discover and invoke `SKILL.md` files (see `skills/`), the same
 convention production coding agents use: a short frontmatter index (`name`,
 `description`) stays in context at all times, and the full body is loaded
-only when the model actually invokes that skill. Set `skillsDirs` on an
-`AgentConfig` to enable it; omit it for agents that don't need skills
-(`agents/customer-service-agent.ts` doesn't).
+only when the model actually invokes that skill — through a real `Skill`
+tool schema (`{skill: string, args?: string}`) declared to the model
+whenever `skillsDirs` is set, not just handled after the fact. Set
+`skillsDirs` on an `AgentConfig` to enable it; omit it for agents that
+don't need skills (`agents/customer-service-agent.ts` doesn't).
+
+Point `skillsDirs` at a subdirectory scoped to that agent
+(`skills/file-agent/`, not the shared `skills/` root) — `SkillGarden`'s
+discovery recursively walks whatever root it's given with no per-agent
+filtering, so two agents both pointed at `skills/` would each see every
+skill under it, not just their own.
 
 ## Project layout
 
