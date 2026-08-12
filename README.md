@@ -320,15 +320,27 @@ const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', 
 Nothing else in `run-agent.ts`, the adapters, or any `AgentConfig` needs to
 change — `ModelCall` is the only seam a real API call needs.
 
-One tradeoff worth knowing: loopengine's `Message` type (from `contextclip`)
-is deliberately generic — `{role, content: string}` — so conversation
-history round-trips to the API as plain user/assistant text turns, not
-Anthropic's native `tool_use`/`tool_result` content blocks. Claude reads
-`"[lookup_order result] {...}"` as plain text just fine and the conversation
-still works correctly, but it's not the structured, block-native history the
-API is built around. This was verified against the real SDK (with a stubbed
-`fetch`, not a live call) — request shape, tool schemas, and response
-mapping all round-trip correctly end to end.
+loopengine's own `Message` type carries real block-native history: `content`
+is either a plain string or a `ModelContentBlock[]` — the same shape
+`ModelResponse.content` already used — so a model's `tool_use` requests and
+this loop's `tool_result` replies round-trip with real per-call identity
+(`tool_use_id`) rather than being flattened into prose. That's what makes
+parallel tool calls unambiguous (a result links back to the exact call that
+requested it, not just "a call to this tool name") and lets a denied or
+failed call carry `is_error: true`, which Claude is specifically trained to
+react to. `anthropic-model-call.ts` translates directly to and from
+Anthropic's native `TextBlockParam`/`ToolUseBlockParam`/`ToolResultBlockParam`
+types — no flattening step in between. This was verified against the real
+SDK (with a stubbed `fetch`, not a live call) — request shape, tool schemas,
+and response mapping all round-trip correctly end to end.
+
+One real gap worth knowing: `ContextClip`'s overflow recovery (drain, then
+summarize) only ever shrinks the message array for the *one* retried model
+call inside `Reflow` — the `messages` array `runAgent` keeps building on and
+eventually returns as `history` is never itself replaced with the recovered,
+smaller version. In a long-running session that keeps crossing the hard
+threshold, recovery papers over each individual oversized call without ever
+durably compacting what gets stored or resent next turn.
 
 ## Skills
 

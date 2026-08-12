@@ -5,19 +5,15 @@
 // nothing in run-agent.ts, the adapters, or any AgentConfig changes.
 // ModelCall is the only seam this needed.
 //
-// loopengine's Message type (contextclip) is deliberately generic —
-// {role, content: string} — so conversation history round-trips to the
-// API as plain user/assistant text turns, not Anthropic's native
-// tool_use/tool_result content blocks. Claude reads
-// "[lookup_order result] {...}" as plain text just fine and the
-// conversation still works correctly, but it's not the structured,
-// block-native history the API is built around. If you need that
-// fidelity later, it means changing what run-agent.ts stores in
-// `messages`, not this file.
+// loopengine's own Message type mirrors Anthropic's native shape closely
+// on purpose: `content` is either a plain string or a ModelContentBlock[]
+// carrying real tool_use/tool_result blocks with ids, the same identity
+// Anthropic's own API expects a tool_use to be answered by a matching
+// tool_result. This file's only job is translating between that shape and
+// the SDK's own param/response types — see message-to-param below.
 import Anthropic from '@anthropic-ai/sdk'
-import type { Message } from 'contextclip'
 import type { ToolSchema } from './agent-config.js'
-import type { ModelCall, ModelContentBlock, ModelResponse } from './run-agent.js'
+import type { Message, ModelCall, ModelContentBlock, ModelResponse } from './run-agent.js'
 
 export interface AnthropicModelCallOptions {
   /** Defaults to the ANTHROPIC_API_KEY env var, same as the SDK itself. */
@@ -26,6 +22,26 @@ export interface AnthropicModelCallOptions {
   maxTokens?: number
   /** Inject a pre-configured client instead of building one from apiKey — e.g. to pass a custom `fetch` in tests. */
   client?: Anthropic
+}
+
+function toContentBlockParam(block: ModelContentBlock): Anthropic.Messages.ContentBlockParam {
+  if (block.type === 'tool_use') {
+    return { type: 'tool_use', id: block.id!, name: block.name!, input: block.input ?? {} }
+  }
+  if (block.type === 'tool_result') {
+    return { type: 'tool_result', tool_use_id: block.tool_use_id!, content: block.content, is_error: block.is_error }
+  }
+  // text (and anything else this file doesn't specifically construct —
+  // in practice only text/tool_use/tool_result ever end up in a Message
+  // this framework builds).
+  return { type: 'text', text: block.text ?? '' }
+}
+
+function toMessageParam(message: Message): Anthropic.Messages.MessageParam {
+  return {
+    role: message.role === 'assistant' ? 'assistant' : 'user',
+    content: typeof message.content === 'string' ? message.content : message.content.map(toContentBlockParam),
+  }
 }
 
 export function createAnthropicModelCall(options: AnthropicModelCallOptions = {}): ModelCall {
@@ -38,10 +54,7 @@ export function createAnthropicModelCall(options: AnthropicModelCallOptions = {}
       model,
       max_tokens: maxTokens,
       system,
-      messages: messages.map((m) => ({
-        role: m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
-        content: m.content,
-      })),
+      messages: messages.map(toMessageParam),
       tools: tools.length
         ? tools.map((t) => ({
             name: t.name,

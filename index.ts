@@ -5,6 +5,7 @@
 // "Using loopengine as a library" for the boundary and why.
 export { runAgent } from './run-agent.js'
 export type {
+  Message,
   ModelCall,
   ModelContentBlock,
   ModelResponse,

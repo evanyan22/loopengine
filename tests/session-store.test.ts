@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { FileStorage } from 'sessionknit'
-import type { Message } from 'contextclip'
+import type { Message } from '../run-agent.js'
 import { FileSessionStore } from '../session-store.js'
 
 const dirs: string[] = []
@@ -96,9 +96,10 @@ describe('FileSessionStore', () => {
   it('detects an interruption left by a prior process and injects a continuation', async () => {
     const dir = tmpDir()
 
-    // Simulate a process that pushed a "[requested: ...]" message and died
-    // before any tool result was recorded — write directly to the
-    // underlying storage, bypassing withSession entirely.
+    // Simulate a process that pushed an assistant message with a
+    // tool_use block and died before any tool_result was recorded —
+    // write directly to the underlying storage, bypassing withSession
+    // entirely.
     const rawStorage = new FileStorage<Message>(dir)
     const rootId = randomUUID()
     await rawStorage.append('s1', {
@@ -110,7 +111,10 @@ describe('FileSessionStore', () => {
     await rawStorage.append('s1', {
       id: requestId,
       parentId: rootId,
-      message: { role: 'assistant', content: '[requested: risky_tool]' },
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 't1', name: 'risky_tool', input: {} }],
+      },
     })
     await rawStorage.flush('s1')
 
@@ -123,7 +127,10 @@ describe('FileSessionStore', () => {
 
     const resumed = seen[0]
     expect(resumed[0]).toEqual({ role: 'user', content: 'do the risky thing' })
-    expect(resumed[1]).toEqual({ role: 'assistant', content: '[requested: risky_tool]' })
+    expect(resumed[1]).toEqual({
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 't1', name: 'risky_tool', input: {} }],
+    })
     expect(resumed[2].role).toBe('user')
     expect(resumed[2].content).toMatch(/resumed after an interruption/)
     await store.close()
@@ -136,8 +143,8 @@ describe('FileSessionStore', () => {
     await store.withSession('s1', async (history) => ({
       history: [
         ...history,
-        { role: 'assistant', content: '[requested: echo]' },
-        { role: 'user', content: '[echo result] "ok"' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok', is_error: false }] },
       ],
       result: null,
     }))
@@ -148,7 +155,10 @@ describe('FileSessionStore', () => {
       return { history, result: null }
     })
 
-    expect(seen[0].some((m) => m.content.includes('resumed after an interruption'))).toBe(false)
+    const flagged = seen[0].some(
+      (m) => typeof m.content === 'string' && m.content.includes('resumed after an interruption'),
+    )
+    expect(flagged).toBe(false)
     await store.close()
   })
 })

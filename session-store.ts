@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { Redis } from 'ioredis'
 import { SessionKnit, FileStorage, type Storage, type SessionEntry } from 'sessionknit'
-import type { Message } from 'contextclip'
+import type { Message } from './run-agent.js'
 
 export interface SessionResult<T> {
   history: Message[]
@@ -58,14 +58,19 @@ class KeyedMutex {
   }
 }
 
-// run-agent.ts pushes exactly one "[requested: tool_a, tool_b]" assistant
-// message before any tool executes, then one "[tool result]" user message
-// per completed tool as they finish (adapters/http.ts, adapters/cli.ts
-// never see this — it lives entirely inside the messages array runAgent
-// returns). If the process dies in that window, the request message is the
-// last thing on disk with no result behind it.
+// run-agent.ts pushes the model's full response — tool_use blocks
+// included — as one assistant message before any tool executes, then one
+// user message bundling every tool_result once they've all settled
+// (adapters/http.ts, adapters/cli.ts never see this — it lives entirely
+// inside the messages array runAgent returns). If the process dies in
+// that window, the assistant message with its unanswered tool_use
+// block(s) is the last thing on disk.
 function hasUnresolvedToolCall(message: Message): boolean {
-  return message.role === 'assistant' && message.content.startsWith('[requested:')
+  return (
+    message.role === 'assistant' &&
+    Array.isArray(message.content) &&
+    message.content.some((block) => block.type === 'tool_use')
+  )
 }
 
 function buildContinuation(): Message {
