@@ -42,10 +42,15 @@ const READ_ONLY_TOOLS = new Set([
 export const config: AgentConfig = {
   name: 'mcp-filesystem-agent',
   systemPrompt: 'You summarize the contents of files in the sandbox directory.',
+  // npx resolves and runs the package itself — it doesn't need to be a
+  // dependency (dev or prod) of this project at all, which is what makes
+  // this config-driven for *any* MCP server, not just ones you happened
+  // to `npm install` locally. Same pattern the README's "Connecting MCP
+  // tools" section documents.
   mcpServers: [
     {
-      command: 'node',
-      args: ['node_modules/@modelcontextprotocol/server-filesystem/dist/index.js', SANDBOX_DIR],
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-filesystem', SANDBOX_DIR],
     },
   ],
   rules: [...READ_ONLY_TOOLS].map((tool) => ({
