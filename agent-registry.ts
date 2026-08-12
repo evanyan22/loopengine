@@ -13,13 +13,13 @@
 import type { AgentConfig } from './agent-config.js'
 import type { ModelCall } from './run-agent.js'
 import { loadAgent } from './load-agent.js'
-import { config as fileAgentConfig, createModelCall as createFileAgentModelCall } from './file-agent.js'
-import { config as customerServiceConfig, createModelCall as createCustomerServiceModelCall } from './customer-service-agent.js'
-import { config as mcpFilesystemConfig, createModelCall as createMcpFilesystemModelCall } from './mcp-filesystem-agent.js'
+import { config as fileAgentConfig, createModelCall as createFileAgentModelCall } from './agents/file-agent.js'
+import { config as customerServiceConfig, createModelCall as createCustomerServiceModelCall } from './agents/customer-service-agent.js'
+import { config as mcpFilesystemConfig, createModelCall as createMcpFilesystemModelCall } from './agents/mcp-filesystem-agent.js'
 
 export interface RegistryEntry {
   config: AgentConfig
-  /** Factory, not a shared instance — see file-agent.ts for why call boundaries matter. */
+  /** Factory, not a shared instance — see agents/file-agent.ts for why call boundaries matter. */
   createModelCall: () => ModelCall
   /** Releases resources the loader opened (e.g. an MCP subprocess). No-op for configs with no mcpServers. */
   close: () => Promise<void>

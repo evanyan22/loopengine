@@ -15,7 +15,7 @@ COPY --from=build /app/dist ./dist
 # files need to ship alongside dist/. A real tool set backed by a DB
 # wouldn't need this.
 COPY --from=build /app/skills ./skills
-COPY --from=build /app/a.txt /app/b.txt ./
+COPY --from=build /app/examples ./examples
 
 EXPOSE 8787
 CMD ["node", "dist/adapters/http.js"]

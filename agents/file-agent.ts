@@ -1,8 +1,8 @@
 // Same file-summarizing agent as the original main.ts, rewritten as an
 // AgentConfig driven through the generic runAgent loop.
 import { readFileSync, writeFileSync } from 'node:fs'
-import type { AgentConfig } from './agent-config.js'
-import { runAgent, type ModelCall } from './run-agent.js'
+import type { AgentConfig } from '../agent-config.js'
+import { runAgent, type ModelCall } from '../run-agent.js'
 
 export const config: AgentConfig = {
   name: 'file-agent',
@@ -95,8 +95,8 @@ export function createModelCall(): ModelCall {
   }
 }
 
-// Only run standalone when invoked directly (`tsx file-agent.ts`), not
-// when imported by the agent registry.
+// Only run standalone when invoked directly (`tsx agents/file-agent.ts`),
+// not when imported by the agent registry.
 if (import.meta.url === `file://${process.argv[1]}`) {
   runAgent(config, createModelCall(), 'Summarize examples/file-agent/a.txt and examples/file-agent/b.txt into examples/file-agent/summary.txt.', [], {
     onEvent: (event, detail) => console.log(`[${event}]`, detail),

@@ -27,8 +27,8 @@ rather than participating in the loop itself. Everything else in this repo
 
 ```bash
 npm install
-npx tsx file-agent.ts             # run the file-summarizer demo agent
-npx tsx customer-service-agent.ts # run the customer-service demo agent
+npx tsx agents/file-agent.ts             # run the file-summarizer demo agent
+npx tsx agents/customer-service-agent.ts # run the customer-service demo agent
 ```
 
 Both demo agents use a **simulated** model call (no `ANTHROPIC_API_KEY` is
@@ -63,7 +63,7 @@ export const config: AgentConfig = {
 }
 ```
 
-`file-agent.ts` and `customer-service-agent.ts` are two complete, working
+`agents/file-agent.ts` and `agents/customer-service-agent.ts` are two complete, working
 examples — same `runAgent` loop, entirely different personas and tools.
 
 To make a new agent runnable through the adapters, add one line to
@@ -90,7 +90,7 @@ export const config: AgentConfig = {
 }
 ```
 
-`mcp-filesystem-agent.ts` is a complete example — it has zero hand-written
+`agents/mcp-filesystem-agent.ts` is a complete example — it has zero hand-written
 tools; every one comes from the official
 `@modelcontextprotocol/server-filesystem`, spawned as a real subprocess.
 `load-agent.ts` is what resolves `mcpServers` into real tools: it runs for
@@ -198,8 +198,8 @@ and any tool-specific secrets set as environment variables.
 
 ## Wiring a real model
 
-Every example agent (`file-agent.ts`, `customer-service-agent.ts`,
-`mcp-filesystem-agent.ts`) still uses a canned, turn-counting `ModelCall` so
+Every example agent (`agents/file-agent.ts`, `agents/customer-service-agent.ts`,
+`agents/mcp-filesystem-agent.ts`) still uses a canned, turn-counting `ModelCall` so
 the whole loop is runnable and testable with no API key. To go live, swap it
 for `createAnthropicModelCall` (`anthropic-model-call.ts`), the one real
 `ModelCall` implementation this repo ships:
@@ -232,7 +232,7 @@ convention production coding agents use: a short frontmatter index (`name`,
 `description`) stays in context at all times, and the full body is loaded
 only when the model actually invokes that skill. Set `skillsDirs` on an
 `AgentConfig` to enable it; omit it for agents that don't need skills
-(`customer-service-agent.ts` doesn't).
+(`agents/customer-service-agent.ts` doesn't).
 
 ## Project layout
 
@@ -244,11 +244,12 @@ mcp-tools.ts                 Wraps one MCP server's tools as ToolDefinition[]
 agent-registry.ts          Maps agent name -> {config, createModelCall}, via load-agent.ts
 session-store.ts           SessionStore: FileSessionStore, RedisSessionStore, createSessionStore()
 anthropic-model-call.ts    createAnthropicModelCall — the one real ModelCall this repo ships
-file-agent.ts               Example agent: summarizes text files
-customer-service-agent.ts  Example agent: order lookup / refund / email
-mcp-filesystem-agent.ts    Example agent: every tool comes from a real MCP server, zero hand-written
+agents/file-agent.ts               Example agent: summarizes text files
+agents/customer-service-agent.ts  Example agent: order lookup / refund / email
+agents/mcp-filesystem-agent.ts    Example agent: every tool comes from a real MCP server, zero hand-written
 adapters/cli.ts             Channel adapter: command line
 adapters/http.ts            Channel adapter: HTTP API
 skills/                     SKILL.md files discoverable by agents
+examples/file-agent/        Sample input files + generated output for the file-agent demo
 Dockerfile, docker-compose.yml   Container build + local Redis for testing
 ```

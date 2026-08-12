@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "outDir": "dist"
   },
-  "include": ["*.ts", "adapters/*.ts"]
+  "include": ["*.ts", "adapters/*.ts", "agents/*.ts"]
 }

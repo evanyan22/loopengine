@@ -5,11 +5,11 @@
 // against the official @modelcontextprotocol/server-filesystem (a real
 // subprocess, not a mock).
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import type { AgentConfig } from './agent-config.js'
-import { runAgent, type ModelCall } from './run-agent.js'
-import { loadAgent } from './load-agent.js'
+import type { AgentConfig } from '../agent-config.js'
+import { runAgent, type ModelCall } from '../run-agent.js'
+import { loadAgent } from '../load-agent.js'
 
-const SANDBOX_DIR = new URL('./mcp-sandbox', import.meta.url).pathname
+const SANDBOX_DIR = new URL('../mcp-sandbox', import.meta.url).pathname
 const NOTES_PATH = `${SANDBOX_DIR}/notes.txt`
 
 // Runs once whenever this module is loaded — standalone or through the

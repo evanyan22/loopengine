@@ -1,8 +1,8 @@
 // A second, unrelated agent — different persona, different tools, no
 // skills at all — proving runAgent doesn't know or care what kind of
 // agent it's driving. Only this file and its AgentConfig change.
-import type { AgentConfig } from './agent-config.js'
-import { runAgent, type ModelCall } from './run-agent.js'
+import type { AgentConfig } from '../agent-config.js'
+import { runAgent, type ModelCall } from '../run-agent.js'
 
 const orders: Record<string, { total: number; status: string }> = {
   'A-1001': { total: 42.5, status: 'delivered' },
