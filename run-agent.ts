@@ -105,6 +105,9 @@ export async function runAgent(
   const rules = new RuleSet(config.rules, config.defaultDecision ?? 'ask')
   const gate = new Gate(rules, config.approver ?? new ConsoleApprover())
   const toolLane = new ToolLane({ isSafe: config.isSafeTool ?? (() => false) })
+
+  let messages: Message[] = [...history, { role: 'user', content: userMessage }]
+
   const reflow = new Reflow<Message[]>({
     onPromptTooLong: async (currentMessages) => {
       const result = await contextClip.recover(currentMessages.map(flattenForContextClip))
@@ -120,7 +123,20 @@ export async function runAgent(
       const preservedTailCount = Math.min(tailMessages, currentMessages.length)
       const structuredTail = currentMessages.slice(currentMessages.length - preservedTailCount)
       const newHead = result.messages.slice(0, result.messages.length - preservedTailCount)
-      return [...newHead, ...structuredTail]
+      const recovered = [...newHead, ...structuredTail]
+
+      // Reflow.call() only ever returns {value, recoveries, truncated} —
+      // it never hands back whatever `currentMessages` became after a
+      // retry, so recovery would otherwise only ever affect the one
+      // retried call. Reassigning the outer `messages` binding here (this
+      // hook is the only place that has both the recovered array and a
+      // reason to persist it) is what makes recovery durable: every
+      // subsequent contextClip.check() in this loop, and the `history`
+      // this function eventually returns, both see the compacted
+      // conversation from this point on — not the original, ever-growing
+      // one.
+      messages = recovered
+      return recovered
     },
   })
 
@@ -138,8 +154,6 @@ export async function runAgent(
   const systemPrompt = skillIndex.length
     ? `${config.systemPrompt}\n\nAvailable skills:\n${skillIndex.map((s) => `- ${s.name}: ${s.description}`).join('\n')}`
     : config.systemPrompt
-
-  let messages: Message[] = [...history, { role: 'user', content: userMessage }]
 
   for (;;) {
     const budget = contextClip.check(messages.map(flattenForContextClip))

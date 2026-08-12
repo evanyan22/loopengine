@@ -257,6 +257,33 @@ describe('runAgent', () => {
     expect(result.text).toMatch(/^ok with \d+ messages$/)
   })
 
+  it('persists recovery in the returned history, not just the one retried call', async () => {
+    // A long prior history — well past the tail-preservation window (4) —
+    // so recovery has real drain/summarize work to do.
+    const priorHistory: Message[] = []
+    for (let i = 0; i < 10; i++) {
+      priorHistory.push({ role: 'user', content: `turn ${i} question` })
+      priorHistory.push({ role: 'assistant', content: [{ type: 'text', text: `turn ${i} answer` }] })
+    }
+
+    let call = 0
+    const modelCall: ModelCall = vi.fn(async () => {
+      call++
+      if (call === 1) throw { status: 400, message: 'prompt is too long: exceeds maximum context length' }
+      return textResponse('ok')
+    })
+
+    const config = baseConfig({ contextBudgetTokens: 100 }) // tiny — forces recovery
+
+    const result = await runAgent(config, modelCall, 'new question', priorHistory)
+
+    // 10 prior turns (20 messages) + 1 new user message + 1 final assistant
+    // reply = 22 without recovery. If recovery only affected the one
+    // retried call (the bug this test guards against), result.history
+    // would still be 22 long here.
+    expect(result.history.length).toBeLessThan(22)
+  })
+
   it('continues an existing conversation from the history it is passed', async () => {
     const modelCall: ModelCall = vi.fn(async () => textResponse('follow-up answer'))
     const priorHistory: Message[] = [
