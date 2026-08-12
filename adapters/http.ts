@@ -7,7 +7,9 @@
 //   # single JSON response, once the whole loop finishes — customer-service
 //   # defines its own sessionIdFor (see agents/customer-service-agent.ts),
 //   # so its request bodies key sessions off customerEmail; other agents
-//   # take a plain sessionId field instead (see defaultSessionIdFor below)
+//   # take a plain sessionId field instead, or omit it entirely for a
+//   # fresh one-off session (see defaultSessionIdFor below) — either way
+//   # the response body echoes back whichever sessionId was actually used
 //   curl -X POST localhost:8787/agents/customer-service/messages \
 //     -H 'content-type: application/json' \
 //     -d '{"customerEmail":"a@example.com","message":"order A-1001 arrived broken"}'
@@ -22,6 +24,7 @@
 // *same* session don't race on read-modify-write of that session's
 // history. What counts as "the same session" is deliberately not this
 // file's call — see AgentConfig.sessionIdFor and defaultSessionIdFor below.
+import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { getEntry, closeRegistry, type RegistryEntry } from '../agent-registry.js'
 import { createSessionStore } from '../session-store.js'
@@ -42,8 +45,18 @@ function defaultSessionIdFor(body: Record<string, unknown>): string | undefined 
   return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined
 }
 
+// An agent-defined sessionIdFor always wins outright when present — for
+// customer-service that's a real, stable identity (a customerEmail hash),
+// and it returning undefined (no customerEmail in the body) is a genuine
+// validation failure, not "start me an anonymous session." Only the
+// *default*, agent-agnostic fallback auto-generates one: a missing
+// sessionId there just means "no ongoing conversation to resume," the
+// same thing omitting --session now means for adapters/cli.ts, not an
+// error — see the response body for how the caller learns what id got
+// used.
 function sessionIdFor(config: AgentConfig, body: Record<string, unknown>): string | undefined {
-  return (config.sessionIdFor ?? defaultSessionIdFor)(body)
+  if (config.sessionIdFor) return config.sessionIdFor(body)
+  return defaultSessionIdFor(body) ?? randomUUID()
 }
 
 function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -64,7 +77,12 @@ function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
 interface ParsedRequest {
   entry: RegistryEntry
   message: string
-  sessionId: string
+  /** Whatever the caller sent (or, for the default fallback, what got
+   * generated) — echo this back in the response so a client that omitted
+   * sessionId can capture it and resume the same conversation next time. */
+  rawSessionId: string
+  /** The actual SessionStore key — agent-namespaced, never what goes in a response. */
+  storageSessionId: string
 }
 
 type ParseResult = { ok: true; value: ParsedRequest } | { ok: false; status: number; error: string }
@@ -87,6 +105,9 @@ async function parseRequest(req: IncomingMessage, agentName: string): Promise<Pa
   const message = String(body.message ?? '')
   const rawSessionId = sessionIdFor(entry.config, body)
   if (!message) return { ok: false, status: 400, error: 'message is required' }
+  // Only reachable when the agent defines its own sessionIdFor and it
+  // returned undefined — the default fallback (sessionIdFor above) always
+  // produces something, generating one rather than leaving this undefined.
   if (!rawSessionId) return { ok: false, status: 400, error: 'could not derive a session id from the request body' }
 
   // SessionStore itself is agent-agnostic — it has no idea which agent is
@@ -98,7 +119,7 @@ async function parseRequest(req: IncomingMessage, agentName: string): Promise<Pa
   // prevents that — confirmed live: before this, calling file-agent then
   // rag-agent with the same sessionId fed rag-agent file-agent's entire
   // prior conversation as context.
-  return { ok: true, value: { entry, message, sessionId: `${agentName}:${rawSessionId}` } }
+  return { ok: true, value: { entry, message, rawSessionId, storageSessionId: `${agentName}:${rawSessionId}` } }
 }
 
 function writeSseEvent(res: ServerResponse, event: string, data: unknown): void {
@@ -111,15 +132,15 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
     res.writeHead(parsed.status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsed.error }))
     return
   }
-  const { entry, message, sessionId } = parsed.value
+  const { entry, message, rawSessionId, storageSessionId } = parsed.value
 
-  const text = await sessions.withSession(sessionId, async (history) => {
+  const text = await sessions.withSession(storageSessionId, async (history) => {
     // Fresh modelCall per request — see agent-registry.ts.
     const result = await runAgent(entry.config, entry.createModelCall(), message, history)
     return { history: result.history, result: result.text }
   })
 
-  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ text }))
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ text, sessionId: rawSessionId }))
 }
 
 async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
@@ -129,16 +150,20 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
     res.writeHead(parsed.status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsed.error }))
     return
   }
-  const { entry, message, sessionId } = parsed.value
+  const { entry, message, rawSessionId, storageSessionId } = parsed.value
 
   res.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
   })
+  // First event, always — same reason handleMessages echoes sessionId in
+  // its JSON body: a caller that omitted sessionId needs some way to
+  // learn what got generated in order to resume this conversation later.
+  writeSseEvent(res, 'session', { sessionId: rawSessionId })
 
   try {
-    await sessions.withSession(sessionId, async (history) => {
+    await sessions.withSession(storageSessionId, async (history) => {
       // onEvent already fires at every loop step (contextclip:check,
       // actauth:decision, toollane:result, ...) — streaming is just
       // forwarding those, not a separate code path through runAgent.

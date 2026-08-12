@@ -197,7 +197,10 @@ curl -X POST localhost:8787/agents/customer-service/messages \
 
 `customerEmail` is specific to `customer-service` — it defines its own
 `AgentConfig.sessionIdFor` (see "Sessions and multi-tenancy" below). Other
-agents take a plain `sessionId` field instead:
+agents take a plain `sessionId` field instead — and it's optional: omit it
+for a fresh, one-off session (a generated id, echoed back in the response
+as `sessionId` so you can pass it in explicitly to continue that same
+conversation on a later request):
 
 ```bash
 curl -X POST localhost:8787/agents/file-agent/messages \
@@ -205,10 +208,16 @@ curl -X POST localhost:8787/agents/file-agent/messages \
   -d '{"sessionId":"s1","message":"Summarize a.txt and b.txt into summary.txt."}'
 ```
 
+`customer-service` is the exception here too — a request with no
+`customerEmail` is a genuine validation error (`400`), not "start me an
+anonymous session," since `customerEmail` is a real, meaningful identity
+for that agent, not an arbitrary key.
+
 **HTTP, streamed:** same request, `/stream` suffix, one Server-Sent Event per
 loop step instead of a single response after the whole thing finishes —
-`contextclip:check`, `actauth:decision`, `toollane:result`, ..., a final
-`done` with the answer:
+a `session` event first (announcing whatever `sessionId` got used, generated
+or not), then `contextclip:check`, `actauth:decision`, `toollane:result`,
+..., a final `done` with the answer:
 
 ```bash
 curl -N -X POST localhost:8787/agents/customer-service/messages/stream \
@@ -272,10 +281,19 @@ business logic specific to what the agent is for, not a transport concern.
 `customer-service-agent.ts` defines its own, hashing `customerEmail` so raw
 addresses never end up in storage keys — different customers can never
 read or write each other's history, and concurrent messages from the same
-customer are serialized rather than dropped. An agent that doesn't define
-`sessionIdFor` falls back to a plain client-supplied `sessionId` field
-(`adapters/http.ts`'s `defaultSessionIdFor`) — the same shape
-`adapters/cli.ts`'s `--session` flag already uses.
+customer are serialized rather than dropped. A missing `customerEmail` is a
+real validation failure for that agent (`400`), not something to paper over.
+
+An agent that doesn't define `sessionIdFor` falls back to a plain
+client-supplied `sessionId` field (`adapters/http.ts`'s
+`defaultSessionIdFor`) — the same shape `adapters/cli.ts`'s `--session`
+flag already uses — and if that's missing too, one gets generated rather
+than the request being rejected, mirroring what omitting `--session` now
+does for the CLI: a fresh, isolated, one-off session rather than an error
+or (worse) a shared bucket every untagged caller collides into. The
+generated id comes back in the response (`sessionId` in the JSON body, a
+`session` SSE event first for the streamed route) so a caller that wants to
+continue that exact conversation can pass it in explicitly next time.
 
 `SessionStore` itself is agent-agnostic — nothing in `session-store.ts` or
 `sessionknit` knows which agent is calling `withSession`, so both adapters
