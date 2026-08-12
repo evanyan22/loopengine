@@ -85,11 +85,20 @@ async function parseRequest(req: IncomingMessage, agentName: string): Promise<Pa
 
   const body = await readJsonBody(req)
   const message = String(body.message ?? '')
-  const sessionId = sessionIdFor(entry.config, body)
+  const rawSessionId = sessionIdFor(entry.config, body)
   if (!message) return { ok: false, status: 400, error: 'message is required' }
-  if (!sessionId) return { ok: false, status: 400, error: 'could not derive a session id from the request body' }
+  if (!rawSessionId) return { ok: false, status: 400, error: 'could not derive a session id from the request body' }
 
-  return { ok: true, value: { entry, message, sessionId } }
+  // SessionStore itself is agent-agnostic — it has no idea which agent is
+  // calling withSession, so two different agents given the same sessionId
+  // (e.g. a client that reuses one ID across agents, or two agents whose
+  // sessionIdFor happens to produce the same value) would otherwise read
+  // and write the exact same underlying log, splicing one agent's history
+  // into another's. Namespacing by agent name here is what actually
+  // prevents that — confirmed live: before this, calling file-agent then
+  // rag-agent with the same sessionId fed rag-agent file-agent's entire
+  // prior conversation as context.
+  return { ok: true, value: { entry, message, sessionId: `${agentName}:${rawSessionId}` } }
 }
 
 function writeSseEvent(res: ServerResponse, event: string, data: unknown): void {

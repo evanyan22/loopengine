@@ -277,6 +277,15 @@ customer are serialized rather than dropped. An agent that doesn't define
 (`adapters/http.ts`'s `defaultSessionIdFor`) — the same shape
 `adapters/cli.ts`'s `--session` flag already uses.
 
+`SessionStore` itself is agent-agnostic — nothing in `session-store.ts` or
+`sessionknit` knows which agent is calling `withSession`, so the *actual*
+key handed to it is `` `${agentName}:${sessionIdFor(...)}` ``, computed in
+`adapters/http.ts`. Without that namespace, two different agents given the
+same `sessionId` (a client reusing one ID across agents, most likely) would
+read and write the exact same underlying log — one agent's tool calls and
+results spliced straight into another's conversation as if it had always
+been there.
+
 ## Deployment
 
 ```bash
