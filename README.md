@@ -23,6 +23,53 @@ out, in `session-store.ts`, since it persists what `run-agent.ts` produces
 rather than participating in the loop itself. Everything else in this repo
 — agent definitions, channel adapters — is built on top of those.
 
+## Using loopengine as a library
+
+This repo is two things in one: a small library (the loop itself) and a
+reference app built on top of it (demo agents, a CLI, an HTTP server). Only
+the library half ships to npm:
+
+```bash
+npm install loopengine actauth contextclip reflowkit toollane skillgarden
+```
+
+```ts
+import { runAgent, type AgentConfig, type ToolDefinition } from 'loopengine'
+
+const getWeather: ToolDefinition = {
+  name: 'get_weather',
+  description: 'Look up the weather for a city',
+  input_schema: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+  execute: async (input) => `Sunny in ${input.city}`,
+}
+
+const config: AgentConfig = {
+  name: 'weather-agent',
+  systemPrompt: 'You answer questions about the weather.',
+  tools: [getWeather],
+  rules: [{ scopePattern: 'default/production/weather-agent', tool: 'get_weather', decision: 'allow' }],
+  defaultDecision: 'ask',
+}
+
+// bring your own ModelCall, or use the one below
+const result = await runAgent(config, myModelCall, "What's the weather in Boston?", [])
+console.log(result.text)
+```
+
+The full exported surface: `runAgent`, `AgentConfig`/`ToolSchema`/`ToolDefinition`,
+`loadAgent` (for MCP-backed tools), `connectMcpTools`, `FileSessionStore`/
+`RedisSessionStore`/`createSessionStore`, `VectorIndex`/`embed`/
+`cosineSimilarity` (for RAG — see below), and `createAnthropicModelCall` (a
+real, ready-to-use `ModelCall`). See `index.ts` for the exact list.
+
+**Not** part of the package: `agents/*.ts` (this repo's own demo agents),
+`agent-registry.ts` (this repo's own name → config lookup table — build your
+own, same one-line-per-agent shape), `adapters/cli.ts`/`adapters/http.ts`
+(one specific CLI/HTTP wiring choice, not imposed on every consumer), and
+the `Dockerfile`. Everything below this point describes that reference app —
+read it as a worked example of what to build with the library, not as
+library API itself.
+
 ## Quick start
 
 ```bash
@@ -268,6 +315,7 @@ only when the model actually invokes that skill. Set `skillsDirs` on an
 ## Project layout
 
 ```
+index.ts                    Public API surface — what actually ships to npm
 agent-config.ts            AgentConfig type — the thing you fill in to define an agent
 run-agent.ts                The generic ReAct loop every agent and adapter runs through
 load-agent.ts               Resolves AgentConfig.mcpServers into real tools (no-op without it)

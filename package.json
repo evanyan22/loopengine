@@ -1,6 +1,6 @@
 {
   "name": "loopengine",
-  "private": true,
+  "version": "0.0.1",
   "type": "module",
   "description": "A minimal framework for defining and running tool-using AI agents over CLI, HTTP, or both.",
   "license": "MIT",
@@ -8,8 +8,30 @@
     "type": "git",
     "url": "git+https://github.com/evanyan22/loopengine.git"
   },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/index.js",
+    "dist/index.d.ts",
+    "dist/run-agent.js",
+    "dist/run-agent.d.ts",
+    "dist/agent-config.js",
+    "dist/agent-config.d.ts",
+    "dist/load-agent.js",
+    "dist/load-agent.d.ts",
+    "dist/mcp-tools.js",
+    "dist/mcp-tools.d.ts",
+    "dist/session-store.js",
+    "dist/session-store.d.ts",
+    "dist/vector-index.js",
+    "dist/vector-index.d.ts",
+    "dist/anthropic-model-call.js",
+    "dist/anthropic-model-call.d.ts",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "start": "node dist/adapters/http.js",
     "test": "vitest run"
   },
