@@ -278,8 +278,14 @@ Two implementations, same `SessionStore` interface:
 you get Redis, otherwise it falls back to the file store. Either way,
 turn-level exclusivity (no two concurrent turns for the same session
 interleaving) is still this module's job, not SessionKnit's — SessionKnit's
-own topology repair handles branching *within* one resumed chain (parallel
-tool calls, crash recovery), not races between two full concurrent turns.
+own topology repair (reattaching sibling branches under a shared
+`parentId`) is a defensive read-side repair for crash/corruption recovery,
+not something normal operation exercises. `run-agent.ts` bundles a whole
+turn's `tool_use`/`tool_result` blocks into one message each, and
+`withSession` appends new messages sequentially, so even a turn with
+several parallel tool calls only ever produces a linear chain in the
+durable log — not races between two full concurrent turns, which is what
+the lock above actually prevents.
 
 Session-key derivation is `AgentConfig.sessionIdFor(body)` — deliberately
 not the HTTP adapter's call, since what counts as "one conversation" is

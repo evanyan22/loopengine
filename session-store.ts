@@ -10,17 +10,22 @@
 //   - non-blocking, debounced writes instead of a full read-modify-write
 //     of the entire session on every turn
 //   - interruption detection — if the process dies between requesting
-//     tools and recording their results (run-agent.ts pushes an
-//     "[requested: ...]" message before any tool runs, then one
-//     "[... result]" message per completed tool), the next resume() sees
-//     an unresolved request and injects a note into context saying so,
-//     instead of silently resending an incomplete turn as if it were
+//     tools and recording their results (run-agent.ts pushes the
+//     assistant's tool_use blocks as one message before any tool runs,
+//     then one message bundling every tool_result once they've all
+//     settled), the next resume() sees an assistant message with an
+//     unanswered tool_use block and injects a note into context saying
+//     so, instead of silently resending an incomplete turn as if it were
 //     clean.
-// SessionKnit's own topology repair is for branches *within* one resumed
-// chain (parallel tool calls, crash recovery) — it isn't a substitute for
-// turn-level exclusivity, so this module still serializes concurrent
-// withSession calls for the same sessionId itself (KeyedMutex / a Redis
-// lock), same as before.
+// SessionKnit's own topology repair (reattaching sibling branches under a
+// shared parentId) is a defensive read-side repair for crash/corruption
+// recovery, not something normal operation exercises — run-agent.ts
+// bundles a whole turn's tool_use/tool_result blocks into one message
+// each, and withSession below appends newMessages sequentially, so a
+// turn's own appends are always a linear chain, siblings or not. It isn't
+// a substitute for turn-level exclusivity either way, so this module
+// still serializes concurrent withSession calls for the same sessionId
+// itself (KeyedMutex / a Redis lock), same as before.
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { Redis } from 'ioredis'
@@ -193,8 +198,9 @@ const RENEW_IF_OWNER_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then ret
  * script) — good enough as long as session state lives in one Redis; true
  * multi-node Redlock is overkill until it doesn't. This lock is what keeps
  * two concurrent turns for the same session from interleaving appends
- * across instances — SessionKnit's own topology repair handles branching
- * *within* one resumed chain, not that. */
+ * across instances — SessionKnit's own topology repair (reattaching
+ * sibling branches within one resumed chain) is a defensive read-side
+ * repair for crash recovery, not a substitute for that. */
 export class RedisSessionStore extends SessionKnitStore {
   private readonly redis: Redis
   private readonly lockTtlMs: number
