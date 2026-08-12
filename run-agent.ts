@@ -116,13 +116,27 @@ export async function runAgent(
     }
 
     const approved: typeof toolUseBlocks = []
+    const denied: typeof toolUseBlocks = []
+    const reasons = new Map<string, string>()
     for (const block of toolUseBlocks) {
       const decision = await gate.evaluate(block.name!, block.input ?? {}, scope)
       log('actauth:decision', { tool: block.name, decision: decision.decision, reason: decision.reason })
-      if (decision.decision === 'allow') approved.push(block)
+      if (decision.decision === 'allow') {
+        approved.push(block)
+      } else {
+        denied.push(block)
+        reasons.set(block.id!, decision.reason)
+      }
     }
 
     messages.push({ role: 'assistant', content: `[requested: ${toolUseBlocks.map((b) => b.name).join(', ')}]` })
+
+    // Every requested tool gets exactly one result message back — a denied
+    // call is not simply dropped, or the model has no way to tell "denied"
+    // apart from "hasn't run yet" and may just re-request it forever.
+    for (const block of denied) {
+      messages.push({ role: 'user', content: `[${block.name} result] denied: ${reasons.get(block.id!)}` })
+    }
 
     const calls: LaneCall[] = approved.map((b) => ({
       id: b.id!,

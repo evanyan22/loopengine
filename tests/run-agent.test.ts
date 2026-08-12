@@ -94,7 +94,7 @@ describe('runAgent', () => {
     expect(result.history).toContainEqual({ role: 'user', content: '[echo result] "echoed"' })
   })
 
-  it('drops a denied tool call without ever feeding a result back to the model', async () => {
+  it('feeds a denied tool call back as a result, distinct from a successful one', async () => {
     let call = 0
     const modelCall: ModelCall = vi.fn(async () => {
       call++
@@ -118,9 +118,8 @@ describe('runAgent', () => {
 
     expect(dangerous.execute).not.toHaveBeenCalled()
     expect(result.history).toContainEqual({ role: 'assistant', content: '[requested: dangerous]' })
-    // No "[dangerous result]" message exists anywhere — the model is never
-    // told the call was denied, only that it was requested.
-    expect(result.history.some((m) => m.content.startsWith('[dangerous result]'))).toBe(false)
+    const resultMessage = result.history.find((m) => m.content.startsWith('[dangerous result]'))
+    expect(resultMessage?.content).toMatch(/^\[dangerous result\] denied: /)
   })
 
   it('invokes a skill and injects its body without going through actauth or toollane', async () => {
