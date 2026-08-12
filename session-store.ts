@@ -157,6 +157,17 @@ class RedisEntryStorage implements Storage<Message> {
   }
 }
 
+export interface RedisSessionStoreOptions {
+  lockTtlMs?: number
+  lockRetryDelayMs?: number
+  lockMaxWaitMs?: number
+  /** Inject a pre-built client instead of connecting from redisUrl — e.g. to pass a fake in tests. */
+  client?: Redis
+}
+
+const UNLOCK_IF_OWNER_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`
+const RENEW_IF_OWNER_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("pexpire", KEYS[1], ARGV[2]) else return 0 end`
+
 /** Redis-backed store for multi-instance deployments. Locking is a
  * single-instance-Redis lock (SET NX PX + a compare-and-delete unlock
  * script) — good enough as long as session state lives in one Redis; true
@@ -166,24 +177,35 @@ class RedisEntryStorage implements Storage<Message> {
  * *within* one resumed chain, not that. */
 export class RedisSessionStore extends SessionKnitStore {
   private readonly redis: Redis
+  private readonly lockTtlMs: number
+  private readonly lockRetryDelayMs: number
+  private readonly lockMaxWaitMs: number
 
-  constructor(
-    redisUrl: string,
-    private readonly lockTtlMs = 30_000,
-    private readonly lockRetryDelayMs = 50,
-    private readonly lockMaxWaitMs = 15_000,
-  ) {
-    const redis = new Redis(redisUrl)
+  constructor(redisUrl: string, options: RedisSessionStoreOptions = {}) {
+    const redis = options.client ?? new Redis(redisUrl)
     super(
       new RedisEntryStorage(redis),
       (sessionId, fn) => this.withLock(sessionId, fn),
       () => redis.quit().then(() => {}),
     )
     this.redis = redis
+    this.lockTtlMs = options.lockTtlMs ?? 30_000
+    this.lockRetryDelayMs = options.lockRetryDelayMs ?? 50
+    this.lockMaxWaitMs = options.lockMaxWaitMs ?? 15_000
   }
 
   private lockKeyFor(sessionId: string): string {
     return `session-lock:${sessionId}`
+  }
+
+  /** True if we still (or again) hold the lock after this call — false
+   * means someone else's SET NX PX has already replaced ours. A thrown
+   * error here doesn't mean that on its own; it's treated as "try again
+   * next tick" by the caller, since a transient network blip renewing the
+   * TTL isn't proof the lock is actually gone. */
+  private async renewLock(lockKey: string, token: string): Promise<boolean> {
+    const result = await this.redis.eval(RENEW_IF_OWNER_SCRIPT, 1, lockKey, token, this.lockTtlMs)
+    return result === 1
   }
 
   private async withLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
@@ -196,13 +218,56 @@ export class RedisSessionStore extends SessionKnitStore {
       if (Date.now() > deadline) throw new Error(`timed out waiting for lock on session '${sessionId}'`)
       await new Promise((resolve) => setTimeout(resolve, this.lockRetryDelayMs))
     }
+
+    // Without renewal, a turn that runs longer than lockTtlMs (a real
+    // model call plus several tool round-trips easily can) would
+    // silently lose the lock mid-flight — a second concurrent request
+    // for the same session could then acquire it and run concurrently,
+    // interleaving appends into the same durable log. Renewing at a
+    // fraction of the TTL (not waiting until right before expiry) leaves
+    // real margin for a slow renewal call itself to still land in time.
+    // Recursive setTimeout, not setInterval, so a slow renewal can never
+    // overlap with the next one — each renewal only schedules the next
+    // after the previous has settled.
+    let lockLost = false
+    let renewTimer: ReturnType<typeof setTimeout> | undefined
+    const scheduleRenewal = (): void => {
+      renewTimer = setTimeout(async () => {
+        try {
+          if (!(await this.renewLock(lockKey, token))) {
+            lockLost = true
+            return // confirmed gone — no point scheduling further renewals
+          }
+        } catch {
+          // Renewal call itself failed (network blip, etc.) — not proof
+          // the lock is lost, only a confirmed token mismatch is. Try
+          // again next tick; the TTL still bounds how long we can be
+          // wrong about still holding it.
+        }
+        scheduleRenewal()
+      }, Math.floor(this.lockTtlMs / 3))
+    }
+    scheduleRenewal()
+
     try {
-      return await fn()
+      const result = await fn()
+      if (lockLost) {
+        // fn() already ran to completion — there's no way to undo or
+        // cancel work already in flight, only to make the failure loud
+        // instead of silently returning as if mutual exclusion held the
+        // whole time. Whatever this turn wrote may be interleaved with a
+        // concurrent request's writes.
+        throw new Error(
+          `lock for session '${sessionId}' was lost mid-turn — a concurrent request may have run ` +
+            'against the same session; this turn\'s result should not be trusted',
+        )
+      }
+      return result
     } finally {
+      clearTimeout(renewTimer)
       // Only delete if we still hold it — otherwise we'd release a lock our
       // TTL already expired and a different request has since acquired.
-      const script = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`
-      await this.redis.eval(script, 1, lockKey, token)
+      await this.redis.eval(UNLOCK_IF_OWNER_SCRIPT, 1, lockKey, token)
     }
   }
 }

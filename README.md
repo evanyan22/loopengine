@@ -252,13 +252,13 @@ rewrite can't:
 
 - **Non-blocking, debounced writes** instead of a full read-modify-write of
   the entire session every turn.
-- **Interruption detection.** `run-agent.ts` pushes one
-  `[requested: tool_a, tool_b]` message before any tool runs, then one
-  `[... result]` message per completed tool as they finish. If the process
-  dies in that window, the next `resume()` sees a request with no result
-  behind it, flags the session as resumed-after-interruption, and injects a
-  note into context saying so — instead of silently resending an
-  incomplete turn as if it were clean.
+- **Interruption detection.** `run-agent.ts` pushes the assistant's full
+  response — tool_use blocks included — as one message before any tool
+  runs, then one message bundling every tool_result once they've all
+  settled. If the process dies in that window, the next `resume()` sees an
+  assistant message with an unanswered tool_use block, flags the session
+  as resumed-after-interruption, and injects a note into context saying so
+  — instead of silently resending an incomplete turn as if it were clean.
 
 Two implementations, same `SessionStore` interface:
 
@@ -266,7 +266,13 @@ Two implementations, same `SessionStore` interface:
   locked in-process. Fine for local dev and the CLI.
 - `RedisSessionStore` — same log shape (a Redis list of entries, one
   `RPUSH` per append), with a real distributed lock, safe across multiple
-  server instances.
+  server instances. The lock renews itself (`lockTtlMs / 3` by default)
+  for as long as a turn runs, instead of a flat TTL that a long turn (a
+  real model call plus several tool round-trips) could outlast — if
+  renewal ever confirms the lock was lost anyway (not just a failed
+  renewal attempt — a network blip there isn't proof of loss), the turn's
+  result is rejected rather than silently returned as if mutual exclusion
+  held the whole time.
 
 `createSessionStore()` picks between them based on `REDIS_URL` — set it and
 you get Redis, otherwise it falls back to the file store. Either way,

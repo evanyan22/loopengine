@@ -22,7 +22,7 @@ export { connectMcpTools } from './mcp-tools.js'
 export type { McpConnection } from './mcp-tools.js'
 
 export { FileSessionStore, RedisSessionStore, createSessionStore } from './session-store.js'
-export type { SessionStore, SessionResult } from './session-store.js'
+export type { SessionStore, SessionResult, RedisSessionStoreOptions } from './session-store.js'
 
 export { VectorIndex, embed, cosineSimilarity } from './vector-index.js'
 export type { Document, ScoredDocument } from './vector-index.js'
