@@ -1,11 +1,27 @@
 // A second, unrelated agent — different persona, different tools, no
 // skills at all — proving runAgent doesn't know or care what kind of
 // agent it's driving. Only this file and its AgentConfig change.
+import { createHash } from 'node:crypto'
 import type { AgentConfig } from '../agent-config.js'
 import { runAgent, type ModelCall } from '../run-agent.js'
 
 const orders: Record<string, { total: number; status: string }> = {
   'A-1001': { total: 42.5, status: 'delivered' },
+}
+
+// This agent's own session-key derivation — a customer's identity (their
+// email) is what "one conversation" means here, so that mapping lives on
+// this AgentConfig rather than being hardcoded in adapters/http.ts for
+// every agent it might ever route to (file-agent, rag-agent, ... have no
+// concept of "customer" at all). Hashed so raw emails never end up in
+// Redis keys / filenames; conversationId lets one customer have more than
+// one thread (defaults to a single ongoing conversation per customer).
+function sessionIdFor(body: Record<string, unknown>): string | undefined {
+  const customerEmail = typeof body.customerEmail === 'string' ? body.customerEmail.trim() : ''
+  if (!customerEmail) return undefined
+  const conversationId = typeof body.conversationId === 'string' ? body.conversationId : 'default'
+  const hash = createHash('sha256').update(customerEmail.toLowerCase()).digest('hex').slice(0, 24)
+  return `customer-${hash}-${conversationId}`
 }
 
 // `.example` is IANA-reserved for documentation (RFC 2606) — guaranteed
@@ -79,6 +95,7 @@ export const config: AgentConfig = {
   // issue_refund and send_email have side effects, so each still gets
   // its own solo lane.
   isSafeTool: (call) => call.name === 'lookup_order' || call.name === 'get_shipment_details',
+  sessionIdFor,
 }
 
 // SIMULATED model call — see file-agent.ts for why this is a factory

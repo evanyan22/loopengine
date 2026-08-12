@@ -195,6 +195,16 @@ curl -X POST localhost:8787/agents/customer-service/messages \
   -d '{"customerEmail":"a@example.com","message":"order A-1001 arrived broken"}'
 ```
 
+`customerEmail` is specific to `customer-service` — it defines its own
+`AgentConfig.sessionIdFor` (see "Sessions and multi-tenancy" below). Other
+agents take a plain `sessionId` field instead:
+
+```bash
+curl -X POST localhost:8787/agents/file-agent/messages \
+  -H 'content-type: application/json' \
+  -d '{"sessionId":"s1","message":"Summarize a.txt and b.txt into summary.txt."}'
+```
+
 **HTTP, streamed:** same request, `/stream` suffix, one Server-Sent Event per
 loop step instead of a single response after the whole thing finishes —
 `contextclip:check`, `actauth:decision`, `toollane:result`, ..., a final
@@ -256,10 +266,16 @@ interleaving) is still this module's job, not SessionKnit's — SessionKnit's
 own topology repair handles branching *within* one resumed chain (parallel
 tool calls, crash recovery), not races between two full concurrent turns.
 
-The HTTP adapter derives the session key from `customerEmail` (hashed, so
-raw emails never end up in storage keys), so different customers can never
+Session-key derivation is `AgentConfig.sessionIdFor(body)` — deliberately
+not the HTTP adapter's call, since what counts as "one conversation" is
+business logic specific to what the agent is for, not a transport concern.
+`customer-service-agent.ts` defines its own, hashing `customerEmail` so raw
+addresses never end up in storage keys — different customers can never
 read or write each other's history, and concurrent messages from the same
-customer are serialized rather than dropped.
+customer are serialized rather than dropped. An agent that doesn't define
+`sessionIdFor` falls back to a plain client-supplied `sessionId` field
+(`adapters/http.ts`'s `defaultSessionIdFor`) — the same shape
+`adapters/cli.ts`'s `--session` flag already uses.
 
 ## Deployment
 

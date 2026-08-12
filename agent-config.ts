@@ -43,4 +43,13 @@ export interface AgentConfig {
   contextBudgetTokens?: number
   /** Which tools ToolLane may run in a parallel lane. Default: none (every tool runs solo). */
   isSafeTool?: SafetyClassifier
+  /** How adapters/http.ts derives a session key from a request body — this
+   * is business logic ("what counts as one conversation" is agent-
+   * specific: a customer, a Slack channel, a ticket, ...), not a channel-
+   * adapter concern, so it lives here rather than being hardcoded in the
+   * adapter. Return undefined to signal "this body doesn't identify a
+   * session" (the adapter responds 400). Omit entirely to use the
+   * adapter's default — a client-supplied `sessionId` field, the same
+   * shape adapters/cli.ts's --session flag already uses. */
+  sessionIdFor?: (body: Record<string, unknown>) => string | undefined
 }

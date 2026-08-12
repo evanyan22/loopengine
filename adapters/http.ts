@@ -4,7 +4,10 @@
 //
 //   npx tsx adapters/http.ts
 //
-//   # single JSON response, once the whole loop finishes
+//   # single JSON response, once the whole loop finishes — customer-service
+//   # defines its own sessionIdFor (see agents/customer-service-agent.ts),
+//   # so its request bodies key sessions off customerEmail; other agents
+//   # take a plain sessionId field instead (see defaultSessionIdFor below)
 //   curl -X POST localhost:8787/agents/customer-service/messages \
 //     -H 'content-type: application/json' \
 //     -d '{"customerEmail":"a@example.com","message":"order A-1001 arrived broken"}'
@@ -14,27 +17,33 @@
 //     -H 'content-type: application/json' \
 //     -d '{"customerEmail":"a@example.com","message":"order A-1001 arrived broken"}'
 //
-// Owns: routing by agent name, request/response shape, mapping a customer
-// identity to a session, and (via SessionStore.withSession) making sure
-// two concurrent requests from the *same* customer don't race on
-// read-modify-write of that customer's history. Different customers get
-// different session keys and never touch each other's state — same
-// guarantee, no extra code, because sessions are keyed by customer
-// identity, not by request.
+// Owns: routing by agent name, request/response shape, and (via
+// SessionStore.withSession) making sure two concurrent requests for the
+// *same* session don't race on read-modify-write of that session's
+// history. What counts as "the same session" is deliberately not this
+// file's call — see AgentConfig.sessionIdFor and defaultSessionIdFor below.
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { createHash } from 'node:crypto'
 import { getEntry, closeRegistry, type RegistryEntry } from '../agent-registry.js'
 import { createSessionStore } from '../session-store.js'
 import { runAgent } from '../run-agent.js'
+import type { AgentConfig } from '../agent-config.js'
 
 const sessions = createSessionStore()
 
-// Customer email -> session key. Hashed so raw emails never end up in
-// Redis keys / filenames; conversationId lets one customer have more than
-// one thread (defaults to a single ongoing conversation per customer).
-function sessionIdFor(customerEmail: string, conversationId = 'default'): string {
-  const hash = createHash('sha256').update(customerEmail.trim().toLowerCase()).digest('hex').slice(0, 24)
-  return `customer-${hash}-${conversationId}`
+// Used when an AgentConfig doesn't define its own sessionIdFor — a plain
+// client-supplied key, same shape adapters/cli.ts's --session flag
+// already uses. Deriving a session key from something richer (a
+// customer's email, a Slack channel, a support ticket ID, ...) is
+// business logic specific to what that agent is for, so it belongs on
+// the AgentConfig, not hardcoded here for every agent this adapter might
+// ever route to.
+function defaultSessionIdFor(body: Record<string, unknown>): string | undefined {
+  const sessionId = body.sessionId
+  return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined
+}
+
+function sessionIdFor(config: AgentConfig, body: Record<string, unknown>): string | undefined {
+  return (config.sessionIdFor ?? defaultSessionIdFor)(body)
 }
 
 function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -68,19 +77,19 @@ async function parseRequest(req: IncomingMessage, agentName: string): Promise<Pa
   const entryPromise = getEntry(agentName)
   if (!entryPromise) return { ok: false, status: 404, error: `unknown agent '${agentName}'` }
 
-  const body = await readJsonBody(req)
-  const customerEmail = String(body.customerEmail ?? '')
-  const message = String(body.message ?? '')
-  const conversationId = body.conversationId ? String(body.conversationId) : undefined
-  if (!customerEmail || !message) {
-    return { ok: false, status: 400, error: 'customerEmail and message are required' }
-  }
-
   // Resolved once per agent then cached (agent-registry.ts) — for an MCP
   // agent this is where the subprocess connection actually happens, but
-  // only on the first request that ever hits it.
+  // only on the first request that ever hits it. Needed before the
+  // session key can be computed, since that's config.sessionIdFor.
   const entry = await entryPromise
-  return { ok: true, value: { entry, message, sessionId: sessionIdFor(customerEmail, conversationId) } }
+
+  const body = await readJsonBody(req)
+  const message = String(body.message ?? '')
+  const sessionId = sessionIdFor(entry.config, body)
+  if (!message) return { ok: false, status: 400, error: 'message is required' }
+  if (!sessionId) return { ok: false, status: 400, error: 'could not derive a session id from the request body' }
+
+  return { ok: true, value: { entry, message, sessionId } }
 }
 
 function writeSseEvent(res: ServerResponse, event: string, data: unknown): void {
