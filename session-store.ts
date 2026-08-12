@@ -51,17 +51,37 @@ export interface SessionStore {
 /** Serializes async work per key within this process. Good enough for
  * FileSessionStore (single process); RedisSessionStore needs a real
  * distributed lock instead since multiple server instances share it. */
-class KeyedMutex {
+export class KeyedMutex {
   private tails = new Map<string, Promise<unknown>>()
 
   run<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prevTail = this.tails.get(key) ?? Promise.resolve()
     const result = prevTail.then(fn, fn)
-    this.tails.set(
-      key,
-      result.catch(() => {}),
-    )
+    const settled = result.catch(() => {})
+    this.tails.set(key, settled)
+
+    // Self-cleaning: once nothing is queued behind this key anymore,
+    // drop it instead of leaking one Map entry per distinct key forever.
+    // Every anonymous, auto-generated session id (see adapters/http.ts,
+    // adapters/cli.ts) creates a brand-new key that would otherwise
+    // never be visited again — an unbounded, permanent leak in a
+    // long-running process. Identity-checked against the Map's *current*
+    // value for this key, not just "did settled resolve" — a call queued
+    // behind this one already replaced the entry with its own tail by
+    // the time this fires, and deleting then would orphan that chain
+    // instead of leaving it for its own turn to clean up.
+    settled.then(() => {
+      if (this.tails.get(key) === settled) this.tails.delete(key)
+    })
+
     return result
+  }
+
+  /** Test-only: how many keys currently have an in-flight or
+   * about-to-be-cleaned-up chain — should return to 0 once all queued
+   * work across all keys has settled. */
+  size(): number {
+    return this.tails.size
   }
 }
 
