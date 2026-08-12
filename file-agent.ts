@@ -18,7 +18,7 @@ export const config: AgentConfig = {
       name: 'list_dir',
       description: 'List files in the working directory',
       input_schema: { type: 'object', properties: {} },
-      execute: async () => ['a.txt', 'b.txt', 'SKILL.md'],
+      execute: async () => ['examples/file-agent/a.txt', 'examples/file-agent/b.txt'],
     },
     {
       name: 'write_file',
@@ -72,8 +72,8 @@ export function createModelCall(): ModelCall {
       return {
         stop_reason: 'tool_use',
         content: [
-          { type: 'tool_use', id: 't2', name: 'read_file', input: { path: 'a.txt' } },
-          { type: 'tool_use', id: 't3', name: 'read_file', input: { path: 'b.txt' } },
+          { type: 'tool_use', id: 't2', name: 'read_file', input: { path: 'examples/file-agent/a.txt' } },
+          { type: 'tool_use', id: 't3', name: 'read_file', input: { path: 'examples/file-agent/b.txt' } },
           { type: 'tool_use', id: 't4', name: 'list_dir', input: {} },
         ],
       }
@@ -86,19 +86,19 @@ export function createModelCall(): ModelCall {
             type: 'tool_use',
             id: 't5',
             name: 'write_file',
-            input: { path: 'summary.txt', content: 'Revenue grew 12% YoY and support volume dropped 8% after the new onboarding flow.' },
+            input: { path: 'examples/file-agent/summary.txt', content: 'Revenue grew 12% YoY and support volume dropped 8% after the new onboarding flow.' },
           },
         ],
       }
     }
-    return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done — wrote a one-paragraph summary to summary.txt.' }] }
+    return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done — wrote a one-paragraph summary to examples/file-agent/summary.txt.' }] }
   }
 }
 
 // Only run standalone when invoked directly (`tsx file-agent.ts`), not
 // when imported by the agent registry.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  runAgent(config, createModelCall(), 'Summarize a.txt and b.txt into summary.txt.', [], {
+  runAgent(config, createModelCall(), 'Summarize examples/file-agent/a.txt and examples/file-agent/b.txt into examples/file-agent/summary.txt.', [], {
     onEvent: (event, detail) => console.log(`[${event}]`, detail),
   }).then((result) => console.log('\n[final]', result.text))
 }
