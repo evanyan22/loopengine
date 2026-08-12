@@ -325,7 +325,7 @@ agent-registry.ts          Maps agent name -> {config, createModelCall}, via loa
 session-store.ts           SessionStore: FileSessionStore, RedisSessionStore, createSessionStore()
 anthropic-model-call.ts    createAnthropicModelCall — the one real ModelCall this repo ships
 agents/file-agent.ts               Example agent: summarizes text files
-agents/customer-service-agent.ts  Example agent: order lookup / refund / email
+agents/customer-service-agent.ts  Example agent: order/shipment lookup, refund, email
 agents/mcp-filesystem-agent.ts    Example agent: every tool comes from a real MCP server, zero hand-written
 agents/rag-agent.ts                Example agent: retrieves from an in-memory vector index
 adapters/cli.ts             Channel adapter: command line
