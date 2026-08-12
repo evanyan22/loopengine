@@ -41,7 +41,11 @@ async function main() {
     // getEntry() may spawn a subprocess (MCP agents) — this await is
     // where that connection actually happens.
     const entry = await entryPromise
-    const text = await sessions.withSession(session, async (history) => {
+    // SessionStore itself is agent-agnostic — the same --session id reused
+    // across two different agents would otherwise read and write the same
+    // underlying log (see adapters/http.ts's identical fix). Namespacing
+    // by agent name here is what actually keeps them isolated.
+    const text = await sessions.withSession(`${agent}:${session}`, async (history) => {
       const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
         onEvent: (event, detail) => console.error(`[${event}]`, detail),
       })
