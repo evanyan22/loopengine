@@ -1,7 +1,6 @@
 // A second, unrelated agent — different persona, different tools, no
 // skills at all — proving runAgent doesn't know or care what kind of
 // agent it's driving. Only this file and its AgentConfig change.
-import { createServer } from 'node:http'
 import type { AgentConfig } from '../agent-config.js'
 import { runAgent, type ModelCall } from '../run-agent.js'
 
@@ -9,42 +8,11 @@ const orders: Record<string, { total: number; status: string }> = {
   'A-1001': { total: 42.5, status: 'delivered' },
 }
 
-const shipments: Record<string, { carrier: string; trackingNumber: string; status: string }> = {
-  'A-1001': { carrier: 'FastShip', trackingNumber: 'FS123456789', status: 'delivered' },
-}
-
-// Stands in for a real shipping-carrier API — an actual local HTTP
-// server, so get_shipment_details.execute() below is a genuine fetch()
-// and response-handling path (status codes, JSON parsing, a real 404),
-// not another in-memory lookup like lookup_order. Started lazily on
-// first use, not at module load, so importing this file (e.g. via
-// agent-registry.ts) never opens a socket for an agent that's never run.
-let shipmentApiUrl: Promise<string> | null = null
-
-function ensureShipmentApi(): Promise<string> {
-  if (!shipmentApiUrl) {
-    shipmentApiUrl = new Promise((resolve) => {
-      const server = createServer((req, res) => {
-        const orderId = decodeURIComponent(req.url?.split('/').pop() ?? '')
-        const shipment = shipments[orderId]
-        if (!shipment) {
-          res.writeHead(404, { 'content-type': 'application/json' })
-          res.end(JSON.stringify({ error: 'not found' }))
-          return
-        }
-        res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify(shipment))
-      })
-      server.unref() // don't keep a one-shot CLI invocation alive just for this
-      server.listen(0, '127.0.0.1', () => {
-        const address = server.address()
-        const port = typeof address === 'object' && address ? address.port : 0
-        resolve(`http://127.0.0.1:${port}`)
-      })
-    })
-  }
-  return shipmentApiUrl
-}
+// `.example` is IANA-reserved for documentation (RFC 2606) — guaranteed
+// never to resolve to a real service. Point this at your real
+// shipping-carrier API's base URL; get_shipment_details.execute() below
+// doesn't otherwise change.
+const SHIPMENT_API_URL = 'https://api.shipping-carrier.example/v1'
 
 export const config: AgentConfig = {
   name: 'customer-service',
@@ -62,10 +30,14 @@ export const config: AgentConfig = {
       input_schema: { type: 'object', properties: { orderId: { type: 'string' } }, required: ['orderId'] },
       // A real fetch() call, same shape a real shipping-carrier API
       // integration would have — see run-agent.ts:144 for the one place
-      // this actually gets invoked.
+      // this actually gets invoked. SHIPMENT_API_URL is a placeholder, so
+      // this rejects when actually run; ToolLane isolates that failure to
+      // this one call (see toollane:result in the demo's onEvent log)
+      // rather than it taking down the rest of the turn.
       execute: async (input) => {
-        const baseUrl = await ensureShipmentApi()
-        const res = await fetch(`${baseUrl}/shipments/${encodeURIComponent(input.orderId as string)}`)
+        const res = await fetch(`${SHIPMENT_API_URL}/shipments/${encodeURIComponent(input.orderId as string)}`, {
+          headers: { Authorization: `Bearer ${process.env.SHIPPING_API_KEY}` },
+        })
         if (!res.ok) return { error: `shipment lookup failed: ${res.status}` }
         return res.json()
       },
@@ -140,7 +112,7 @@ export function createModelCall(): ModelCall {
       content: [
         {
           type: 'text',
-          text: 'Done — confirmed delivery via FastShip tracking FS123456789, refunded order A-1001, and emailed the customer.',
+          text: 'Done — refunded order A-1001 and emailed the customer.',
         },
       ],
     }
