@@ -10,7 +10,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/adapters/http.js"
+    "start": "node dist/adapters/http.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
@@ -27,6 +28,7 @@
     "@modelcontextprotocol/server-filesystem": "^2026.7.10",
     "@types/node": "^26.2.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.9"
   }
 }
