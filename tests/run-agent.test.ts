@@ -432,4 +432,60 @@ describe('runAgent', () => {
     expect(result.history[2]).toEqual({ role: 'user', content: 'second question' })
     expect(result.history[3]).toEqual({ role: 'assistant', content: [{ type: 'text', text: 'follow-up answer' }] })
   })
+
+  it('leaves stopReason unset on a normal finish', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('done'))
+    const result = await runAgent(baseConfig(), modelCall, 'hi')
+    expect(result.stopReason).toBeUndefined()
+  })
+})
+
+describe('runAgent maxTurns', () => {
+  it('stops a model stuck re-requesting the same tool forever, instead of looping without bound', async () => {
+    // Always asks for the same tool call again — nothing about this
+    // modelCall ever produces a final answer on its own.
+    const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't1', name: 'echo', input: { n: 1 } }))
+    const echo: ToolDefinition = {
+      name: 'echo',
+      description: 'Echoes input',
+      input_schema: { type: 'object', properties: {} },
+      execute: async (input) => input,
+    }
+    const config = baseConfig({
+      tools: [echo],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'echo', decision: 'allow' }],
+      maxTurns: 3,
+    })
+
+    const result = await runAgent(config, modelCall, 'go')
+
+    expect(modelCall).toHaveBeenCalledTimes(3)
+    expect(result.stopReason).toBe('max_turns')
+    expect(result.text).toContain('3 turns')
+  })
+
+  it('does not cut off a real answer that finishes within the cap', async () => {
+    let call = 0
+    const modelCall: ModelCall = vi.fn(async () => {
+      call++
+      if (call === 1) return toolUseResponse({ id: 't1', name: 'echo', input: {} })
+      return textResponse('done')
+    })
+    const echo: ToolDefinition = {
+      name: 'echo',
+      description: 'Echoes input',
+      input_schema: { type: 'object', properties: {} },
+      execute: async () => 'ok',
+    }
+    const config = baseConfig({
+      tools: [echo],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'echo', decision: 'allow' }],
+      maxTurns: 3,
+    })
+
+    const result = await runAgent(config, modelCall, 'go')
+
+    expect(result.stopReason).toBeUndefined()
+    expect(result.text).toBe('done')
+  })
 })

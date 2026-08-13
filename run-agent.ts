@@ -69,6 +69,11 @@ export interface RunAgentResult {
    * only works if `history` only ever grows, which stops being true the
    * moment recovery can shrink/rewrite it, not just extend it. */
   newMessages: Message[]
+  /** Set to 'max_turns' if the loop stopped because it hit
+   * config.maxTurns, not because the model produced a final answer with
+   * no more tool_use blocks — `text` in that case is a synthetic notice,
+   * not something the model said. Absent on a normal finish. */
+  stopReason?: 'max_turns'
 }
 
 /** ContextClip only ever needs a flat string per message to estimate
@@ -207,7 +212,21 @@ export async function runAgent(
     ? `${config.systemPrompt}\n\nAvailable skills:\n${skillIndex.map((s) => `- ${s.name}: ${s.description}`).join('\n')}`
     : config.systemPrompt
 
+  // Nothing else in this loop bounds a model stuck re-requesting the same
+  // (or ping-ponging) tool calls forever — checked before spending a model
+  // call on the (maxTurns + 1)-th turn, not after.
+  const maxTurns = config.maxTurns ?? 25
+  let turn = 0
+
   for (;;) {
+    turn++
+    if (turn > maxTurns) {
+      const text = `Stopped after ${maxTurns} turns without a final answer — the agent may be stuck in a loop.`
+      pushMessage({ role: 'assistant', content: text })
+      log('loop:max_turns', { maxTurns })
+      return { text, history: messages, newMessages, stopReason: 'max_turns' }
+    }
+
     const budget = contextClip.check(messages.map(flattenForContextClip))
     log('contextclip:check', budget)
     if (budget.action === 'nudge' && budget.nudge) pushMessage(budget.nudge)

@@ -31,6 +31,14 @@ export interface AgentConfig {
   skillsDirs?: string[]
   skillIndexBudgetTokens?: number
   contextBudgetTokens?: number
+  /** Hard cap on model calls in one runAgent() invocation — the only thing
+   * that stops a model stuck re-requesting the same (or ping-ponging)
+   * tool calls forever, which nothing else in this loop bounds. Default
+   * 25. Hitting it ends the turn the same way running out of tools to
+   * call does — a real result, not a thrown error — with
+   * RunAgentResult.stopReason set to 'max_turns' so a caller can tell the
+   * difference from a normal finish. */
+  maxTurns?: number
   /** Which tools ToolLane may run in a parallel lane. Default: none (every tool runs solo). */
   isSafeTool?: SafetyClassifier
   /** How adapters/http.ts derives a session key from a request body — this
