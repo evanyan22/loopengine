@@ -1,9 +1,10 @@
 {
   "name": "loopengine",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "type": "module",
   "description": "A minimal framework for defining and running tool-using AI agents over CLI, HTTP, or both.",
   "license": "MIT",
+  "homepage": "https://loopengine.co",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/evanyan22/loopengine.git"
