@@ -1,6 +1,6 @@
 {
   "name": "loopengine",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "type": "module",
   "description": "A minimal framework for defining and running tool-using AI agents over CLI, HTTP, or both.",
   "license": "MIT",
@@ -27,6 +27,8 @@
     "dist/openai-model-call.d.ts",
     "dist/deepseek-model-call.js",
     "dist/deepseek-model-call.d.ts",
+    "dist/discover-agents.js",
+    "dist/discover-agents.d.ts",
     "LICENSE"
   ],
   "scripts": {
