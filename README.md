@@ -383,14 +383,6 @@ types — no flattening step in between. This was verified against the real
 SDK (with a stubbed `fetch`, not a live call) — request shape, tool schemas,
 and response mapping all round-trip correctly end to end.
 
-One real gap worth knowing: `ContextClip`'s overflow recovery (drain, then
-summarize) only ever shrinks the message array for the *one* retried model
-call inside `Reflow` — the `messages` array `runAgent` keeps building on and
-eventually returns as `history` is never itself replaced with the recovered,
-smaller version. In a long-running session that keeps crossing the hard
-threshold, recovery papers over each individual oversized call without ever
-durably compacting what gets stored or resent next turn.
-
 ## Skills
 
 Agents can discover and invoke `SKILL.md` files (see `skills/`), the same
