@@ -17,6 +17,13 @@
 // defaultIsTruncated checks a translated ModelResponse for stop_reason ===
 // 'max_tokens', so a provider-agnostic caller wiring up onTruncated later
 // gets the same behavior regardless of which ModelCall is plugged in.
+//
+// toMessageParams/toStopReason/toModelResponse are exported for
+// deepseek-model-call.ts to reuse verbatim — DeepSeek's Chat Completions
+// API is wire-compatible with this same request/response shape (confirmed
+// against DeepSeek's own docs), the one real difference being the token-
+// limit field name, which is only decided at the request-building call
+// site below, not in these shared translation functions.
 import OpenAI from 'openai'
 import type { ToolSchema } from './agent-config.js'
 import type { Message, ModelCall, ModelContentBlock, ModelResponse } from './run-agent.js'
@@ -35,7 +42,7 @@ export interface OpenAIModelCallOptions {
   client?: OpenAI
 }
 
-function toMessageParams(message: Message): ChatMessage[] {
+export function toMessageParams(message: Message): ChatMessage[] {
   if (typeof message.content === 'string') {
     return [{ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content }]
   }
@@ -74,11 +81,30 @@ function toMessageParams(message: Message): ChatMessage[] {
   }))
 }
 
-function toStopReason(finishReason: string): string {
+export function toStopReason(finishReason: string): string {
   if (finishReason === 'tool_calls' || finishReason === 'function_call') return 'tool_use'
   if (finishReason === 'length') return 'max_tokens'
   if (finishReason === 'stop') return 'end_turn'
   return finishReason
+}
+
+export function toModelResponse(choice: OpenAI.Chat.Completions.ChatCompletion.Choice): ModelResponse {
+  const content: ModelContentBlock[] = []
+  if (choice.message.content) content.push({ type: 'text', text: choice.message.content })
+  for (const call of choice.message.tool_calls ?? []) {
+    // A 'custom' tool call is the freeform-text tool type OpenAI added
+    // alongside 'function' — this framework's ToolDefinition only ever
+    // declares 'function'-shaped tools, so a custom call can't have come
+    // from anything this loop offered the model.
+    if (call.type !== 'function') continue
+    content.push({
+      type: 'tool_use',
+      id: call.id,
+      name: call.function.name,
+      input: JSON.parse(call.function.arguments) as Record<string, unknown>,
+    })
+  }
+  return { stop_reason: toStopReason(choice.finish_reason), content }
 }
 
 export function createOpenAIModelCall(options: OpenAIModelCallOptions): ModelCall {
@@ -98,23 +124,6 @@ export function createOpenAIModelCall(options: OpenAIModelCallOptions): ModelCal
         : undefined,
     })
 
-    const choice = response.choices[0]
-    const content: ModelContentBlock[] = []
-    if (choice.message.content) content.push({ type: 'text', text: choice.message.content })
-    for (const call of choice.message.tool_calls ?? []) {
-      // A 'custom' tool call is the freeform-text tool type OpenAI added
-      // alongside 'function' — this framework's ToolDefinition only ever
-      // declares 'function'-shaped tools, so a custom call can't have come
-      // from anything this loop offered the model.
-      if (call.type !== 'function') continue
-      content.push({
-        type: 'tool_use',
-        id: call.id,
-        name: call.function.name,
-        input: JSON.parse(call.function.arguments) as Record<string, unknown>,
-      })
-    }
-
-    return { stop_reason: toStopReason(choice.finish_reason), content }
+    return toModelResponse(response.choices[0])
   }
 }

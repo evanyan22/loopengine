@@ -75,8 +75,8 @@ console.log(result.text)
 The full exported surface: `runAgent`, `AgentConfig`/`ToolSchema`/`ToolDefinition`,
 `FileSessionStore`/`RedisSessionStore`/`createSessionStore`, `VectorIndex`/
 `embed`/`cosineSimilarity` (for RAG — see below), and `createAnthropicModelCall`/
-`createOpenAIModelCall` (real, ready-to-use `ModelCall`s). See `index.ts` for
-the exact list.
+`createOpenAIModelCall`/`createDeepSeekModelCall` (real, ready-to-use
+`ModelCall`s). See `index.ts` for the exact list.
 
 **Not** part of the package: `agents/*.ts` (this repo's own demo agents),
 `agent-registry.ts` (this repo's own name → config lookup table — build your
@@ -385,6 +385,18 @@ const modelCall = createOpenAIModelCall({ model: 'gpt-4.1' })
 const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', [])
 ```
 
+```ts
+import { createDeepSeekModelCall } from './deepseek-model-call.js'
+
+// model is required, same reasoning as OpenAI's; reads DEEPSEEK_API_KEY
+// from the env — throws immediately, with a DeepSeek-specific message, if
+// neither that nor apiKey is set, rather than the OpenAI SDK's own
+// constructor silently accepting OPENAI_API_KEY instead.
+const modelCall = createDeepSeekModelCall({ model: 'deepseek-chat' })
+
+const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', [])
+```
+
 Nothing else in `run-agent.ts`, the adapters, or any `AgentConfig` needs to
 change — `ModelCall` is the only seam a real API call needs.
 
@@ -409,6 +421,15 @@ loopengine bundles a whole turn's `tool_result` blocks into a single
 user-role message (mirroring Anthropic's shape); OpenAI has no equivalent —
 each becomes its own top-level `role: 'tool'` message, so one loopengine
 `Message` can expand into several OpenAI messages, never the reverse.
+
+`deepseek-model-call.ts` reuses `openai-model-call.ts`'s translation
+verbatim (exported, not duplicated) rather than reimplementing it —
+DeepSeek's Chat Completions API is wire-compatible with OpenAI's (verified
+against DeepSeek's own docs), down to the same `tool_calls` response
+shape. The one real difference: DeepSeek documents `max_tokens`, not the
+newer `max_completion_tokens` OpenAI's endpoint expects, so only the
+request-building call site differs, not the shared message/response
+translation functions.
 
 ## Skills
 
@@ -450,6 +471,7 @@ agent-registry.ts          Maps agent name -> {config, createModelCall}
 session-store.ts           SessionStore: FileSessionStore, RedisSessionStore, createSessionStore()
 anthropic-model-call.ts    createAnthropicModelCall — a real ModelCall this repo ships
 openai-model-call.ts        createOpenAIModelCall — same seam, OpenAI's Chat Completions API
+deepseek-model-call.ts      createDeepSeekModelCall — same seam, reuses openai-model-call.ts's translation
 agents/file-agent.ts               Example agent: summarizes text files
 agents/customer-service-agent.ts  Example agent: order/shipment lookup, refund, email
 agents/rag-agent.ts                Example agent: retrieves from an in-memory vector index
