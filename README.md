@@ -274,7 +274,7 @@ conversation on a later request):
 ```bash
 curl -X POST localhost:8787/agents/file-agent/messages \
   -H 'content-type: application/json' \
-  -d '{"sessionId":"s1","message":"Summarize a.txt and b.txt into summary.txt."}'
+  -d '{"message":"Summarize a.txt and b.txt into summary.txt."}'
 ```
 
 `customer-service` is the exception here too — a request with no
