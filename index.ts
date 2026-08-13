@@ -18,8 +18,8 @@ export type { AgentConfig, ToolSchema, ToolDefinition } from './agent-config.js'
 export { loadAgent } from './load-agent.js'
 export type { LoadedAgent } from './load-agent.js'
 
-export { connectMcpTools } from './mcp-tools.js'
-export type { McpConnection } from './mcp-tools.js'
+export { connectMcpTools, suggestToolRules } from './mcp-tools.js'
+export type { McpConnection, SuggestedToolRule } from './mcp-tools.js'
 
 export { FileSessionStore, RedisSessionStore, createSessionStore } from './session-store.js'
 export type { SessionStore, SessionResult, RedisSessionStoreOptions } from './session-store.js'

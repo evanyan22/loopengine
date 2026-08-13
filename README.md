@@ -149,6 +149,23 @@ connect once and call `listTools()` yourself), the same way you'd write
 rules for a hand-written tool. Anything the server exposes that you didn't
 write a rule for still safely falls through to `defaultDecision`.
 
+Tool *definitions* (names, schemas, `execute`) are fully auto-discovered via
+`listTools()` — nothing to hand-write there. Deciding which of those tools
+are safe to `allow` outright is a different matter, and deliberately isn't
+automatic: MCP servers can self-report a `readOnlyHint` on each tool, but
+the spec's own docs say plainly that clients should never make tool-use
+decisions from it — it's the server grading its own homework, and a
+malicious or just-buggy one could self-report `readOnlyHint: true` on
+something destructive. `scripts/suggest-mcp-rules.ts` connects to a server
+and prints a starting-point `rules`/`isSafeTool` block based on that hint —
+a suggestion to read and verify, replacing "re-read the server's docs by
+hand," not something to paste in blind:
+
+```bash
+npx tsx scripts/suggest-mcp-rules.ts --scope default/production/my-agent -- \
+  npx -y @modelcontextprotocol/server-filesystem /some/dir
+```
+
 ## Retrieval (RAG)
 
 RAG is just another tool — the model decides when to call it, `run-agent.ts`
@@ -407,7 +424,8 @@ agents/mcp-filesystem-agent.ts    Example agent: every tool comes from a real MC
 agents/rag-agent.ts                Example agent: retrieves from an in-memory vector index
 adapters/cli.ts             Channel adapter: command line
 adapters/http.ts            Channel adapter: HTTP API
-skills/                     SKILL.md files discoverable by agents
+skills/                     SKILL.md files discoverable by agents, scoped per agent subdirectory
+scripts/suggest-mcp-rules.ts  Probes an MCP server, suggests (never decides) allow/ask rules
 examples/file-agent/        Sample input files + generated output for the file-agent demo
 Dockerfile, docker-compose.yml   Container build + local Redis for testing
 ```
