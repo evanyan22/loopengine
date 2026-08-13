@@ -23,6 +23,13 @@ out, in `session-store.ts`, since it persists what `run-agent.ts` produces
 rather than participating in the loop itself. Everything else in this repo
 — agent definitions, channel adapters — is built on top of those.
 
+A seventh package, [`mcpplug`](https://www.npmjs.com/package/mcpplug), sits
+one layer further out still: it's not part of the loop either, just a
+`ToolSource` an agent's own config can draw from — `loadTools()` returns
+`ToolDefinition[]`, the exact shape `AgentConfig.tools` already expects, so
+its output merges straight in with no adapter code. See "External tool
+gateways" below.
+
 ## Using loopengine as a library
 
 This repo is two things in one: a small library (the loop itself) and a
@@ -145,6 +152,51 @@ implementation, the package proves the pipeline" pattern as ContextClip's
 `Summarizer` or ActAuth's `Approver`. The retrieved text comes back as an
 ordinary tool result, subject to the same ActAuth gating, ToolLane
 scheduling, and ContextClip budget tracking as any other tool call.
+
+## External tool gateways
+
+A hand-written tool needs an `execute` function you write yourself; an
+external SaaS action (list GitHub repos, send a Slack message) needs
+someone to own that vendor's auth. Connecting straight to a vendor's own
+MCP server means owning its OAuth flow (authorization code, PKCE, token
+storage/refresh) yourself, repeated per vendor. Routing through a gateway
+like [Composio](https://composio.dev) avoids that — it already holds the
+OAuth relationship with 1000+ apps — and [`mcpplug`](https://www.npmjs.com/package/mcpplug)
+wraps that gateway behind the same `ToolDefinition` shape as everything
+else:
+
+```ts
+import { connectComposioSource } from 'mcpplug'
+
+// Resolved once, at module-eval time — not per runAgent() call. A gateway
+// connection is exactly the kind of setup cost runAgent() shouldn't pay on
+// every turn; see agents/file-agent.ts for the working example this is
+// drawn from.
+const composioTools = await connectComposioSource('composio', {
+  slugs: ['GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER'],
+}).then((source) => source.loadTools())
+
+const config: AgentConfig = {
+  name: 'my-agent',
+  systemPrompt: 'You are ...',
+  tools: [...handWrittenTools, ...composioTools],
+  rules: [
+    // mcpplug namespaces each tool `${sourceName}_${slug}` — falls
+    // through to defaultDecision unless a rule names it explicitly.
+    { scopePattern: 'default/production/my-agent', tool: 'composio_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER', decision: 'allow' },
+  ],
+  defaultDecision: 'ask',
+}
+```
+
+Same ActAuth gating, ToolLane scheduling, and ContextClip budget tracking
+as any other tool call — `runAgent` has no idea one `execute` shells out
+through Composio instead of touching the filesystem or a vector index.
+`agents/file-agent.ts` is a complete, working example, verified end-to-end
+against a real linked GitHub account. `slugs` is explicit, not
+auto-discovered — an agent should only see the Composio actions its own
+config actually lists; find them with the `composio` CLI's
+`composio tools list <toolkit>` or `composio search "<use case>"`.
 
 ## Running an agent
 
