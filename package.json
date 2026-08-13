@@ -1,8 +1,8 @@
 {
   "name": "loopengine",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "type": "module",
-  "description": "A minimal runtime for defining and running tool-using AI agents through a transparent ReAct loop.",
+  "description": "LoopEngine is a runtime for defining and running multiple AI agents through a transparent ReAct loop.",
   "license": "MIT",
   "homepage": "https://loopengine.co",
   "repository": {

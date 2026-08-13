@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/evanyan22/loopengine/actions/workflows/ci.yml/badge.svg)](https://github.com/evanyan22/loopengine/actions/workflows/ci.yml)
 
-A minimal runtime for defining and running tool-using AI agents through a
+LoopEngine is a runtime for defining and running multiple AI agents through a
 transparent ReAct loop. Write an agent as a plain config object — persona,
 tools, permission rules — and run it over the CLI, an HTTP API, or both. No
 chain DSL, no hidden control flow: `run-agent.ts` is a single readable
