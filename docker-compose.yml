@@ -11,5 +11,12 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       # ANTHROPIC_API_KEY: set this once run-agent.ts's ModelCall is wired to the real API.
+      # This compose file is local/dev-testing (see README's project layout:
+      # "Container build + local Redis for testing"), not a real production
+      # deployment — staging is the correct default here, not an oversight.
+      # A real production deployment (a separate target, per the README's
+      # own "Deployment" section) would set LOOPENGINE_ENV: production, or
+      # omit it — production is customer-service-agent.ts's own default.
+      LOOPENGINE_ENV: staging
     depends_on:
       - redis
