@@ -400,7 +400,7 @@ only when the model actually invokes that skill — through a real `Skill`
 tool schema (`{skill: string, args?: string}`) declared to the model
 whenever `skillsDirs` is set, not just handled after the fact. Set
 `skillsDirs` on an `AgentConfig` to enable it; omit it for agents that
-don't need skills (`agents/customer-service-agent.ts` doesn't).
+don't need skills (`agents/rag-agent.ts` doesn't).
 
 Point `skillsDirs` at a subdirectory scoped to that agent
 (`skills/file-agent/`, not the shared `skills/` root) — `SkillGarden`'s

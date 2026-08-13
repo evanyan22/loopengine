@@ -96,6 +96,10 @@ export const config: AgentConfig = {
   // its own solo lane.
   isSafeTool: (call) => call.name === 'lookup_order' || call.name === 'get_shipment_details',
   sessionIdFor,
+  // Scoped to this agent's own subdirectory, not the shared skills/ root —
+  // see file-agent.ts's skillsDirs comment for why (discovery has no
+  // per-agent filtering).
+  skillsDirs: ['skills/customer-service'],
 }
 
 // SIMULATED model call — see file-agent.ts for why this is a factory
