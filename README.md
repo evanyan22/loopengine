@@ -408,6 +408,18 @@ discovery recursively walks whatever root it's given with no per-agent
 filtering, so two agents both pointed at `skills/` would each see every
 skill under it, not just their own.
 
+To install one of SkillGarden's bundled skills (e.g. `firecrawl`) into an
+agent's own subdirectory, use its `add` CLI:
+
+```bash
+npx skillgarden add firecrawl --agent file-agent
+# -> Added file-agent:firecrawl -> skills/file-agent/firecrawl/SKILL.md
+```
+
+That writes `skills/file-agent/firecrawl/SKILL.md`, which discovery then
+surfaces as `file-agent:firecrawl` — no code change needed beyond having
+already set `skillsDirs: 'skills/file-agent'` on that agent's config.
+
 ## Project layout
 
 ```
