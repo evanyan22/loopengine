@@ -39,7 +39,7 @@
     "mcpplug": "^0.0.1",
     "reflowkit": "^0.0.1",
     "sessionknit": "^0.0.2",
-    "skillgarden": "^0.0.3",
+    "skillgarden": "^0.0.4",
     "toollane": "^0.0.1"
   },
   "devDependencies": {
