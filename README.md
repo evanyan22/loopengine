@@ -1,4 +1,4 @@
-# loopengine
+# LoopEngine
 
 A minimal framework for defining and running tool-using AI agents. Write an
 agent as a plain config object — persona, tools, permission rules — and run
