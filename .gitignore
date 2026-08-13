@@ -4,3 +4,4 @@ dist
 examples/file-agent/summary.txt
 *.log
 .env
+.DS_Store
