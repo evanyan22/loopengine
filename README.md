@@ -32,6 +32,28 @@ one layer further out still: it's not part of the loop either, just a
 its output merges straight in with no adapter code. See "External tool
 gateways" below.
 
+## Creating a new project
+
+The fastest way to get a running agent server, in your own repo, is
+[`create-loopengine`](https://www.npmjs.com/package/create-loopengine):
+
+```bash
+npm create loopengine@latest my-agents
+cd my-agents
+npm install
+cp .env.example .env   # fill in ANTHROPIC_API_KEY
+npm run dev             # HTTP server on :8787
+```
+
+That scaffolds a real, standalone project — its own `package.json`
+depending on `loopengine` (not a clone of this repo), an HTTP + CLI
+adapter, and one starter agent — rather than a bare library import. `npm
+install loopengine` alone (below) only gets you the library; the server,
+adapters, and a runnable example are deliberately not part of that
+package, which is the gap `create-loopengine` fills. See
+[`create-loopengine`'s own README](https://github.com/evanyan22/create-loopengine)
+for what the generated project looks like.
+
 ## Using loopengine as a library
 
 This repo is two things in one: a small library (the loop itself) and a
@@ -74,8 +96,10 @@ console.log(result.text)
 
 The full exported surface: `runAgent`, `AgentConfig`/`ToolSchema`/`ToolDefinition`,
 `FileSessionStore`/`RedisSessionStore`/`createSessionStore`, `VectorIndex`/
-`embed`/`cosineSimilarity` (for RAG — see below), `discoverAgents` (see
-"Auto-discovered agent registry" below), and `createAnthropicModelCall`/
+`embed`/`cosineSimilarity` (for RAG — see below), `discoverAgents` (scans a
+directory for `config`/`createModelCall` modules and builds a name → entry
+map, keyed by `AgentConfig.name` — see `agent-registry.ts` for the ~15-line
+wrapper this repo's own adapters use), and `createAnthropicModelCall`/
 `createOpenAIModelCall`/`createDeepSeekModelCall` (real, ready-to-use
 `ModelCall`s). See `index.ts` for the exact list.
 
@@ -132,46 +156,9 @@ export const config: AgentConfig = {
 examples — same `runAgent` loop, entirely different personas and tools.
 
 A file exporting `config` and `createModelCall` and saved into `agents/` is
-runnable through both adapters immediately — `agent-registry.ts` discovers
-it automatically (by `AgentConfig.name`, not the filename) at startup.
-Nothing to edit, no import to add, no adapter change. See "Auto-discovered
-agent registry" below for how and why.
-
-## Auto-discovered agent registry
-
-`discoverAgents(dir)` — exported from the library, used by this repo's own
-`agent-registry.ts` — scans a directory's direct files (not
-subdirectories, so shared helper code has somewhere to live without being
-mistaken for an agent) for modules exporting `config`/`createModelCall`,
-and builds a `Map<name, {config, createModelCall}>` from them:
-
-```ts
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { discoverAgents } from 'loopengine'
-
-const agentsDir = join(dirname(fileURLToPath(import.meta.url)), 'agents')
-const entries = await discoverAgents(agentsDir) // top-level await — fine in ESM
-```
-
-Keyed by `AgentConfig.name`, not the filename — that's the identity
-ActAuth's `scope.agent` segment already uses, so this doesn't introduce a
-second naming scheme, and a rename is just editing `config.name`, not also
-a registry line and an import path. Two files that declared the same
-`config.name` would already silently collide in ActAuth's rules before
-this existed; `discoverAgents` throws loudly on that (and on a file
-missing either export) at startup instead, which is a real safety
-property this adds, not just less typing.
-
-`agent-registry.ts` is a ~15-line wrapper around this: resolve `agents/`
-relative to its own file, call `discoverAgents` once at module load behind
-a top-level `await`, and expose `listAgents()`/`getEntry(name)` as
-synchronous functions from the result — ESM guarantees an importer's own
-evaluation (`adapters/http.ts`, `adapters/cli.ts`) waits for that
-top-level await to settle first, so neither adapter needs to know
-discovery is async underneath. Verified live: dropped a new agent file
-into `agents/` with zero other changes and called it immediately through
-both `adapters/cli.ts` and `adapters/http.ts`.
+runnable through both adapters immediately — `agent-registry.ts` finds it
+automatically (by `AgentConfig.name`, not the filename) at startup.
+Nothing to edit, no import to add, no adapter change.
 
 ## Retrieval (RAG)
 
