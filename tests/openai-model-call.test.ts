@@ -1,6 +1,6 @@
 import OpenAI from 'openai'
 import { describe, expect, it } from 'vitest'
-import { createOpenAIModelCall } from '../openai-model-call.js'
+import { createOpenAIModelCall } from '../model-calls/openai-model-call.js'
 import { runAgent, type ModelCall } from '../run-agent.js'
 import type { AgentConfig } from '../agent-config.js'
 

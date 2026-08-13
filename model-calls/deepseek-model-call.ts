@@ -13,8 +13,8 @@
 // field at all) — decided at the request-building call site below, since
 // toMessageParams/toModelResponse don't touch that field either way.
 import OpenAI from 'openai'
-import type { ToolSchema } from './agent-config.js'
-import type { Message, ModelCall, ModelResponse } from './run-agent.js'
+import type { ToolSchema } from '../agent-config.js'
+import type { Message, ModelCall, ModelResponse } from '../run-agent.js'
 import { toMessageParams, toModelResponse } from './openai-model-call.js'
 
 export interface DeepSeekModelCallOptions {

@@ -25,8 +25,8 @@
 // limit field name, which is only decided at the request-building call
 // site below, not in these shared translation functions.
 import OpenAI from 'openai'
-import type { ToolSchema } from './agent-config.js'
-import type { Message, ModelCall, ModelContentBlock, ModelResponse } from './run-agent.js'
+import type { ToolSchema } from '../agent-config.js'
+import type { Message, ModelCall, ModelContentBlock, ModelResponse } from '../run-agent.js'
 
 type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam
 

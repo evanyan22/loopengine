@@ -394,7 +394,7 @@ whole loop is runnable and testable with no API key. To go live, swap it for
 one of the two real `ModelCall` implementations this repo ships:
 
 ```ts
-import { createAnthropicModelCall } from './anthropic-model-call.js'
+import { createAnthropicModelCall } from './model-calls/anthropic-model-call.js'
 
 const modelCall = createAnthropicModelCall({ model: 'claude-sonnet-5' }) // reads ANTHROPIC_API_KEY from the env
 
@@ -402,7 +402,7 @@ const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', 
 ```
 
 ```ts
-import { createOpenAIModelCall } from './openai-model-call.js'
+import { createOpenAIModelCall } from './model-calls/openai-model-call.js'
 
 // model is required (no built-in default) — OpenAI's current flagship
 // name changes too often to hardcode safely; reads OPENAI_API_KEY from the env
@@ -412,7 +412,7 @@ const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', 
 ```
 
 ```ts
-import { createDeepSeekModelCall } from './deepseek-model-call.js'
+import { createDeepSeekModelCall } from './model-calls/deepseek-model-call.js'
 
 // model is required, same reasoning as OpenAI's; reads DEEPSEEK_API_KEY
 // from the env — throws immediately, with a DeepSeek-specific message, if
@@ -434,13 +434,13 @@ this loop's `tool_result` replies round-trip with real per-call identity
 parallel tool calls unambiguous (a result links back to the exact call that
 requested it, not just "a call to this tool name") and lets a denied or
 failed call carry `is_error: true`, which Claude is specifically trained to
-react to. `anthropic-model-call.ts` translates directly to and from
+react to. `model-calls/anthropic-model-call.ts` translates directly to and from
 Anthropic's native `TextBlockParam`/`ToolUseBlockParam`/`ToolResultBlockParam`
 types — no flattening step in between. This was verified against the real
 SDK (with a stubbed `fetch`, not a live call) — request shape, tool schemas,
 and response mapping all round-trip correctly end to end.
 
-`openai-model-call.ts` translates to and from OpenAI's Chat Completions
+`model-calls/openai-model-call.ts` translates to and from OpenAI's Chat Completions
 shape instead, verified the same way (stubbed `fetch`, real SDK, full
 `runAgent` round trip including a tool call). The one structural mismatch:
 loopengine bundles a whole turn's `tool_result` blocks into a single
@@ -448,7 +448,7 @@ user-role message (mirroring Anthropic's shape); OpenAI has no equivalent —
 each becomes its own top-level `role: 'tool'` message, so one loopengine
 `Message` can expand into several OpenAI messages, never the reverse.
 
-`deepseek-model-call.ts` reuses `openai-model-call.ts`'s translation
+`model-calls/deepseek-model-call.ts` reuses `openai-model-call.ts`'s translation
 verbatim (exported, not duplicated) rather than reimplementing it —
 DeepSeek's Chat Completions API is wire-compatible with OpenAI's (verified
 against DeepSeek's own docs), down to the same `tool_calls` response
@@ -496,9 +496,9 @@ vector-index.ts             Dependency-free embeddings + cosine-similarity searc
 discover-agents.ts          discoverAgents — scans a directory, builds {name -> {config, createModelCall}}
 agent-registry.ts          This repo's ~15-line wrapper: discoverAgents('agents/') + listAgents()/getEntry()
 session-store.ts           SessionStore: FileSessionStore, RedisSessionStore, createSessionStore()
-anthropic-model-call.ts    createAnthropicModelCall — a real ModelCall this repo ships
-openai-model-call.ts        createOpenAIModelCall — same seam, OpenAI's Chat Completions API
-deepseek-model-call.ts      createDeepSeekModelCall — same seam, reuses openai-model-call.ts's translation
+model-calls/anthropic-model-call.ts   createAnthropicModelCall — a real ModelCall this repo ships
+model-calls/openai-model-call.ts       createOpenAIModelCall — same seam, OpenAI's Chat Completions API
+model-calls/deepseek-model-call.ts     createDeepSeekModelCall — same seam, reuses openai-model-call.ts's translation
 agents/file-agent.ts               Example agent: summarizes text files
 agents/customer-service-agent.ts  Example agent: order/shipment lookup, refund, email
 agents/rag-agent.ts                Example agent: retrieves from an in-memory vector index

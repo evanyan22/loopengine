@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
-import { createAnthropicModelCall } from '../anthropic-model-call.js'
+import { createAnthropicModelCall } from '../model-calls/anthropic-model-call.js'
 import { runAgent, type ModelCall } from '../run-agent.js'
 import type { AgentConfig } from '../agent-config.js'
 

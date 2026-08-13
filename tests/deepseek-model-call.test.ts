@@ -1,6 +1,6 @@
 import OpenAI from 'openai'
 import { describe, expect, it } from 'vitest'
-import { createDeepSeekModelCall } from '../deepseek-model-call.js'
+import { createDeepSeekModelCall } from '../model-calls/deepseek-model-call.js'
 import { runAgent, type ModelCall } from '../run-agent.js'
 import type { AgentConfig } from '../agent-config.js'
 

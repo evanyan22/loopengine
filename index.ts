@@ -21,14 +21,14 @@ export type { SessionStore, SessionResult, RedisSessionStoreOptions } from './se
 export { VectorIndex, embed, cosineSimilarity } from './vector-index.js'
 export type { Document, ScoredDocument } from './vector-index.js'
 
-export { createAnthropicModelCall } from './anthropic-model-call.js'
-export type { AnthropicModelCallOptions } from './anthropic-model-call.js'
+export { createAnthropicModelCall } from './model-calls/anthropic-model-call.js'
+export type { AnthropicModelCallOptions } from './model-calls/anthropic-model-call.js'
 
-export { createOpenAIModelCall } from './openai-model-call.js'
-export type { OpenAIModelCallOptions } from './openai-model-call.js'
+export { createOpenAIModelCall } from './model-calls/openai-model-call.js'
+export type { OpenAIModelCallOptions } from './model-calls/openai-model-call.js'
 
-export { createDeepSeekModelCall } from './deepseek-model-call.js'
-export type { DeepSeekModelCallOptions } from './deepseek-model-call.js'
+export { createDeepSeekModelCall } from './model-calls/deepseek-model-call.js'
+export type { DeepSeekModelCallOptions } from './model-calls/deepseek-model-call.js'
 
 export { discoverAgents } from './discover-agents.js'
 export type { AgentModule } from './discover-agents.js'
