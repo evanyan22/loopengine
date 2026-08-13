@@ -1,5 +1,7 @@
 # LoopEngine
 
+[![CI](https://github.com/evanyan22/loopengine/actions/workflows/ci.yml/badge.svg)](https://github.com/evanyan22/loopengine/actions/workflows/ci.yml)
+
 A minimal framework for defining and running tool-using AI agents. Write an
 agent as a plain config object — persona, tools, permission rules — and run
 it through one generic ReAct loop over the CLI, an HTTP API, or both. No
@@ -37,8 +39,15 @@ reference app built on top of it (demo agents, a CLI, an HTTP server). Only
 the library half ships to npm:
 
 ```bash
-npm install loopengine actauth contextclip reflowkit toollane skillgarden
+npm install loopengine
 ```
+
+`actauth`, `contextclip`, `reflowkit`, `toollane`, `skillgarden`, and the
+rest are regular dependencies of `loopengine` itself — installing it alone
+already pulls them into `node_modules`, fully resolvable for both imports
+and TypeScript types. Install one of them directly only if you want to use
+it standalone, outside `runAgent` (e.g. just `toollane`'s parallel/solo
+scheduling in your own loop).
 
 ```ts
 import { runAgent, type AgentConfig, type ToolDefinition } from 'loopengine'
