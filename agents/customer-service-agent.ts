@@ -30,9 +30,20 @@ function sessionIdFor(body: Record<string, unknown>): string | undefined {
 // doesn't otherwise change.
 const SHIPMENT_API_URL = 'https://api.shipping-carrier.example/v1'
 
+// Deployment-time constant, deliberately not read from anything in an
+// incoming request — a client asserting "treat me as staging" would be a
+// straightforward way to get production's stricter rules bypassed. Set
+// this per deployment (e.g. in the staging environment's own env vars),
+// never derived from caller-supplied data. Matches run-agent.ts's own
+// default ('production') when unset, so not setting this changes nothing.
+const ENVIRONMENT = process.env.LOOPENGINE_ENV ?? 'production'
+
 export const config: AgentConfig = {
   name: 'customer-service',
   systemPrompt: 'You are a support agent for Acme. Be concise and empathetic. Never promise a refund before issue_refund succeeds.',
+  // Only overrides environment — tenant stays run-agent.ts's own default
+  // ('default'), since nothing here (yet) differentiates by tenant.
+  scope: { environment: ENVIRONMENT },
   tools: [
     {
       name: 'lookup_order',
@@ -77,10 +88,19 @@ export const config: AgentConfig = {
     },
   ],
   rules: [
-    { scopePattern: 'default/production/customer-service', tool: 'lookup_order', decision: 'allow' },
-    { scopePattern: 'default/production/customer-service', tool: 'get_shipment_details', decision: 'allow' },
-    { scopePattern: 'default/production/customer-service', tool: 'send_email', decision: 'allow' },
-    // Refunds always need a human in the loop — unlike file-agent's writes, this one moves money.
+    // These three don't depend on environment — same decision whether
+    // staging or production — so the environment segment is wildcarded
+    // rather than duplicated per environment.
+    { scopePattern: 'default/*/customer-service', tool: 'lookup_order', decision: 'allow' },
+    { scopePattern: 'default/*/customer-service', tool: 'get_shipment_details', decision: 'allow' },
+    { scopePattern: 'default/*/customer-service', tool: 'send_email', decision: 'allow' },
+    // issue_refund is the one tool where environment matters: staging
+    // never moves real money, so it's safe to skip the human-in-the-loop
+    // step there and let QA iterate without approving every test run;
+    // production always needs one, since a real refund happens. Same
+    // rules array, same agent code, different behavior per deployment —
+    // driven entirely by ENVIRONMENT above, no code fork.
+    { scopePattern: 'default/staging/customer-service', tool: 'issue_refund', decision: 'allow' },
     { scopePattern: 'default/production/customer-service', tool: 'issue_refund', decision: 'ask' },
   ],
   defaultDecision: 'deny',
