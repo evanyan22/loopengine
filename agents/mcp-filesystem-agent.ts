@@ -26,10 +26,15 @@ if (!existsSync(NOTES_PATH)) writeFileSync(NOTES_PATH, 'Q1 revenue grew 12% year
 // run in parallel. Anything not listed here (write_file, edit_file,
 // create_directory, move_file, ...) falls through to defaultDecision:
 // 'ask' below. These names come from having probed the server once
-// (`client.listTools()`); load-agent.ts doesn't need to know them —
-// they're just rule data, the same way a hand-written tool's rules are.
+// (verified against every tool it actually reports readOnlyHint: true
+// for — see scripts/suggest-mcp-rules.ts, which is what caught
+// read_file/read_media_file missing from an earlier, hand-typed version
+// of this set); load-agent.ts doesn't need to know them — they're just
+// rule data, the same way a hand-written tool's rules are.
 const READ_ONLY_TOOLS = new Set([
+  'read_file',
   'read_text_file',
+  'read_media_file',
   'read_multiple_files',
   'list_directory',
   'list_directory_with_sizes',
