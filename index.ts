@@ -23,3 +23,6 @@ export type { Document, ScoredDocument } from './vector-index.js'
 
 export { createAnthropicModelCall } from './anthropic-model-call.js'
 export type { AnthropicModelCallOptions } from './anthropic-model-call.js'
+
+export { createOpenAIModelCall } from './openai-model-call.js'
+export type { OpenAIModelCallOptions } from './openai-model-call.js'

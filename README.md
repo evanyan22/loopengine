@@ -65,8 +65,9 @@ console.log(result.text)
 
 The full exported surface: `runAgent`, `AgentConfig`/`ToolSchema`/`ToolDefinition`,
 `FileSessionStore`/`RedisSessionStore`/`createSessionStore`, `VectorIndex`/
-`embed`/`cosineSimilarity` (for RAG — see below), and `createAnthropicModelCall`
-(a real, ready-to-use `ModelCall`). See `index.ts` for the exact list.
+`embed`/`cosineSimilarity` (for RAG — see below), and `createAnthropicModelCall`/
+`createOpenAIModelCall` (real, ready-to-use `ModelCall`s). See `index.ts` for
+the exact list.
 
 **Not** part of the package: `agents/*.ts` (this repo's own demo agents),
 `agent-registry.ts` (this repo's own name → config lookup table — build your
@@ -354,14 +355,23 @@ and any tool-specific secrets set as environment variables.
 
 Every example agent (`agents/file-agent.ts`, `agents/customer-service-agent.ts`,
 `agents/rag-agent.ts`) still uses a canned, turn-counting `ModelCall` so the
-whole loop is runnable and testable with no API key. To go live, swap it
-for `createAnthropicModelCall` (`anthropic-model-call.ts`), the one real
-`ModelCall` implementation this repo ships:
+whole loop is runnable and testable with no API key. To go live, swap it for
+one of the two real `ModelCall` implementations this repo ships:
 
 ```ts
 import { createAnthropicModelCall } from './anthropic-model-call.js'
 
 const modelCall = createAnthropicModelCall({ model: 'claude-sonnet-5' }) // reads ANTHROPIC_API_KEY from the env
+
+const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', [])
+```
+
+```ts
+import { createOpenAIModelCall } from './openai-model-call.js'
+
+// model is required (no built-in default) — OpenAI's current flagship
+// name changes too often to hardcode safely; reads OPENAI_API_KEY from the env
+const modelCall = createOpenAIModelCall({ model: 'gpt-4.1' })
 
 const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', [])
 ```
@@ -382,6 +392,14 @@ Anthropic's native `TextBlockParam`/`ToolUseBlockParam`/`ToolResultBlockParam`
 types — no flattening step in between. This was verified against the real
 SDK (with a stubbed `fetch`, not a live call) — request shape, tool schemas,
 and response mapping all round-trip correctly end to end.
+
+`openai-model-call.ts` translates to and from OpenAI's Chat Completions
+shape instead, verified the same way (stubbed `fetch`, real SDK, full
+`runAgent` round trip including a tool call). The one structural mismatch:
+loopengine bundles a whole turn's `tool_result` blocks into a single
+user-role message (mirroring Anthropic's shape); OpenAI has no equivalent —
+each becomes its own top-level `role: 'tool'` message, so one loopengine
+`Message` can expand into several OpenAI messages, never the reverse.
 
 ## Skills
 
@@ -421,7 +439,8 @@ run-agent.ts                The generic ReAct loop every agent and adapter runs 
 vector-index.ts             Dependency-free embeddings + cosine-similarity search, for RAG
 agent-registry.ts          Maps agent name -> {config, createModelCall}
 session-store.ts           SessionStore: FileSessionStore, RedisSessionStore, createSessionStore()
-anthropic-model-call.ts    createAnthropicModelCall — the one real ModelCall this repo ships
+anthropic-model-call.ts    createAnthropicModelCall — a real ModelCall this repo ships
+openai-model-call.ts        createOpenAIModelCall — same seam, OpenAI's Chat Completions API
 agents/file-agent.ts               Example agent: summarizes text files
 agents/customer-service-agent.ts  Example agent: order/shipment lookup, refund, email
 agents/rag-agent.ts                Example agent: retrieves from an in-memory vector index
