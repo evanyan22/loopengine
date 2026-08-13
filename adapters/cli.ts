@@ -15,7 +15,7 @@
 // otherwise — either way, safe for concurrent invocations against the
 // same --session.
 import { randomUUID } from 'node:crypto'
-import { getEntry, listAgents, closeRegistry } from '../agent-registry.js'
+import { getEntry, listAgents } from '../agent-registry.js'
 import { createSessionStore } from '../session-store.js'
 import { runAgent } from '../run-agent.js'
 
@@ -33,8 +33,8 @@ function parseArgs(argv: string[]) {
 
 async function main() {
   const { agent, session, message } = parseArgs(process.argv.slice(2))
-  const entryPromise = getEntry(agent)
-  if (!entryPromise) {
+  const entry = getEntry(agent)
+  if (!entry) {
     console.error(`unknown agent '${agent}'. available: ${listAgents().join(', ')}`)
     process.exit(1)
   }
@@ -52,9 +52,6 @@ async function main() {
 
   const sessions = createSessionStore()
   try {
-    // getEntry() may spawn a subprocess (MCP agents) — this await is
-    // where that connection actually happens.
-    const entry = await entryPromise
     // SessionStore itself is agent-agnostic — the same --session id reused
     // across two different agents would otherwise read and write the same
     // underlying log (see adapters/http.ts's identical fix). Namespacing
@@ -68,7 +65,6 @@ async function main() {
     console.log(text)
   } finally {
     await sessions.close()
-    await closeRegistry()
   }
 }
 

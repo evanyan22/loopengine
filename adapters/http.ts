@@ -26,7 +26,7 @@
 // file's call — see AgentConfig.sessionIdFor and defaultSessionIdFor below.
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { getEntry, closeRegistry, type RegistryEntry } from '../agent-registry.js'
+import { getEntry, type RegistryEntry } from '../agent-registry.js'
 import { createSessionStore } from '../session-store.js'
 import { runAgent } from '../run-agent.js'
 import type { AgentConfig } from '../agent-config.js'
@@ -92,14 +92,8 @@ type ParseResult = { ok: true; value: ParsedRequest } | { ok: false; status: num
 // has succeeded — the streaming route in particular must not send SSE
 // headers until it knows the request is actually going to run.
 async function parseRequest(req: IncomingMessage, agentName: string): Promise<ParseResult> {
-  const entryPromise = getEntry(agentName)
-  if (!entryPromise) return { ok: false, status: 404, error: `unknown agent '${agentName}'` }
-
-  // Resolved once per agent then cached (agent-registry.ts) — for an MCP
-  // agent this is where the subprocess connection actually happens, but
-  // only on the first request that ever hits it. Needed before the
-  // session key can be computed, since that's config.sessionIdFor.
-  const entry = await entryPromise
+  const entry = getEntry(agentName)
+  if (!entry) return { ok: false, status: 404, error: `unknown agent '${agentName}'` }
 
   const body = await readJsonBody(req)
   const message = String(body.message ?? '')
@@ -186,11 +180,11 @@ const server = createServer(async (req, res) => {
   // One catch-all around both routes. node:http does not catch rejections
   // from an async request listener itself — an uncaught one here doesn't
   // just fail the request, it crashes the whole process (confirmed: an
-  // agent whose loader rejects, e.g. a dead MCP connection, took the
-  // entire server down before this existed). handleMessagesStream's own
-  // try/catch below still handles errors *after* SSE headers are sent
-  // (those need an in-band `error` event, not a fresh status code) — this
-  // is the backstop for everything before that point, for both routes.
+  // unhandled rejection anywhere in a route took the entire server down
+  // before this existed). handleMessagesStream's own try/catch below
+  // still handles errors *after* SSE headers are sent (those need an
+  // in-band `error` event, not a fresh status code) — this is the
+  // backstop for everything before that point, for both routes.
   try {
     const streamMatch = req.method === 'POST' && req.url?.match(/^\/agents\/([^/]+)\/messages\/stream$/)
     if (streamMatch) {
@@ -220,7 +214,6 @@ server.listen(port, () => console.log(`agent API listening on :${port}`))
 async function shutdown() {
   server.close()
   await sessions.close()
-  await closeRegistry()
   process.exit(0)
 }
 process.on('SIGTERM', shutdown)

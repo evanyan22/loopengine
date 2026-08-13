@@ -1,9 +1,7 @@
 // The declarative surface a user fills in to define a new agent. Nothing
-// here runs anything — load-agent.ts resolves mcpServers into real tools,
-// and run-agent.ts is the one place that interprets the result.
+// here runs anything — run-agent.ts is the one place that interprets it.
 import type { Rule, Decision, Scope, Approver } from 'actauth'
 import type { SafetyClassifier } from 'toollane'
-import type { StdioServerParameters } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 export interface ToolSchema {
   name: string
@@ -20,16 +18,8 @@ export interface AgentConfig {
   /** Also doubles as the ActAuth scope.agent segment. */
   name: string
   systemPrompt: string
-  /** Hand-written tools. Default []  — an agent can run on mcpServers alone. */
+  /** Hand-written tools. Default []. */
   tools?: ToolDefinition[]
-  /** MCP servers to connect at load time (see load-agent.ts); their
-   * tools are discovered via listTools() and appended to `tools`. This
-   * is what makes adding an MCP-backed agent a config change — write
-   * rules for the tool names you expect it to expose (check its docs, or
-   * probe it once), same as for a hand-written tool. Anything it exposes
-   * that you didn't write a rule for still safely falls through to
-   * defaultDecision. */
-  mcpServers?: StdioServerParameters[]
   /** ActAuth rules, e.g. { scopePattern: 'default/production/customer-service', tool: 'issue_refund', decision: 'ask' } */
   rules: Rule[]
   /** Decision when no rule matches. Default 'ask' — new tools are opt-in, not silently allowed. */

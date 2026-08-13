@@ -169,9 +169,7 @@ export async function runAgent(
     },
   })
 
-  // Optional on AgentConfig — an MCP-only agent's tools are populated by
-  // load-agent.ts before this ever runs, but default defensively here too
-  // in case a config reaches runAgent without going through it.
+  // Optional on AgentConfig — an agent can have zero tools.
   const tools = config.tools ?? []
   const toolsByName = new Map(tools.map((t) => [t.name, t]))
   const toolSchemas: ToolSchema[] = tools.map(({ name, description, input_schema }) => ({

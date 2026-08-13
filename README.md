@@ -57,10 +57,9 @@ console.log(result.text)
 ```
 
 The full exported surface: `runAgent`, `AgentConfig`/`ToolSchema`/`ToolDefinition`,
-`loadAgent` (for MCP-backed tools), `connectMcpTools`, `FileSessionStore`/
-`RedisSessionStore`/`createSessionStore`, `VectorIndex`/`embed`/
-`cosineSimilarity` (for RAG — see below), and `createAnthropicModelCall` (a
-real, ready-to-use `ModelCall`). See `index.ts` for the exact list.
+`FileSessionStore`/`RedisSessionStore`/`createSessionStore`, `VectorIndex`/
+`embed`/`cosineSimilarity` (for RAG — see below), and `createAnthropicModelCall`
+(a real, ready-to-use `ModelCall`). See `index.ts` for the exact list.
 
 **Not** part of the package: `agents/*.ts` (this repo's own demo agents),
 `agent-registry.ts` (this repo's own name → config lookup table — build your
@@ -118,59 +117,11 @@ To make a new agent runnable through the adapters, add one line to
 `agent-registry.ts` mapping its name to its `config` and a `createModelCall`
 factory.
 
-## Connecting MCP tools
-
-A tool doesn't have to be hand-written — `AgentConfig.mcpServers` connects to
-a real MCP server and turns everything it exposes into ordinary tools, with
-the same ActAuth gating and ToolLane scheduling as `do_thing` above:
-
-```ts
-export const config: AgentConfig = {
-  name: 'my-mcp-agent',
-  systemPrompt: 'You are ...',
-  mcpServers: [
-    { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/some/dir'] },
-  ],
-  rules: [
-    { scopePattern: 'default/production/my-mcp-agent', tool: 'read_text_file', decision: 'allow' },
-  ],
-  defaultDecision: 'ask', // any tool the server exposes that you didn't write a rule for
-}
-```
-
-`agents/mcp-filesystem-agent.ts` is a complete example — it has zero hand-written
-tools; every one comes from the official
-`@modelcontextprotocol/server-filesystem`, spawned as a real subprocess.
-`load-agent.ts` is what resolves `mcpServers` into real tools: it runs for
-every agent (a no-op if `mcpServers` is absent), which is what makes this a
-config change rather than a bespoke loader function per server — write rules
-for the tool names you expect the server to expose (check its docs, or
-connect once and call `listTools()` yourself), the same way you'd write
-rules for a hand-written tool. Anything the server exposes that you didn't
-write a rule for still safely falls through to `defaultDecision`.
-
-Tool *definitions* (names, schemas, `execute`) are fully auto-discovered via
-`listTools()` — nothing to hand-write there. Deciding which of those tools
-are safe to `allow` outright is a different matter, and deliberately isn't
-automatic: MCP servers can self-report a `readOnlyHint` on each tool, but
-the spec's own docs say plainly that clients should never make tool-use
-decisions from it — it's the server grading its own homework, and a
-malicious or just-buggy one could self-report `readOnlyHint: true` on
-something destructive. `scripts/suggest-mcp-rules.ts` connects to a server
-and prints a starting-point `rules`/`isSafeTool` block based on that hint —
-a suggestion to read and verify, replacing "re-read the server's docs by
-hand," not something to paste in blind:
-
-```bash
-npx tsx scripts/suggest-mcp-rules.ts --scope default/production/my-agent -- \
-  npx -y @modelcontextprotocol/server-filesystem /some/dir
-```
-
 ## Retrieval (RAG)
 
 RAG is just another tool — the model decides when to call it, `run-agent.ts`
 doesn't know or care that "executing" this particular tool means a vector
-search instead of a filesystem read or an MCP round-trip:
+search instead of a plain HTTP call:
 
 ```ts
 const searchDocs: ToolDefinition = {
@@ -350,9 +301,8 @@ and any tool-specific secrets set as environment variables.
 ## Wiring a real model
 
 Every example agent (`agents/file-agent.ts`, `agents/customer-service-agent.ts`,
-`agents/mcp-filesystem-agent.ts`, `agents/rag-agent.ts`) still uses a canned,
-turn-counting `ModelCall` so the whole loop is runnable and testable with no
-API key. To go live, swap it
+`agents/rag-agent.ts`) still uses a canned, turn-counting `ModelCall` so the
+whole loop is runnable and testable with no API key. To go live, swap it
 for `createAnthropicModelCall` (`anthropic-model-call.ts`), the one real
 `ModelCall` implementation this repo ships:
 
@@ -412,20 +362,16 @@ skill under it, not just their own.
 index.ts                    Public API surface — what actually ships to npm
 agent-config.ts            AgentConfig type — the thing you fill in to define an agent
 run-agent.ts                The generic ReAct loop every agent and adapter runs through
-load-agent.ts               Resolves AgentConfig.mcpServers into real tools (no-op without it)
-mcp-tools.ts                 Wraps one MCP server's tools as ToolDefinition[]
 vector-index.ts             Dependency-free embeddings + cosine-similarity search, for RAG
-agent-registry.ts          Maps agent name -> {config, createModelCall}, via load-agent.ts
+agent-registry.ts          Maps agent name -> {config, createModelCall}
 session-store.ts           SessionStore: FileSessionStore, RedisSessionStore, createSessionStore()
 anthropic-model-call.ts    createAnthropicModelCall — the one real ModelCall this repo ships
 agents/file-agent.ts               Example agent: summarizes text files
 agents/customer-service-agent.ts  Example agent: order/shipment lookup, refund, email
-agents/mcp-filesystem-agent.ts    Example agent: every tool comes from a real MCP server, zero hand-written
 agents/rag-agent.ts                Example agent: retrieves from an in-memory vector index
 adapters/cli.ts             Channel adapter: command line
 adapters/http.ts            Channel adapter: HTTP API
 skills/                     SKILL.md files discoverable by agents, scoped per agent subdirectory
-scripts/suggest-mcp-rules.ts  Probes an MCP server, suggests (never decides) allow/ask rules
 examples/file-agent/        Sample input files + generated output for the file-agent demo
 Dockerfile, docker-compose.yml   Container build + local Redis for testing
 ```

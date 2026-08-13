@@ -17,10 +17,6 @@
     "dist/run-agent.d.ts",
     "dist/agent-config.js",
     "dist/agent-config.d.ts",
-    "dist/load-agent.js",
-    "dist/load-agent.d.ts",
-    "dist/mcp-tools.js",
-    "dist/mcp-tools.d.ts",
     "dist/session-store.js",
     "dist/session-store.d.ts",
     "dist/vector-index.js",
@@ -37,7 +33,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
-    "@modelcontextprotocol/sdk": "^1.30.0",
     "actauth": "^0.0.2",
     "contextclip": "^0.0.1",
     "ioredis": "^6.0.0",
