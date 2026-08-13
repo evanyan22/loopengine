@@ -38,7 +38,7 @@
     "ioredis": "^6.0.0",
     "reflowkit": "^0.0.1",
     "sessionknit": "^0.0.2",
-    "skillgarden": "^0.0.1",
+    "skillgarden": "^0.0.3",
     "toollane": "^0.0.1"
   },
   "devDependencies": {
