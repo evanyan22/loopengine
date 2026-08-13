@@ -38,7 +38,7 @@ The fastest way to get a running agent server, in your own repo, is
 [`create-loopengine`](https://www.npmjs.com/package/create-loopengine):
 
 ```bash
-npm create loopengine@latest my-agents
+npx create-loopengine@latest my-agents
 cd my-agents
 npm install
 cp .env.example .env   # fill in ANTHROPIC_API_KEY
