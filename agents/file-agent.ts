@@ -1,43 +1,66 @@
 // Same file-summarizing agent as the original main.ts, rewritten as an
 // AgentConfig driven through the generic runAgent loop.
 import { readFileSync, writeFileSync } from 'node:fs'
+import { connectComposioSource } from 'mcpplug'
 import type { AgentConfig } from '../agent-config.js'
 import { runAgent, type ModelCall } from '../run-agent.js'
+
+const handWrittenTools = [
+  {
+    name: 'read_file',
+    description: 'Read a text file',
+    input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    execute: async (input: Record<string, unknown>) => readFileSync(input.path as string, 'utf8'),
+  },
+  {
+    name: 'list_dir',
+    description: 'List files in the working directory',
+    input_schema: { type: 'object', properties: {} },
+    execute: async () => ['examples/file-agent/a.txt', 'examples/file-agent/b.txt'],
+  },
+  {
+    name: 'write_file',
+    description: 'Write a text file',
+    input_schema: {
+      type: 'object',
+      properties: { path: { type: 'string' }, content: { type: 'string' } },
+      required: ['path', 'content'],
+    },
+    execute: async (input: Record<string, unknown>) => {
+      writeFileSync(input.path as string, input.content as string)
+      return `wrote ${(input.content as string).length} bytes to ${input.path}`
+    },
+  },
+]
+
+// Resolved once, at module-eval time, not per runAgent() call — a
+// gateway connection (mcpplug shells out to the composio CLI) is exactly
+// the kind of setup cost runAgent's own I/O-per-call tolerance (see
+// SkillGarden's re-scan above) doesn't extend to. Same reasoning
+// rag-agent.ts builds its VectorIndex once at import time rather than
+// per call; this is that pattern's async form. connectComposioSource
+// only needs the CLI to answer `--get-schema`, which doesn't require an
+// authenticated account — only actually *calling* the tool below does.
+const composioTools = await connectComposioSource('composio', {
+  slugs: ['GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER'],
+}).then((source) => source.loadTools())
 
 export const config: AgentConfig = {
   name: 'file-agent',
   systemPrompt: 'You summarize text files into other text files.',
-  tools: [
-    {
-      name: 'read_file',
-      description: 'Read a text file',
-      input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
-      execute: async (input) => readFileSync(input.path as string, 'utf8'),
-    },
-    {
-      name: 'list_dir',
-      description: 'List files in the working directory',
-      input_schema: { type: 'object', properties: {} },
-      execute: async () => ['examples/file-agent/a.txt', 'examples/file-agent/b.txt'],
-    },
-    {
-      name: 'write_file',
-      description: 'Write a text file',
-      input_schema: {
-        type: 'object',
-        properties: { path: { type: 'string' }, content: { type: 'string' } },
-        required: ['path', 'content'],
-      },
-      execute: async (input) => {
-        writeFileSync(input.path as string, input.content as string)
-        return `wrote ${(input.content as string).length} bytes to ${input.path}`
-      },
-    },
-  ],
+  tools: [...handWrittenTools, ...composioTools],
   rules: [
     { scopePattern: 'default/production/file-agent', tool: 'read_file', decision: 'allow' },
     { scopePattern: 'default/production/file-agent', tool: 'list_dir', decision: 'allow' },
     { scopePattern: 'default/production/file-agent', tool: 'write_file', decision: 'ask' },
+    // Read-only (GitHub's GET /user/repos under the hood) — allowed like
+    // read_file/list_dir rather than ask'd like write_file, on the same
+    // reasoning: nothing this call does needs a human in the loop.
+    {
+      scopePattern: 'default/production/file-agent',
+      tool: 'composio_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER',
+      decision: 'allow',
+    },
   ],
   defaultDecision: 'ask',
   approver: {
@@ -57,7 +80,10 @@ export const config: AgentConfig = {
   // namespace relative to *this* root, so summarize-files still gets the
   // plain name 'summarize-files' below, not 'file-agent:summarize-files'.
   skillsDirs: ['skills/file-agent'],
-  isSafeTool: (call) => call.name === 'read_file' || call.name === 'list_dir',
+  isSafeTool: (call) =>
+    call.name === 'read_file' ||
+    call.name === 'list_dir' ||
+    call.name === 'composio_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER',
 }
 
 // SIMULATED — no ANTHROPIC_API_KEY is configured in this environment.
@@ -96,6 +122,12 @@ export function createModelCall(): ModelCall {
             input: { path: 'examples/file-agent/summary.txt', content: 'Revenue grew 12% YoY and support volume dropped 8% after the new onboarding flow.' },
           },
         ],
+      }
+    }
+    if (turn === 5) {
+      return {
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 't6', name: 'composio_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER', input: { per_page: 5 } }],
       }
     }
     return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done — wrote a one-paragraph summary to examples/file-agent/summary.txt.' }] }

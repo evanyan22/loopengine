@@ -36,6 +36,7 @@
     "actauth": "^0.0.2",
     "contextclip": "^0.0.1",
     "ioredis": "^6.0.0",
+    "mcpplug": "^0.0.1",
     "reflowkit": "^0.0.1",
     "sessionknit": "^0.0.2",
     "skillgarden": "^0.0.3",
