@@ -94,8 +94,8 @@ const result = await runAgent(config, myModelCall, "What's the weather in Boston
 console.log(result.text)
 ```
 
-The full exported surface: `runAgent`, `AgentConfig`/`AgentModelConfig`/
-`ToolSchema`/`ToolDefinition`,
+The full exported surface: `runAgent`,
+`AgentConfig`/`AgentModelConfig`/`ToolSchema`/`ToolDefinition`,
 `FileSessionStore`/`RedisSessionStore`/`createSessionStore`, `VectorIndex`/
 `embed`/`cosineSimilarity` (for RAG — see below), `discoverAgents` (scans a
 directory for modules exporting `config` — a flat `.ts`/`.js` file, or a
@@ -129,43 +129,17 @@ npx tsx adapters/cli.ts --agent rag-agent "How does ActAuth record human approva
 
 `file-agent` and `rag-agent` still use a **simulated**, turn-counting model
 call (no API key needed) — see "Wiring a real model" below.
-`customer-service` is wired to a real `createDeepSeekModelCall` and needs
-`DEEPSEEK_API_KEY` set in the environment.
+`customer-service` declares `model: { provider: 'deepseek', ... }` and
+needs `DEEPSEEK_API_KEY` set in the environment.
 
 ## Defining your own agent
 
 An agent is an `AgentConfig` (`agent-config.ts`): a name, a system prompt, a
-list of tools, and ActAuth permission rules — inline (full 3-segment
-`scopePattern`, e.g. `'default/production/my-agent'`), or as a path to an
-`actauth.yml` file (see `agents/customer-service/actauth.yml`). Close to
-the shape `examples/actauth.yml` in the actauth package itself uses, but
-each rule's `scope` there only needs *tenant/environment* — no agent
-segment. `run-agent.ts` appends `/<name>` to every rule loaded from a
-YAML file automatically, since a loopengine actauth.yml is always
-one-file-per-agent by convention (its own path is already
-`agents/<name>/actauth.yml`), so writing the agent's own name into every
-single rule would be pure repetition. Omit `rules`
-entirely and, just like `skillsDirs` below, it defaults to
-`agents/<name>/actauth.yml`. Unlike `skillsDirs`, a missing file there
-doesn't mean "no rules" — it falls back to an empty ruleset that denies
-every tool by default (stricter than the inline-array form's `'ask'`
-default, since no file at all means this agent's permission story was
-never written), so a brand-new agent with no `actauth.yml` yet refuses
-outright instead of crashing or silently allowing/asking. `defaultDecision`
-still overrides that fallback if you set it.
-
-`tools` follows the same shape: omit it entirely and it defaults to
-importing `agents/<name>/tools/index.{ts,js}` and using its exported
-`tools` (see `agents/customer-service/tools/index.ts`) — a missing file
-there is just `[]`, the same as an agent with no tools at all. An agent
-that needs to merge in tools from somewhere else too — `agents/file-agent/index.ts`'s
-Composio-sourced ones, fetched dynamically at runtime — can't rely on this
-default and sets `tools` explicitly instead.
-
-There are two ways to add one under `agents/`, and `agent-registry.ts`
-(built on `discoverAgents`) finds either automatically at startup — by
-`AgentConfig.name`, not the filename or folder name. Nothing to edit, no
-import to add, no adapter change, either way:
+list of tools, and ActAuth permission rules. There are two ways to add one
+under `agents/`, and `agent-registry.ts` (built on `discoverAgents`) finds
+either automatically at startup — by `AgentConfig.name`, not the filename
+or folder name. Nothing to edit, no import to add, no adapter change,
+either way:
 
 1. **A flat file**, `agents/<name>.ts` — the default; start here.
    `agents/rag-agent.ts` is a complete, working example.
@@ -174,16 +148,15 @@ import to add, no adapter change, either way:
    subdirectory's `index.ts`/`index.js` the same way it finds a flat
    file, the same "a directory can be a module" convention Node's own
    `require()` resolution already uses. `agents/customer-service/` and
-   `agents/file-agent/` are complete, working examples — see below for
-   what else moves under the folder once you switch.
+   `agents/file-agent/` are complete, working examples.
 
 Either way, the module must export `config`, plus either its own
 `createModelCall` or an `AgentConfig.model` for `discoverAgents` to
-synthesize one from — `discoverAgents` throws at startup on a module in
-`agents/` that exports neither (a real, load-bearing check: a module you
-forgot to finish wiring up, or an unrelated `.ts` file that doesn't
-belong in `agents/` at all, should fail loudly here rather than silently
-not showing up):
+synthesize one from (see "Wiring a real model" below) — `discoverAgents`
+throws at startup on a module in `agents/` that exports neither (a real,
+load-bearing check: a module you forgot to finish wiring up, or an
+unrelated `.ts` file that doesn't belong in `agents/` at all, should fail
+loudly here rather than silently not showing up):
 
 ```ts
 import type { AgentConfig } from './agent-config.js'
@@ -210,20 +183,17 @@ export const config: AgentConfig = {
 }
 ```
 
-`AgentConfig.model` covers `anthropic`/`openai`/`deepseek` directly — no
-`createModelCall` to write at all. For anything it can't express (a
-canned/simulated `ModelCall` for a demo like `agents/rag-agent.ts`'s, a
-custom SDK client, a provider it doesn't list), export `createModelCall`
-yourself instead — see "Wiring a real model" below.
-
-`agents/file-agent/index.ts` and `agents/customer-service/index.ts` are two complete, working
-examples — same `runAgent` loop, entirely different personas and tools.
-`agents/customer-service/` shows the folder form fully filled in:
+`agents/file-agent/index.ts` and `agents/customer-service/index.ts` are two
+complete, working examples — same `runAgent` loop, entirely different
+personas and tools. `agents/customer-service/` shows the folder form fully
+filled in — everything specific to one agent lives under its own folder,
+not scattered across separate top-level trees connected only by a
+matching name (nothing enforces that staying in sync):
 
 ```
 agents/customer-service/
   index.ts                          AgentConfig assembly + tenant/session resolution (tenantFor, sessionIdFor)
-  actauth.yml                       ActAuth rules — which tool needs which scope/decision
+  actauth.yml                       ActAuth rules
   tools/
     index.ts                        Aggregates the tools below into AgentConfig.tools
     lookup_order.ts                 One file per tool
@@ -235,12 +205,67 @@ agents/customer-service/
     firecrawl/SKILL.md              One <skill-name>/SKILL.md per skill (see "Skills" below)
 ```
 
-Everything specific to this one agent lives under its own folder instead of
-scattered across separate top-level trees keyed only by a matching
-directory name. `agents/file-agent/` follows the same shape, minus
-`orders-store.ts` — its one difference is a Composio-sourced GitHub tool
-that isn't in `tools/` at all, since it's fetched dynamically at runtime
-rather than being static code (see "External tool gateways" below).
+`agents/file-agent/` follows the same shape, minus `orders-store.ts` —
+its one difference is a Composio-sourced GitHub tool, which isn't in
+`tools/` at all since it's fetched dynamically at runtime (see "External
+tool gateways" below), not static code.
+
+### Smart defaults
+
+`rules`, `tools`, and `skillsDirs` can all be omitted — each then defaults
+to a conventional path under this agent's own folder, `agents/<name>/…`,
+instead of something you write out:
+
+| Field | Omitted, defaults to | Missing there means |
+| --- | --- | --- |
+| `rules` | `agents/<name>/actauth.yml` | empty ruleset, **deny** everything (no permission story was ever written — stricter than the inline-array form's `'ask'` default) |
+| `tools` | import `agents/<name>/tools/index.{ts,js}`, use its exported `tools` | `[]` — same as an agent with no tools at all |
+| `skillsDirs` | `['agents/<name>/skills']` | no skills discovered, no `Skill` tool declared |
+
+None of these throw over a missing file/folder — only `rules` changes
+behavior when it's missing (deny-by-default, not "no rules apply"), since
+skipping every tool is safer than silently allowing them all. Pass an
+explicit empty value (`[]`, or a `rules` path that doesn't exist) instead
+of omitting the field to opt out of a default on purpose — an
+*explicitly* wrong path is a real configuration bug and still throws.
+
+The `actauth.yml` form is close to the shape `examples/actauth.yml` in the
+actauth package itself uses, but each rule's `scope` only needs
+*tenant/environment* (e.g. `"*/*"`, `"acme-corp/production"`) — no agent
+segment, since a loopengine actauth.yml is always one-file-per-agent by
+convention. `run-agent.ts` appends `/<name>` to every rule loaded from a
+YAML file automatically; writing the agent's own name into every single
+rule would be pure repetition. See `agents/customer-service/actauth.yml`.
+
+An agent that needs to merge tools in from somewhere else too —
+`agents/file-agent/index.ts`'s Composio-sourced ones — can't rely on the
+`tools` default and sets it explicitly instead.
+
+### Parallel tool execution
+
+When a model requests several tool calls in one turn, `ToolLane` decides
+which can run concurrently: mark a tool `safe: true` on its
+`ToolDefinition` (read-only, no side effects, no shared mutable state —
+`agents/customer-service/tools/lookup_order.ts`) and consecutive safe
+calls run together in a parallel lane; anything else gets its own solo
+lane. For per-call nuance beyond a tool's static definition (safety that
+depends on the specific call's arguments, or varies by agent), set
+`AgentConfig.isSafeTool: (call) => boolean` instead — it takes full
+precedence over every tool's own `safe` flag when set
+(`agents/file-agent/index.ts` uses this form). Neither set: every tool
+runs solo.
+
+### Human approval
+
+`AgentConfig.approver` — an `Approver` from `actauth` — is what an `ask`
+decision routes to; the default `ConsoleApprover` blocks on stdin, fine
+for the CLI but wrong for an unattended server (see
+`agents/customer-service/index.ts`'s own auto-approving demo `approver`,
+and swap in a real one, e.g. Slack-backed, for production).
+`AgentConfig.maxTurns` (default 25) caps model calls in one `runAgent()`
+turn — the only thing stopping a model stuck re-requesting the same tool
+forever; hitting it ends the turn with `RunAgentResult.stopReason` set to
+`'max_turns'`, a real result rather than a thrown error.
 
 ## Retrieval (RAG)
 
@@ -562,17 +587,11 @@ tool schema (`{skill: string, args?: string}`) declared to the model
 whenever any skills are actually found, not just handled after the fact.
 
 `AgentConfig.skillsDirs` (an array of directory paths) controls where
-from. Omit it entirely and it defaults to `agents/<name>/skills` — the
-folder-form convention every agent in this repo already follows — which
-is harmless even for an agent with no skills at all
-(`agents/rag-agent.ts`, a flat file with no such folder): a missing
-directory just means an empty index, not an error, so no `Skill` tool
-gets declared. Pass `[]` explicitly to opt out of that default instead of
-omitting the field. `SkillGarden` discovery recursively walks every
-directory it's given with **no per-agent filtering** — whatever
-`SKILL.md` files live under a `skillsDirs` path, the agent sees all of
-them, which is the whole reason the two kinds below live in different
-places.
+from — see "Smart defaults" above for what it defaults to when omitted.
+`SkillGarden` discovery recursively walks every directory it's given with
+**no per-agent filtering** — whatever `SKILL.md` files live under a
+`skillsDirs` path, the agent sees all of them, which is the whole reason
+the two kinds below live in different places.
 
 **Agent-specific** — a skill only one agent needs, under that agent's own
 folder, pointed at by only that agent's `skillsDirs`:

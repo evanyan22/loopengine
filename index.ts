@@ -13,7 +13,7 @@ export type {
   RunAgentResult,
 } from './run-agent.js'
 
-export type { AgentConfig, ToolSchema, ToolDefinition } from './agent-config.js'
+export type { AgentConfig, AgentModelConfig, ToolSchema, ToolDefinition } from './agent-config.js'
 
 export { FileSessionStore, RedisSessionStore, createSessionStore } from './session-store.js'
 export type { SessionStore, SessionResult, RedisSessionStoreOptions } from './session-store.js'
