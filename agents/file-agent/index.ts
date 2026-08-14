@@ -9,7 +9,7 @@
 // code with a file of its own to live in.
 import { connectComposioSource } from 'mcpplug'
 import type { AgentConfig } from '../../agent-config.js'
-import { runAgent, type ModelCall } from '../../run-agent.js'
+import type { ModelCall } from '../../run-agent.js'
 import { tools as handWrittenTools } from './tools/index.js'
 
 // Resolved once, at module-eval time, not per runAgent() call — a
@@ -28,9 +28,9 @@ export const config: AgentConfig = {
   name: 'file-agent',
   systemPrompt: 'You summarize text files into other text files.',
   tools: [...handWrittenTools, ...composioTools],
-  // See agents/file-agent/actauth.yml for the actual rules — same
-  // decisions this array used to hold inline, now as data.
-  rules: 'agents/file-agent/actauth.yml',
+  // No rules here — it defaults to agents/file-agent/actauth.yml (see
+  // AgentConfig.rules's own doc comment), the same path this used to set
+  // explicitly.
   approver: {
     // ConsoleApprover would block this non-interactive demo on stdin — a
     // tiny auto-approving stand-in that still exercises the real 'ask' path.
@@ -40,14 +40,15 @@ export const config: AgentConfig = {
       return true
     },
   },
-  // Scoped to this agent's own skills/ subdirectory, not any shared root —
-  // SkillGarden's discovery recursively walks whatever root it's given
-  // with no per-agent filtering, so pointing at a shared root would mean
-  // this agent picks up (and exposes to the model as callable) any other
-  // agent's skills dropped in there too. Nesting depth becomes the
+  // No skillsDirs here — it defaults to agents/file-agent/skills (see
+  // AgentConfig.skillsDirs's own doc comment), the same path this used to
+  // set explicitly. Scoped to this agent's own folder, not any shared
+  // root: SkillGarden's discovery recursively walks whatever root it's
+  // given with no per-agent filtering, so pointing at a shared root would
+  // mean this agent picks up (and exposes to the model as callable) any
+  // other agent's skills dropped in there too. Nesting depth becomes the
   // namespace relative to *this* root, so summarize-files still gets the
   // plain name 'summarize-files' below, not 'file-agent:summarize-files'.
-  skillsDirs: ['agents/file-agent/skills'],
   isSafeTool: (call) =>
     call.name === 'read_file' ||
     call.name === 'list_dir' ||
@@ -100,12 +101,4 @@ export function createModelCall(): ModelCall {
     }
     return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done — wrote a one-paragraph summary to examples/file-agent/summary.txt.' }] }
   }
-}
-
-// Only run standalone when invoked directly (`tsx agents/file-agent/index.ts`),
-// not when imported by the agent registry.
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runAgent(config, createModelCall(), 'Summarize examples/file-agent/a.txt and examples/file-agent/b.txt into examples/file-agent/summary.txt.', [], {
-    onEvent: (event, detail) => console.log(`[${event}]`, detail),
-  }).then((result) => console.log('\n[final]', result.text))
 }

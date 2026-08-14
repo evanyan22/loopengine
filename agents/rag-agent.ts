@@ -7,7 +7,7 @@
 // know or care that "executing" this particular tool means a vector
 // search instead of a filesystem read or an MCP round-trip.
 import type { AgentConfig } from '../agent-config.js'
-import { runAgent, type ModelCall } from '../run-agent.js'
+import type { ModelCall } from '../run-agent.js'
 import { VectorIndex } from '../vector-index.js'
 
 // A tiny knowledge base — short excerpts from the sibling libraries'
@@ -99,10 +99,4 @@ export function createModelCall(): ModelCall {
       ],
     }
   }
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runAgent(config, createModelCall(), 'How does ActAuth record human approval decisions?', [], {
-    onEvent: (event, detail) => console.log(`[${event}]`, detail),
-  }).then((result) => console.log('\n[final]', result.text))
 }

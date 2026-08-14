@@ -1,7 +1,11 @@
-# See agent-config.ts's `rules` doc comment for how this file is loaded,
-# and examples/actauth.yml in the actauth package for the format itself.
-# Rules are matched most-specific-scope-first; if nothing matches,
-# default_decision applies.
+# See agent-config.ts's `rules` doc comment for how this file is loaded.
+# Same shape as examples/actauth.yml in the actauth package, except each
+# rule's `scope` here is only tenant/environment — no agent segment. This
+# file only ever governs customer-service (one actauth.yml per agent,
+# path derived from the agent's own name), so run-agent.ts appends
+# "/customer-service" to every scope below automatically; writing it out
+# in each rule would be pure repetition. Rules are matched
+# most-specific-scope-first; if nothing matches, default_decision applies.
 default_decision: deny
 
 rules:
@@ -9,17 +13,17 @@ rules:
   # everyone, everywhere — so both segments are wildcarded rather than
   # repeated per environment/tenant.
   - name: lookup-order-always-allowed
-    scope: "*/*/customer-service"
+    scope: "*/*"
     tool: lookup_order
     decision: allow
 
   - name: shipment-details-always-allowed
-    scope: "*/*/customer-service"
+    scope: "*/*"
     tool: get_shipment_details
     decision: allow
 
   - name: send-email-always-allowed
-    scope: "*/*/customer-service"
+    scope: "*/*"
     tool: send_email
     decision: allow
 
@@ -35,16 +39,16 @@ rules:
   #    specificity resolution (exact tenant beats the '*' fallback) is what
   #    actually picks the right one, not a code fork.
   - name: refund-staging-always-allowed
-    scope: "*/staging/customer-service"
+    scope: "*/staging"
     tool: issue_refund
     decision: allow
 
   - name: refund-acme-corp-production-allowed
-    scope: acme-corp/production/customer-service
+    scope: acme-corp/production
     tool: issue_refund
     decision: allow
 
   - name: refund-production-needs-approval
-    scope: "*/production/customer-service"
+    scope: "*/production"
     tool: issue_refund
     decision: ask

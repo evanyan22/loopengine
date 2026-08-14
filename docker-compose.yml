@@ -21,7 +21,8 @@ services:
       # deployment — staging is the correct default here, not an oversight.
       # A real production deployment (a separate target, per the README's
       # own "Deployment" section) would set LOOPENGINE_ENV: production, or
-      # omit it — production is agents/customer-service/index.ts's own default.
+      # omit it — production is run-agent.ts's own default, the same for
+      # every agent (see README's "Multi-tenancy" section).
       LOOPENGINE_ENV: staging
     depends_on:
       - redis

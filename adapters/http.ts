@@ -59,34 +59,23 @@ function sessionIdFor(config: AgentConfig, body: Record<string, unknown>): strin
   return defaultSessionIdFor(body) ?? randomUUID()
 }
 
-// Resolves any function-valued AgentConfig.scope fields (tenant,
-// environment, ...) against this request's headers/body, producing a
-// plain-string-only scope object safe to hand to runAgent — run-agent.ts
-// itself never sees a request, so any per-request resolution has to
-// happen here, before that point (see AgentConfig.scope's own doc
-// comment). A resolver returning undefined is a real auth failure, not
-// "use the default" — if "no header at all" should mean some specific
-// default rather than a rejection, the resolver itself must return that
-// value explicitly. A field that's already a plain string needs no
-// resolution at all — the common case (environment, usually) passes
-// through unchanged.
-function resolveScope(
-  scope: AgentConfig['scope'],
+// Resolves AgentConfig.tenantFor against this request's headers/body —
+// run-agent.ts itself never sees a request, so this per-request
+// resolution has to happen here, before that point (see
+// AgentConfig.tenantFor's own doc comment). Returning undefined is a real
+// auth failure, not "use 'default'" — if "no header at all" should mean
+// 'default' rather than a rejection, the resolver itself must return
+// 'default' explicitly. No tenantFor at all is not a failure, though —
+// it just means this agent doesn't need per-request tenants, so every
+// request is the 'default' tenant.
+function resolveTenant(
+  config: AgentConfig,
   headers: IncomingMessage['headers'],
   body: Record<string, unknown>,
-): { ok: true; value: NonNullable<AgentConfig['scope']> } | { ok: false } {
-  const resolved: Record<string, string> = {}
-  for (const [key, value] of Object.entries(scope ?? {})) {
-    if (value === undefined) continue
-    if (typeof value === 'function') {
-      const result = value(headers, body)
-      if (result === undefined) return { ok: false }
-      resolved[key] = result
-    } else {
-      resolved[key] = value
-    }
-  }
-  return { ok: true, value: resolved }
+): { ok: true; value: string } | { ok: false } {
+  if (!config.tenantFor) return { ok: true, value: 'default' }
+  const result = config.tenantFor(headers, body)
+  return result === undefined ? { ok: false } : { ok: true, value: result }
 }
 
 function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -106,10 +95,6 @@ function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
 
 interface ParsedRequest {
   entry: RegistryEntry
-  /** entry.config, but with scope resolved for this specific request —
-   * see resolveScope below. This, not entry.config, is what every
-   * runAgent call in this file must use. */
-  config: AgentConfig
   message: string
   /** Whatever the caller sent (or, for the default fallback, what got
    * generated) — echo this back in the response so a client that omitted
@@ -117,6 +102,9 @@ interface ParsedRequest {
   rawSessionId: string
   /** The actual SessionStore key — tenant-, environment-, and agent-namespaced, never what goes in a response. */
   storageSessionId: string
+  /** This request's resolved tenant — pass straight through as
+   * RunAgentOptions.tenant on every runAgent call in this file. */
+  tenant: string
 }
 
 type ParseResult = { ok: true; value: ParsedRequest } | { ok: false; status: number; error: string }
@@ -138,9 +126,9 @@ async function parseRequest(req: IncomingMessage, agentName: string): Promise<Pa
   // produces something, generating one rather than leaving this undefined.
   if (!rawSessionId) return { ok: false, status: 400, error: 'could not derive a session id from the request body' }
 
-  const scopeResolution = resolveScope(entry.config.scope, req.headers, body)
-  if (!scopeResolution.ok) return { ok: false, status: 401, error: 'could not verify tenant/environment for this request' }
-  const config: AgentConfig = { ...entry.config, scope: scopeResolution.value }
+  const tenantResolution = resolveTenant(entry.config, req.headers, body)
+  if (!tenantResolution.ok) return { ok: false, status: 401, error: 'could not verify tenant for this request' }
+  const tenant = tenantResolution.value
 
   // SessionStore itself is agent-agnostic — it has no idea which agent is
   // calling withSession, so two different agents given the same sessionId
@@ -156,14 +144,13 @@ async function parseRequest(req: IncomingMessage, agentName: string): Promise<Pa
   // different tenants (or environments) whose sessionIdFor happens to
   // produce the same raw id would otherwise collide on the exact same
   // underlying log, splicing one tenant's/environment's conversation into
-  // another's. Both read from `config` (post-resolution), not
-  // entry.config, so they reflect whatever this specific request's scope
-  // actually resolved to.
-  const tenant = config.scope?.tenant ?? 'default'
-  const environment = config.scope?.environment ?? 'production'
+  // another's. environment is a deployment-wide setting (LOOPENGINE_ENV),
+  // not resolved per-request the way tenant is — same reasoning
+  // run-agent.ts's own Scope construction uses.
+  const environment = process.env.LOOPENGINE_ENV ?? 'production'
   return {
     ok: true,
-    value: { entry, config, message, rawSessionId, storageSessionId: `${tenant}:${environment}:${agentName}:${rawSessionId}` },
+    value: { entry, message, rawSessionId, tenant, storageSessionId: `${tenant}:${environment}:${agentName}:${rawSessionId}` },
   }
 }
 
@@ -177,11 +164,11 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
     res.writeHead(parsed.status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsed.error }))
     return
   }
-  const { entry, config, message, rawSessionId, storageSessionId } = parsed.value
+  const { entry, message, rawSessionId, storageSessionId, tenant } = parsed.value
 
   const text = await sessions.withSession(storageSessionId, async (history) => {
     // Fresh modelCall per request — see agent-registry.ts.
-    const result = await runAgent(config, entry.createModelCall(), message, history)
+    const result = await runAgent(entry.config, entry.createModelCall(), message, history, { tenant })
     return { newMessages: result.newMessages, result: result.text }
   })
 
@@ -195,7 +182,7 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
     res.writeHead(parsed.status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsed.error }))
     return
   }
-  const { entry, config, message, rawSessionId, storageSessionId } = parsed.value
+  const { entry, message, rawSessionId, storageSessionId, tenant } = parsed.value
 
   res.writeHead(200, {
     'content-type': 'text/event-stream',
@@ -212,7 +199,8 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
       // onEvent already fires at every loop step (contextclip:check,
       // actauth:decision, toollane:result, ...) — streaming is just
       // forwarding those, not a separate code path through runAgent.
-      const result = await runAgent(config, entry.createModelCall(), message, history, {
+      const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
+        tenant,
         onEvent: (event, detail) => writeSseEvent(res, event, detail),
       })
       writeSseEvent(res, 'done', { text: result.text })

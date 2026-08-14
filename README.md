@@ -94,18 +94,21 @@ const result = await runAgent(config, myModelCall, "What's the weather in Boston
 console.log(result.text)
 ```
 
-The full exported surface: `runAgent`, `AgentConfig`/`ToolSchema`/`ToolDefinition`,
+The full exported surface: `runAgent`, `AgentConfig`/`AgentModelConfig`/
+`ToolSchema`/`ToolDefinition`,
 `FileSessionStore`/`RedisSessionStore`/`createSessionStore`, `VectorIndex`/
 `embed`/`cosineSimilarity` (for RAG — see below), `discoverAgents` (scans a
-directory for `config`/`createModelCall` modules — a flat `.ts`/`.js` file,
-or a subdirectory with an `index.ts`/`index.js`, the same "a directory can
-be a module" convention Node's own `require()` already uses, for an agent
-whose own implementation outgrows one file, like `agents/customer-service/`
-— and builds a name → entry map, keyed by `AgentConfig.name` — see
-`agent-registry.ts` for the ~15-line wrapper this repo's own adapters use),
-and `createAnthropicModelCall`/
+directory for modules exporting `config` — a flat `.ts`/`.js` file, or a
+subdirectory with an `index.ts`/`index.js`, the same "a directory can be a
+module" convention Node's own `require()` already uses, for an agent whose
+own implementation outgrows one file, like `agents/customer-service/` —
+plus either that module's own `createModelCall` or an `AgentConfig.model`
+to synthesize one from, and builds a name → entry map, keyed by
+`AgentConfig.name` — see `agent-registry.ts` for the ~15-line wrapper this
+repo's own adapters use), and `createAnthropicModelCall`/
 `createOpenAIModelCall`/`createDeepSeekModelCall` (real, ready-to-use
-`ModelCall`s). See `index.ts` for the exact list.
+`ModelCall`s — what `AgentConfig.model` builds under the hood). See
+`index.ts` for the exact list.
 
 **Not** part of the package: `agents/*.ts` (this repo's own demo agents),
 `agent-registry.ts` (this repo's own name → config lookup table, built on
@@ -119,9 +122,9 @@ build with the library, not as library API itself.
 
 ```bash
 npm install
-npx tsx agents/file-agent/index.ts        # run the file-summarizer demo agent
-npx tsx agents/customer-service/index.ts  # run the customer-service demo agent (needs DEEPSEEK_API_KEY)
-npx tsx agents/rag-agent.ts               # run the retrieval-augmented demo agent
+npx tsx adapters/cli.ts --agent file-agent "Summarize examples/file-agent/a.txt and examples/file-agent/b.txt into examples/file-agent/summary.txt."
+npx tsx adapters/cli.ts --agent customer-service "order A-1001 arrived broken and wants a refund"  # needs DEEPSEEK_API_KEY
+npx tsx adapters/cli.ts --agent rag-agent "How does ActAuth record human approval decisions?"
 ```
 
 `file-agent` and `rag-agent` still use a **simulated**, turn-counting model
@@ -132,9 +135,32 @@ call (no API key needed) — see "Wiring a real model" below.
 ## Defining your own agent
 
 An agent is an `AgentConfig` (`agent-config.ts`): a name, a system prompt, a
-list of tools, and ActAuth permission rules — inline, or as a path to an
-`actauth.yml` file (see `agents/customer-service/actauth.yml`) in the same
-shape as `examples/actauth.yml` in the actauth package itself.
+list of tools, and ActAuth permission rules — inline (full 3-segment
+`scopePattern`, e.g. `'default/production/my-agent'`), or as a path to an
+`actauth.yml` file (see `agents/customer-service/actauth.yml`). Close to
+the shape `examples/actauth.yml` in the actauth package itself uses, but
+each rule's `scope` there only needs *tenant/environment* — no agent
+segment. `run-agent.ts` appends `/<name>` to every rule loaded from a
+YAML file automatically, since a loopengine actauth.yml is always
+one-file-per-agent by convention (its own path is already
+`agents/<name>/actauth.yml`), so writing the agent's own name into every
+single rule would be pure repetition. Omit `rules`
+entirely and, just like `skillsDirs` below, it defaults to
+`agents/<name>/actauth.yml`. Unlike `skillsDirs`, a missing file there
+doesn't mean "no rules" — it falls back to an empty ruleset that denies
+every tool by default (stricter than the inline-array form's `'ask'`
+default, since no file at all means this agent's permission story was
+never written), so a brand-new agent with no `actauth.yml` yet refuses
+outright instead of crashing or silently allowing/asking. `defaultDecision`
+still overrides that fallback if you set it.
+
+`tools` follows the same shape: omit it entirely and it defaults to
+importing `agents/<name>/tools/index.{ts,js}` and using its exported
+`tools` (see `agents/customer-service/tools/index.ts`) — a missing file
+there is just `[]`, the same as an agent with no tools at all. An agent
+that needs to merge in tools from somewhere else too — `agents/file-agent/index.ts`'s
+Composio-sourced ones, fetched dynamically at runtime — can't rely on this
+default and sets `tools` explicitly instead.
 
 There are two ways to add one under `agents/`, and `agent-registry.ts`
 (built on `discoverAgents`) finds either automatically at startup — by
@@ -151,20 +177,21 @@ import to add, no adapter change, either way:
    `agents/file-agent/` are complete, working examples — see below for
    what else moves under the folder once you switch.
 
-Either way, the module must export **both** `config` and `createModelCall`
-— `discoverAgents` throws at startup on a module in `agents/` that exports
-only one (a real, load-bearing check: a module you forgot to finish wiring
-up, or an unrelated `.ts` file that doesn't belong in `agents/` at all,
-should fail loudly here rather than silently not showing up):
+Either way, the module must export `config`, plus either its own
+`createModelCall` or an `AgentConfig.model` for `discoverAgents` to
+synthesize one from — `discoverAgents` throws at startup on a module in
+`agents/` that exports neither (a real, load-bearing check: a module you
+forgot to finish wiring up, or an unrelated `.ts` file that doesn't
+belong in `agents/` at all, should fail loudly here rather than silently
+not showing up):
 
 ```ts
 import type { AgentConfig } from './agent-config.js'
-import type { ModelCall } from './run-agent.js'
-import { createAnthropicModelCall } from './model-calls/anthropic-model-call.js'
 
 export const config: AgentConfig = {
   name: 'my-agent',
   systemPrompt: 'You are ...',
+  model: { provider: 'anthropic', model: 'claude-sonnet-5' }, // reads ANTHROPIC_API_KEY from the env
   tools: [
     {
       name: 'do_thing',
@@ -181,14 +208,13 @@ export const config: AgentConfig = {
   ],
   defaultDecision: 'ask', // anything not covered by a rule requires approval
 }
-
-// A factory, not a shared instance — see "Wiring a real model" below for
-// why (a stateful/simulated ModelCall needs a fresh instance per
-// session; a real one like this can just return the same one every time).
-export function createModelCall(): ModelCall {
-  return createAnthropicModelCall({ model: 'claude-sonnet-5' }) // reads ANTHROPIC_API_KEY from the env
-}
 ```
+
+`AgentConfig.model` covers `anthropic`/`openai`/`deepseek` directly — no
+`createModelCall` to write at all. For anything it can't express (a
+canned/simulated `ModelCall` for a demo like `agents/rag-agent.ts`'s, a
+custom SDK client, a provider it doesn't list), export `createModelCall`
+yourself instead — see "Wiring a real model" below.
 
 `agents/file-agent/index.ts` and `agents/customer-service/index.ts` are two complete, working
 examples — same `runAgent` loop, entirely different personas and tools.
@@ -196,7 +222,7 @@ examples — same `runAgent` loop, entirely different personas and tools.
 
 ```
 agents/customer-service/
-  index.ts                          AgentConfig assembly + scope resolution (tenantFor, sessionIdFor)
+  index.ts                          AgentConfig assembly + tenant/session resolution (tenantFor, sessionIdFor)
   actauth.yml                       ActAuth rules — which tool needs which scope/decision
   tools/
     index.ts                        Aggregates the tools below into AgentConfig.tools
@@ -325,9 +351,9 @@ curl -X POST localhost:8787/agents/file-agent/messages \
 anonymous session," since `customerEmail` is a real, meaningful identity
 for that agent, not an arbitrary key.
 
-`customer-service` also sets `AgentConfig.scope.tenant` to a function
-(`tenantFor` — see "Multi-tenancy" below), resolving tenant
-from an `x-api-key` header. The request above with no header behaves
+`customer-service` also sets `AgentConfig.tenantFor` (see "Multi-tenancy"
+below), resolving tenant from an `x-api-key` header. The request above
+with no header behaves
 exactly as before — `issue_refund` still asks for approval. Add a
 trusted key and it doesn't:
 
@@ -422,40 +448,40 @@ under two different tenants lands in two separate session files, not one.
 
 ## Multi-tenancy
 
-`AgentConfig.scope` (`{ tenant, environment }`) is what feeds ActAuth's
-permission rules — a support agent might allow more for a trusted
-tenant, or relax approval requirements outside production. Each field is
-either:
+ActAuth's permission rules are scoped by `tenant`/`environment`/`agent` —
+a support agent might allow more for a trusted tenant, or relax approval
+requirements outside production. `agent` is always `AgentConfig.name`;
+the other two work differently, because only one of them varies per request:
 
-- a **plain string**, fixed for the whole deployment (environment
-  usually is), or
-- a **function** `(headers, body) => string | undefined`, resolved fresh
-  per request (tenant often needs to be, since who's calling varies
-  request to request).
+- **`environment`** is a deployment-wide setting, not a per-agent or
+  per-request one — always `process.env.LOOPENGINE_ENV` (default
+  `'production'`), the same for every agent this process runs. There's no
+  `AgentConfig` field for it at all.
+- **`tenant`** varies by *who's calling*, so it's resolved per request
+  via `AgentConfig.tenantFor?: (headers, body) => string | undefined`.
+  Only `headers`, never `body` — tenant feeds permission decisions
+  directly, so it has to come from something verified (an
+  `Authorization`/API-key header checked against your own mapping), never
+  a client-asserted body field anyone could fake to claim another
+  tenant's permissions. Omit `tenantFor` entirely and every request is
+  the `'default'` tenant.
 
-Function-valued fields only ever see `headers`, never just `body` — scope
-feeds permission decisions directly, so it has to come from something
-verified (an `Authorization`/API-key header checked against your own
-mapping), never a client-asserted body field anyone could fake to claim
-another tenant's permissions. Only `adapters/http.ts` actually calls these
-functions, via `resolveScope`. Two rules govern the result:
+Only `adapters/http.ts` actually calls `tenantFor`, via `resolveTenant`.
+Two rules govern the result:
 
 - Returning `undefined` is a real auth failure (`401`) — not "fall back
-  to a default." If no header at all should mean some specific tenant
-  rather than a rejection, the resolver must return that value itself.
-- Omitting a field (or `scope` entirely) changes nothing: `run-agent.ts`'s
-  own hardcoded `default`/`production` applies, same as before `scope`
-  existed.
+  to `'default'`." If no header at all should mean `'default'` rather
+  than a rejection, the resolver must return `'default'` itself.
+- No `tenantFor` at all isn't a failure — it just means this agent has no
+  per-request tenants, so every request resolves to `'default'`.
 
-`run-agent.ts` never sees a request, so it can't call a function-valued
-field either — the standalone/CLI paths that pass `config` to `runAgent`
-directly (skipping `adapters/http.ts`'s resolution) just treat an
-unresolved function as unset and fall back to the same default. Verified
-live end to end: a header-derived tenant resolves to different ActAuth
-rules per tenant (a specific tenant's rule overrides a wildcard
-fallback), an unverifiable request is rejected outright, and the
-standalone path correctly falls back to `default` rather than leaking a
-function reference into the scope.
+`run-agent.ts` never sees a request, so it can't call `tenantFor` either
+— the standalone/CLI paths that pass `config` to `runAgent` directly
+(skipping `adapters/http.ts`'s resolution) always get `'default'`, the
+same as `RunAgentOptions.tenant` being omitted. Verified live end to end:
+a header-derived tenant resolves to different ActAuth rules per tenant (a
+specific tenant's rule overrides a wildcard fallback), and an omitted
+`tenant` option resolves the same as an explicit `'default'`.
 
 ## Deployment
 
@@ -474,34 +500,50 @@ and any tool-specific secrets set as environment variables.
 `agents/file-agent/index.ts` and `agents/rag-agent.ts` still use a canned,
 turn-counting `ModelCall` so the whole loop runs with no API key.
 `agents/customer-service/index.ts` is already wired to a real one — a
-working example of the swap, not just a snippet. To go live on the
-others, swap `createModelCall` for one of the real `ModelCall`s this repo
-ships — same shape, one call:
+working example, not just a snippet.
+
+**The easy way** — declare `AgentConfig.model` and skip `createModelCall`
+entirely; `discoverAgents` builds it for you:
+
+```ts
+export const config: AgentConfig = {
+  name: 'my-agent',
+  // ...
+  model: { provider: 'anthropic', model: 'claude-sonnet-5' }, // reads ANTHROPIC_API_KEY
+}
+```
+
+| `provider` | env var read | `model` required? | example |
+| --- | --- | --- | --- |
+| `'anthropic'` | `ANTHROPIC_API_KEY` | no — defaults to `claude-sonnet-5` | `{ provider: 'anthropic' }` |
+| `'openai'` | `OPENAI_API_KEY` | yes — no safe hardcoded default | `{ provider: 'openai', model: 'gpt-4.1' }` |
+| `'deepseek'` | `DEEPSEEK_API_KEY` | yes — no safe hardcoded default | `{ provider: 'deepseek', model: 'deepseek-chat' }` |
+
+`agents/customer-service/index.ts` uses exactly this —
+`model: { provider: 'deepseek', model: 'deepseek-v4-pro' }`, nothing
+else. Built lazily, on first actual call, and memoized after that, not at
+module load: `discoverAgents()` imports every agent at startup, so
+building the real client eagerly would crash the whole server without
+`DEEPSEEK_API_KEY`, even just to run `file-agent`.
+
+**The manual way** — for anything the table above can't express (a
+canned/simulated `ModelCall` like `file-agent`/`rag-agent`'s own, a
+custom SDK client, a provider not listed), export `createModelCall`
+yourself and call the same factories `AgentConfig.model` uses under the
+hood:
 
 ```ts
 import { createAnthropicModelCall } from './model-calls/anthropic-model-call.js'
 // createOpenAIModelCall / createDeepSeekModelCall work the same way
 
-const modelCall = createAnthropicModelCall({ model: 'claude-sonnet-5' }) // reads ANTHROPIC_API_KEY
-const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', [])
+export function createModelCall(): ModelCall {
+  return createAnthropicModelCall({ model: 'claude-sonnet-5' })
+}
 ```
 
-| factory | env var read | example model |
-| --- | --- | --- |
-| `createAnthropicModelCall` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` |
-| `createOpenAIModelCall` | `OPENAI_API_KEY` | `gpt-4.1` |
-| `createDeepSeekModelCall` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
-
-`model` is always required — no hardcoded default, since a flagship
-model name changes too often to bake one in safely. Nothing else in
-`run-agent.ts`, the adapters, or any `AgentConfig` needs to change —
-`ModelCall` is the only seam a real API call needs.
-
-`agents/customer-service/index.ts`'s `createModelCall` builds its
-`createDeepSeekModelCall` instance lazily, on first call, and memoizes it,
-rather than at module load — `discoverAgents()` imports every agent at
-startup, so building it eagerly would crash the whole server without
-`DEEPSEEK_API_KEY`, even just to run `file-agent`.
+Either way, nothing else in `run-agent.ts`, the adapters, or any
+`AgentConfig` needs to change — `ModelCall` is the only seam a real API
+call needs.
 
 All three factories translate loopengine's `Message`/`ModelResponse` to
 and from their provider's real request/response shape (verified against
@@ -517,13 +559,20 @@ production coding agents use: a short frontmatter index (`name`,
 `description`) stays in context at all times, and the full body is loaded
 only when the model actually invokes that skill — through a real `Skill`
 tool schema (`{skill: string, args?: string}`) declared to the model
-whenever `skillsDirs` is set, not just handled after the fact. Set
-`skillsDirs` (an array of directory paths) on an `AgentConfig` to enable
-it; omit it for agents that don't need skills (`agents/rag-agent.ts`
-doesn't). `SkillGarden` discovery recursively walks every directory it's
-given with **no per-agent filtering** — whatever `SKILL.md` files live
-under a `skillsDirs` path, the agent sees all of them, which is the whole
-reason the two kinds below live in different places.
+whenever any skills are actually found, not just handled after the fact.
+
+`AgentConfig.skillsDirs` (an array of directory paths) controls where
+from. Omit it entirely and it defaults to `agents/<name>/skills` — the
+folder-form convention every agent in this repo already follows — which
+is harmless even for an agent with no skills at all
+(`agents/rag-agent.ts`, a flat file with no such folder): a missing
+directory just means an empty index, not an error, so no `Skill` tool
+gets declared. Pass `[]` explicitly to opt out of that default instead of
+omitting the field. `SkillGarden` discovery recursively walks every
+directory it's given with **no per-agent filtering** — whatever
+`SKILL.md` files live under a `skillsDirs` path, the agent sees all of
+them, which is the whole reason the two kinds below live in different
+places.
 
 **Agent-specific** — a skill only one agent needs, under that agent's own
 folder, pointed at by only that agent's `skillsDirs`:

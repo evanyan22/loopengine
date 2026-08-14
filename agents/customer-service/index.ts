@@ -6,14 +6,11 @@
 // file per tool — split out since that's where real bulk accumulates as
 // more tools get added), skills/, and actauth.yml (the permission story —
 // which tool, which rule, which scope pattern governs it) alongside it.
-// Scope resolution and the AgentConfig assembly stay here, in index.ts,
+// Tenant resolution and the AgentConfig assembly stay here, in index.ts,
 // since they're tied to this agent's own request-handling code
 // (tenantFor, sessionIdFor) in a way the rules themselves aren't.
 import { createHash } from 'node:crypto'
 import type { AgentConfig } from '../../agent-config.js'
-import { createDeepSeekModelCall } from '../../model-calls/deepseek-model-call.js'
-import { runAgent, type ModelCall } from '../../run-agent.js'
-import { tools } from './tools/index.js'
 
 // This agent's own session-key derivation — a customer's identity (their
 // email) is what "one conversation" means here, so that mapping lives on
@@ -45,19 +42,24 @@ const API_KEY_TENANTS: Record<string, string> = {
   'acme-trusted-key': 'acme-corp',
 }
 
-// Resolves tenant from a header, never the body — see AgentConfig.scope's
-// own doc comment for why that distinction matters (scope feeds ActAuth's
-// permission decisions directly, so it has to come from something
-// verified). No x-api-key at all resolves to the plain 'default' tenant
-// explicitly — a real resolution, not a rejection — so every existing
-// curl example that never set one still works exactly as before this
-// existed. Only a *present but wrong* key is treated as a real auth
-// failure (401): rules below give 'acme-corp' more autonomy than
-// 'default' gets, so silently falling back to 'default' on a bad key
-// would be safe, not dangerous — but a caller presenting a key at all is
-// asserting an identity, and getting that silently ignored instead of
-// rejected is exactly the kind of thing that's confusing to debug, so
-// it's rejected outright instead.
+// Resolves tenant from a header, never the body — see
+// AgentConfig.tenantFor's own doc comment for why that distinction
+// matters (tenant feeds ActAuth's permission decisions directly, so it
+// has to come from something verified). No x-api-key at all resolves to
+// the plain 'default' tenant explicitly — a real resolution, not a
+// rejection — so every existing curl example that never set one still
+// works exactly as before this existed. Only a *present but wrong* key is
+// treated as a real auth failure (401): rules below give 'acme-corp' more
+// autonomy than 'default' gets, so silently falling back to 'default' on
+// a bad key would be safe, not dangerous — but a caller presenting a key
+// at all is asserting an identity, and getting that silently ignored
+// instead of rejected is exactly the kind of thing that's confusing to
+// debug, so it's rejected outright instead.
+//
+// Environment isn't handled here at all — it's not an AgentConfig
+// concern anymore (see AgentConfig.tenantFor's own doc comment): every
+// agent's environment is just process.env.LOOPENGINE_ENV, resolved once
+// by run-agent.ts/adapters/http.ts themselves.
 function tenantFor(headers: Record<string, string | string[] | undefined>): string | undefined {
   const apiKey = headers['x-api-key']
   if (apiKey === undefined) return 'default'
@@ -65,30 +67,23 @@ function tenantFor(headers: Record<string, string | string[] | undefined>): stri
   return API_KEY_TENANTS[apiKey] // undefined for an unrecognized key -> reject
 }
 
-// Deployment-time constant, deliberately not read from anything in an
-// incoming request — a client asserting "treat me as staging" would be a
-// straightforward way to get production's stricter rules bypassed. Set
-// this per deployment (e.g. in the staging environment's own env vars),
-// never derived from caller-supplied data. Matches run-agent.ts's own
-// default ('production') when unset, so not setting this changes nothing.
-const ENVIRONMENT = process.env.LOOPENGINE_ENV ?? 'production'
-
 export const config: AgentConfig = {
   name: 'customer-service',
   systemPrompt: 'You are a support agent for Acme. Be concise and empathetic. Never promise a refund before issue_refund succeeds.',
-  // environment is a plain string (fixed for this deployment — see
-  // ENVIRONMENT above); tenant is a function instead, resolved per
-  // request by tenantFor above, since who's calling can vary request to
-  // request in a way environment never does. Only adapters/http.ts can
-  // actually call tenantFor (see AgentConfig.scope's own doc comment) —
-  // the standalone run below never does, so it always sees 'default'.
-  scope: { tenant: tenantFor, environment: ENVIRONMENT },
-  tools,
-  // The permission story (which tool, which rule, which scope resolution
-  // governs it) lives as data now, not a TypeScript array literal — see
-  // agents/customer-service/actauth.yml, which has the exact same rules
-  // (and the reasoning behind each one) this array used to hold inline.
-  rules: 'agents/customer-service/actauth.yml',
+  // No createModelCall exported at all — discoverAgents synthesizes one
+  // from this, lazily and memoized (see AgentModelConfig's own doc
+  // comment), the same real DeepSeek call this agent used to build by
+  // hand. Not the SIMULATED turn-counting one every other demo agent
+  // still uses — see README's "Wiring a real model" section.
+  model: { provider: 'deepseek', model: 'deepseek-v4-pro' },
+  // No tools here — it defaults to importing
+  // agents/customer-service/tools/index.js (see AgentConfig.tools's own
+  // doc comment), the same tools this used to import and assign directly.
+  // No rules here — it defaults to agents/customer-service/actauth.yml
+  // (see AgentConfig.rules's own doc comment), the same path this used
+  // to set explicitly. The permission story (which tool, which rule,
+  // which scope resolution governs it) lives as data there, not a
+  // TypeScript array literal.
   approver: {
     async requestApproval(tool, args, _scope, reason) {
       console.log(`  [actauth] approval requested for ${tool}(${JSON.stringify(args)}) — ${reason}`)
@@ -96,43 +91,21 @@ export const config: AgentConfig = {
       return true
     },
   },
-  // Both read-only lookups run together in ToolLane's parallel lane —
-  // issue_refund and send_email have side effects, so each still gets
-  // its own solo lane.
-  isSafeTool: (call) => call.name === 'lookup_order' || call.name === 'get_shipment_details',
+  // No isSafeTool here — lookup_order and get_shipment_details each mark
+  // themselves `safe: true` on their own ToolDefinition (see
+  // tools/lookup_order.ts), so ToolLane runs them together in a parallel
+  // lane by default. issue_refund and send_email don't set it, so each
+  // still gets its own solo lane.
   sessionIdFor,
-  // Scoped to this agent's own skills/ subdirectory, not any shared root —
-  // see file-agent.ts's skillsDirs comment for why (discovery has no
-  // per-agent filtering, so pointing at a shared root would leak skills
-  // across agents). skillsDirs is a plain path resolved against the
-  // process's cwd, not this file's own location, so it's the full
-  // project-relative path even though this file lives right next to it.
-  skillsDirs: ['agents/customer-service/skills'],
-}
-
-// Real DeepSeek model call, not the SIMULATED turn-counting one every
-// other demo agent still uses — see README's "Wiring a real model"
-// section for the general pattern this follows.
-//
-// Built lazily inside createModelCall(), memoized after that, rather than
-// once at module-eval time the way file-agent.ts's connectComposioSource
-// call is: agent-registry.ts's discoverAgents() imports every agent
-// module at startup, for every agent, not just this one — constructing
-// this eagerly would mean the whole server fails to start whenever
-// DEEPSEEK_API_KEY isn't set, even to run file-agent alone. Memoizing
-// after first use (rather than rebuilding per call) is safe because the
-// returned ModelCall is a pure function of the messages you pass it, so
-// it's reusable across every session/request — unlike the stateful
-// simulated one this replaces, which counted its own calls and needed a
-// fresh instance per session.
-let modelCall: ModelCall | undefined
-export function createModelCall(): ModelCall {
-  modelCall ??= createDeepSeekModelCall({ model: 'deepseek-v4-pro' })
-  return modelCall
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runAgent(config, createModelCall(), 'Customer says order A-1001 arrived broken and wants a refund.', [], {
-    onEvent: (event, detail) => console.log(`[${event}]`, detail),
-  }).then((result) => console.log('\n[final]', result.text))
+  // Resolved per request by tenantFor above, since who's calling can vary
+  // request to request. Only adapters/http.ts can actually call this (see
+  // AgentConfig.tenantFor's own doc comment) — running this agent through
+  // adapters/cli.ts, or any other caller with no request to resolve it
+  // from, always sees 'default' instead.
+  tenantFor,
+  // No skillsDirs here — it defaults to agents/customer-service/skills
+  // (see AgentConfig.skillsDirs's own doc comment), the same path this
+  // used to set explicitly. Scoped to this agent's own folder, not any
+  // shared root: SkillGarden's discovery has no per-agent filtering, so
+  // pointing at a shared root would leak skills across agents.
 }

@@ -1,6 +1,6 @@
 {
   "name": "loopengine",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "type": "module",
   "description": "Runtime for tool-using AI agents with a transparent ReAct loop.",
   "license": "MIT",
@@ -48,7 +48,8 @@
     "reflowkit": "^0.0.1",
     "sessionknit": "^0.0.2",
     "skillgarden": "^0.0.5",
-    "toollane": "^0.0.1"
+    "toollane": "^0.0.1",
+    "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

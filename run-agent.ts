@@ -3,12 +3,29 @@
 // differ. runAgent itself does no I/O and holds no state between calls:
 // callers own conversation history, which is what lets the same function
 // serve a one-shot CLI invocation and a long-lived chat session.
-import { Gate, RuleSet, ConsoleApprover, type Scope } from 'actauth'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { parse as parseYaml } from 'yaml'
+import { Gate, RuleSet, ConsoleApprover, type Scope, type Decision, type Condition } from 'actauth'
 import { SkillGarden } from 'skillgarden'
 import { ContextClipper, type Message as ContextClipMessage } from 'contextclip'
-import { ToolLane, type ToolCall as LaneCall } from 'toollane'
+import { ToolLane, type ToolCall as LaneCall, type SafetyClassifier } from 'toollane'
 import { Reflow } from 'reflowkit'
-import type { AgentConfig, ToolSchema } from './agent-config.js'
+import type { AgentConfig, ToolDefinition, ToolSchema } from './agent-config.js'
+
+// Resolved relative to *this file's own location* (via import.meta.url),
+// not process.cwd() — the same reasoning agent-registry.ts's own
+// agentsDir uses. In dev (tsx), this file and agents/ are both source
+// .ts, side by side. In the built dist/, this file is dist/run-agent.js
+// and its sibling agents/ is dist/agents/**/*.js (tsc-compiled) — cwd is
+// irrelevant to either case, only "next to this module" is reliably
+// right in both. skillsDirs/rules don't need this: actauth.yml/SKILL.md
+// are plain data copied verbatim into the image (see Dockerfile), so
+// they exist at the same cwd-relative path either way; a tools/index.ts
+// is real code that only exists compiled, at a different relative
+// location, once dist/ is what's actually running.
+const agentsRootDir = join(dirname(fileURLToPath(import.meta.url)), 'agents')
 
 export interface ModelContentBlock {
   type: string
@@ -53,6 +70,13 @@ export type ModelCall = (messages: Message[], system: string, tools: ToolSchema[
 export interface RunAgentOptions {
   /** Emitted at each loop step for callers that want visibility (logging, UI, tests). Default: no-op. */
   onEvent?: (event: string, detail: unknown) => void
+  /** The ActAuth tenant this call runs as — feeds the Gate's scope, so it
+   * governs which rules apply. runAgent() never sees a request, so it
+   * can't call AgentConfig.tenantFor itself; adapters/http.ts resolves it
+   * per request and passes the result here. Default `'default'`, same as
+   * omitting it — every standalone/CLI caller (which never has a request
+   * to resolve tenantFor from) gets that default automatically. */
+  tenant?: string
 }
 
 export interface RunAgentResult {
@@ -95,6 +119,96 @@ function flattenForContextClip(message: Message): ContextClipMessage {
   return { role: message.role, content: text }
 }
 
+interface RawYamlRule {
+  name?: string
+  scope: string
+  tool: string
+  decision: Decision
+  when?: Condition
+}
+
+/** Parses a loopengine actauth.yml — same shape as examples/actauth.yml
+ * in the actauth package, except each rule's `scope` only needs
+ * tenant/environment (a wildcard/wildcard, wildcard/staging, or
+ * acme-corp/production pair, say) — the agent segment is appended
+ * automatically from AgentConfig.name, then handed to actauth's own
+ * RuleSet.fromRaw (not fromYamlFile, which
+ * expects the full 3-segment scope already baked into the file). A
+ * per-agent actauth.yml (this repo's own convention: one file, one
+ * agent, path derived from the agent's own name — see
+ * agents/customer-service/actauth.yml) can only ever describe rules for
+ * that one agent anyway, so repeating its name in every single rule is
+ * exactly the kind of boilerplate skillsDirs/rules/tools' own defaults
+ * already avoid elsewhere in this file. */
+function loadYamlRules(path: string, agentName: string): RuleSet {
+  const raw = (parseYaml(readFileSync(path, 'utf8')) ?? {}) as { default_decision?: Decision; rules?: RawYamlRule[] }
+  // A rule already ending in /<agentName> — the old, full 3-segment habit,
+  // or examples/actauth.yml copied verbatim — is left alone rather than
+  // getting a second, invalid segment appended; only the new 2-segment
+  // (tenant/environment) form actually needs the suffix.
+  const rules = (raw.rules ?? []).map((r) => ({
+    ...r,
+    scope: r.scope.endsWith(`/${agentName}`) ? r.scope : `${r.scope}/${agentName}`,
+  }))
+  return RuleSet.fromRaw({ default_decision: raw.default_decision, rules })
+}
+
+/** Resolves AgentConfig.rules the same way skillsDirs resolves its own
+ * default: an inline array is used as-is (full 3-segment scopePattern,
+ * unchanged — see loadYamlRules for why only the YAML form gets the
+ * agent segment auto-appended); omitted entirely defaults to
+ * `agents/<name>/actauth.yml`, this repo's own folder-form convention.
+ * Unlike skillsDirs, a missing *default* file falls back to an empty
+ * ruleset rather than propagating the raw ENOENT — permissions failing
+ * shouldn't crash the whole call. That fallback defaults to `'deny'`, not
+ * the inline-array form's `'ask'`: no `actauth.yml` at all means this
+ * agent's permission story was never actually written, which is a
+ * stricter unknown than "written, but this one tool has no rule" — 'ask'
+ * still runs an Approver that could auto-approve, while 'deny' refuses
+ * outright until real rules exist. `defaultDecision`, if set, still wins
+ * over that. An *explicitly* given path that doesn't exist is a real
+ * configuration bug, though, and still throws — only the silent, implicit
+ * default gets this forgiveness. */
+function loadRules(config: AgentConfig): RuleSet {
+  if (Array.isArray(config.rules)) return new RuleSet(config.rules, config.defaultDecision ?? 'ask')
+
+  const usingDefaultPath = config.rules === undefined
+  const path = config.rules ?? `agents/${config.name}/actauth.yml`
+  try {
+    return loadYamlRules(path, config.name)
+  } catch (err) {
+    if (usingDefaultPath && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return new RuleSet([], config.defaultDecision ?? 'deny')
+    }
+    throw err
+  }
+}
+
+/** Resolves AgentConfig.tools the same way loadRules resolves its own
+ * default: an explicit array (including `[]`) is used as-is; omitted
+ * entirely defaults to importing `agents/<name>/tools/index.{ts,js}`
+ * (this repo's own aggregation-file convention — see
+ * `agents/customer-service/tools/index.ts`) and using its exported
+ * `tools`. A missing file there is not an error — a flat-file agent with
+ * no tools folder at all (or one merging in dynamically-loaded tools, like
+ * `agents/file-agent/index.ts`'s Composio ones, so it can't just rely on
+ * this default) just gets `[]`, same as if it had explicitly set that. A
+ * module that *does* exist but throws while importing, or doesn't export
+ * `tools` at all, is a real bug and is not swallowed. */
+async function loadDefaultTools(config: AgentConfig): Promise<ToolDefinition[]> {
+  const toolsDir = join(agentsRootDir, config.name, 'tools')
+  for (const indexName of ['index.ts', 'index.js']) {
+    const indexPath = join(toolsDir, indexName)
+    if (!existsSync(indexPath)) continue
+    const mod = (await import(pathToFileURL(indexPath).href)) as { tools?: ToolDefinition[] }
+    if (!Array.isArray(mod.tools)) {
+      throw new Error(`${indexPath} does not export a 'tools' array — every agents/<name>/tools/index file must.`)
+    }
+    return mod.tools
+  }
+  return []
+}
+
 export async function runAgent(
   config: AgentConfig,
   modelCall: ModelCall,
@@ -103,35 +217,46 @@ export async function runAgent(
   options: RunAgentOptions = {},
 ): Promise<RunAgentResult> {
   const log = options.onEvent ?? (() => {})
-  // config.scope fields can be functions (see AgentConfig.scope) that
-  // only adapters/http.ts is positioned to call — it alone has a
-  // request's headers/body to resolve them with. This function never
-  // does; a config reaching here with an unresolved function value means
-  // either it came through an adapter that doesn't do that resolution
-  // (adapters/cli.ts, or a standalone `if (import.meta.url === ...)`
-  // block calling runAgent directly, as every demo agent's own does) or
-  // resolution was skipped. Spreading a function into what ActAuth
-  // expects to be a plain string would silently produce a garbage scope
-  // key no rule could ever match — filtered out here instead, falling
-  // back to the hardcoded default below, the same safe-by-default
-  // treatment an entirely absent field already gets.
-  const staticScope = Object.fromEntries(
-    Object.entries(config.scope ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
-  )
-  const scope: Scope = { tenant: 'default', environment: 'production', ...staticScope, agent: config.name }
+  // tenant: resolved by the caller (adapters/http.ts calls
+  // AgentConfig.tenantFor with the request's headers/body; every other
+  // caller — adapters/cli.ts, a standalone script — has no request to
+  // resolve it from, so it never passes this option and gets 'default').
+  // environment: a deployment-wide setting,
+  // not a per-agent or per-request one — always LOOPENGINE_ENV, same
+  // everywhere this process runs, never something an AgentConfig defines.
+  const scope: Scope = { tenant: options.tenant ?? 'default', environment: process.env.LOOPENGINE_ENV ?? 'production', agent: config.name }
 
-  const skillGarden = config.skillsDirs?.length
-    ? new SkillGarden({ dirs: config.skillsDirs, indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 })
-    : null
+  // Optional on AgentConfig — an agent can have zero tools. Explicit
+  // (including `[]`) is used as-is; omitted entirely defaults to
+  // importing agents/<name>/tools/index.{ts,js} — see loadDefaultTools's
+  // own doc comment for the full reasoning and the cases that can't use it.
+  const tools = config.tools ?? (await loadDefaultTools(config))
+
+  // Omitted entirely (undefined): default to this agent's own
+  // agents/<name>/skills — the folder-form convention every agent in
+  // this repo already follows (see agent-config.ts's skillsDirs doc
+  // comment). An explicit `[]` is a real opt-out, not "unset," and skips
+  // the default — SkillGarden's own missing-directory handling
+  // (discoverSkillFiles walks best-effort, no throw) is what makes
+  // pointing this at a folder that doesn't exist (a flat-file agent with
+  // no skills at all) harmless: an empty index, not an error.
+  const skillsDirs = config.skillsDirs ?? [`agents/${config.name}/skills`]
+  const skillGarden = skillsDirs.length ? new SkillGarden({ dirs: skillsDirs, indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 }) : null
   const skillIndex = skillGarden?.buildIndex().included ?? []
 
   // Also the tail-preservation window recover() below relies on — kept as
   // one named constant so the two can never drift out of sync.
   const tailMessages = 4
   const contextClip = new ContextClipper({ budgetTokens: config.contextBudgetTokens ?? 8000, tailMessages })
-  const rules = typeof config.rules === 'string' ? RuleSet.fromYamlFile(config.rules) : new RuleSet(config.rules, config.defaultDecision ?? 'ask')
+  const rules = loadRules(config)
   const gate = new Gate(rules, config.approver ?? new ConsoleApprover())
-  const toolLane = new ToolLane({ isSafe: config.isSafeTool ?? (() => false) })
+  // No explicit isSafeTool: fall back to each called tool's own `safe`
+  // flag (looked up by name) rather than defaulting every tool to unsafe
+  // outright — see ToolDefinition.safe's own doc comment for why this is
+  // the less powerful of the two (name-only, no per-call nuance).
+  const isSafeTool: SafetyClassifier =
+    config.isSafeTool ?? ((call) => tools.some((t) => t.name === call.name && t.safe === true))
+  const toolLane = new ToolLane({ isSafe: isSafeTool })
 
   let messages: Message[] = [...history, { role: 'user', content: userMessage }]
 
@@ -189,8 +314,6 @@ export async function runAgent(
     },
   })
 
-  // Optional on AgentConfig — an agent can have zero tools.
-  const tools = config.tools ?? []
   const toolsByName = new Map(tools.map((t) => [t.name, t]))
   const toolSchemas: ToolSchema[] = tools.map(({ name, description, input_schema }) => ({
     name,

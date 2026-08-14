@@ -1,20 +1,24 @@
-# See agent-config.ts's `rules` doc comment for how this file is loaded,
-# and examples/actauth.yml in the actauth package for the format itself.
+# See agent-config.ts's `rules` doc comment for how this file is loaded.
+# Same shape as examples/actauth.yml in the actauth package, except each
+# rule's `scope` here is only tenant/environment — no agent segment. This
+# file only ever governs file-agent (one actauth.yml per agent, path
+# derived from the agent's own name), so run-agent.ts appends
+# "/file-agent" to every scope below automatically.
 default_decision: ask
 
 rules:
   - name: read-file-allowed
-    scope: default/production/file-agent
+    scope: default/production
     tool: read_file
     decision: allow
 
   - name: list-dir-allowed
-    scope: default/production/file-agent
+    scope: default/production
     tool: list_dir
     decision: allow
 
   - name: write-file-needs-approval
-    scope: default/production/file-agent
+    scope: default/production
     tool: write_file
     decision: ask
 
@@ -22,6 +26,6 @@ rules:
   # read_file/list_dir rather than ask'd like write_file, on the same
   # reasoning: nothing this call does needs a human in the loop.
   - name: github-list-repos-allowed
-    scope: default/production/file-agent
+    scope: default/production
     tool: composio_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER
     decision: allow

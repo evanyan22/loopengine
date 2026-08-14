@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { runAgent, type Message, type ModelCall, type ModelResponse } from '../run-agent.js'
 import type { AgentConfig, ToolDefinition } from '../agent-config.js'
@@ -113,6 +116,72 @@ describe('runAgent', () => {
     expect(results.find((r) => r.tool_use_id === 't2')?.content).toBe('"echo:second"')
   })
 
+  it('derives isSafeTool from each tool\'s own `safe` flag when AgentConfig.isSafeTool is not set', async () => {
+    let call = 0
+    const modelCall: ModelCall = vi.fn(async () => {
+      call++
+      if (call === 1) {
+        return toolUseResponse(
+          { id: 't1', name: 'echo', input: { msg: 'first' } },
+          { id: 't2', name: 'echo', input: { msg: 'second' } },
+        )
+      }
+      return textResponse('done')
+    })
+
+    const echo: ToolDefinition = {
+      name: 'echo',
+      description: 'Echoes input',
+      input_schema: { type: 'object', properties: { msg: { type: 'string' } } },
+      execute: async (input) => `echo:${input.msg}`,
+      safe: true,
+    }
+
+    const config = baseConfig({
+      tools: [echo],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'echo', decision: 'allow' }],
+      // No isSafeTool — falls back to echo's own `safe: true`.
+    })
+
+    const result = await runAgent(config, modelCall, 'say hi twice')
+
+    const results = toolResults(result.history)
+    expect(results).toHaveLength(2)
+    expect(results.find((r) => r.tool_use_id === 't1')?.content).toBe('"echo:first"')
+    expect(results.find((r) => r.tool_use_id === 't2')?.content).toBe('"echo:second"')
+  })
+
+  it('AgentConfig.isSafeTool takes precedence over a tool\'s own `safe` flag when both are set', async () => {
+    let call = 0
+    const modelCall: ModelCall = vi.fn(async () => {
+      call++
+      if (call === 1) return toolUseResponse({ id: 't1', name: 'echo', input: {} })
+      return textResponse('done')
+    })
+
+    const echo: ToolDefinition = {
+      name: 'echo',
+      description: 'Echoes input',
+      input_schema: { type: 'object', properties: {} },
+      execute: async () => 'echoed',
+      safe: true,
+    }
+
+    const isSafeTool = vi.fn(() => false)
+    const config = baseConfig({
+      tools: [echo],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'echo', decision: 'allow' }],
+      isSafeTool,
+    })
+
+    await runAgent(config, modelCall, 'say hi')
+
+    // Called with the actual call, not skipped in favor of echo.safe — proof
+    // the explicit classifier is what ToolLane actually runs, not a
+    // wrapper that consults the tool's own flag first.
+    expect(isSafeTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'echo' }))
+  })
+
   it('routes a tool call through the configured Approver when the rule says ask', async () => {
     let call = 0
     const modelCall: ModelCall = vi.fn(async () => {
@@ -205,13 +274,179 @@ describe('runAgent', () => {
     )
   })
 
-  it('does not declare a Skill tool when the agent has no skillsDirs', async () => {
+  it('does not declare a Skill tool when the agent has no skillsDirs and no default folder to fall back to', async () => {
     const modelCall: ModelCall = vi.fn(async () => textResponse('no skills here'))
 
+    // baseConfig's name ('test-agent') has no agents/test-agent/skills
+    // folder in this repo — the default resolves to a path that doesn't
+    // exist, which SkillGarden treats as "no skills," not an error.
     await runAgent(baseConfig(), modelCall, 'hi')
 
     const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
     expect(toolsSentToModel.some((t: { name: string }) => t.name === 'Skill')).toBe(false)
+  })
+
+  it('defaults skillsDirs to agents/<name>/skills when omitted entirely', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('no skills invoked'))
+
+    // No skillsDirs override — 'file-agent' matches this repo's real
+    // agents/file-agent/skills/ folder, so the default alone should be
+    // enough to discover and declare its skill.
+    await runAgent(baseConfig({ name: 'file-agent' }), modelCall, 'hi')
+
+    const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
+    expect(toolsSentToModel).toContainEqual(expect.objectContaining({ name: 'Skill' }))
+  })
+
+  it('defaults rules to agents/<name>/actauth.yml when omitted entirely', async () => {
+    const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't1', name: 'lookup_order', input: {} }))
+    const events: Array<{ event: string; detail: unknown }> = []
+
+    const lookupOrder: ToolDefinition = {
+      name: 'lookup_order',
+      description: 'Look up an order',
+      input_schema: { type: 'object', properties: {} },
+      execute: async () => ({ status: 'delivered' }),
+    }
+
+    // No rules override — 'customer-service' matches this repo's real
+    // agents/customer-service/actauth.yml, which allows lookup_order
+    // unconditionally ('lookup-order-always-allowed').
+    await runAgent(baseConfig({ name: 'customer-service', rules: undefined, tools: [lookupOrder] }), modelCall, 'hi', [], {
+      onEvent: (event, detail) => events.push({ event, detail }),
+    })
+
+    expect(events).toContainEqual({
+      event: 'actauth:decision',
+      detail: { tool: 'lookup_order', decision: 'allow', reason: "matched rule 'lookup-order-always-allowed'" },
+    })
+  })
+
+  it('falls back to an empty ruleset (not a crash) when the default actauth.yml path does not exist', async () => {
+    const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't1', name: 'echo', input: {} }))
+
+    const echo: ToolDefinition = {
+      name: 'echo',
+      description: 'Echoes input',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'echoed'),
+    }
+
+    // 'test-agent' has no agents/test-agent/actauth.yml in this repo —
+    // resolves to an empty ruleset, not a thrown ENOENT. defaultDecision
+    // is cleared too (not just relying on baseConfig's own 'deny'), to
+    // prove the fallback's own hardcoded 'deny' default is what's
+    // actually denying this, not an unrelated override.
+    const result = await runAgent(baseConfig({ rules: undefined, defaultDecision: undefined, tools: [echo] }), modelCall, 'hi')
+
+    expect(echo.execute).not.toHaveBeenCalled()
+    const results = toolResults(result.history)
+    expect(results[0]).toMatchObject({ tool_use_id: 't1', is_error: true })
+  })
+
+  it('still throws on an explicitly given rules path that does not exist, unlike the implicit default', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('unreachable'))
+
+    const config = baseConfig({ rules: 'agents/does-not-exist/actauth.yml' })
+
+    await expect(runAgent(config, modelCall, 'hi')).rejects.toThrow(/ENOENT/)
+  })
+
+  it('appends the agent name to a 2-segment YAML scope automatically', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'loopengine-actauth-yaml-'))
+    try {
+      writeFileSync(
+        join(dir, 'actauth.yml'),
+        'default_decision: deny\nrules:\n  - name: echo-allowed\n    scope: "*/*"\n    tool: echo\n    decision: allow\n',
+      )
+
+      const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't1', name: 'echo', input: {} }))
+      const echo: ToolDefinition = {
+        name: 'echo',
+        description: 'Echoes input',
+        input_schema: { type: 'object', properties: {} },
+        execute: async () => 'echoed',
+      }
+      const events: Array<{ event: string; detail: unknown }> = []
+
+      await runAgent(baseConfig({ rules: join(dir, 'actauth.yml'), tools: [echo] }), modelCall, 'hi', [], {
+        onEvent: (event, detail) => events.push({ event, detail }),
+      })
+
+      expect(events).toContainEqual({
+        event: 'actauth:decision',
+        detail: { tool: 'echo', decision: 'allow', reason: "matched rule 'echo-allowed'" },
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not double-append when a YAML scope already ends with the agent name (old 3-segment habit)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'loopengine-actauth-yaml-'))
+    try {
+      writeFileSync(
+        join(dir, 'actauth.yml'),
+        'default_decision: deny\nrules:\n  - name: echo-allowed\n    scope: "*/*/test-agent"\n    tool: echo\n    decision: allow\n',
+      )
+
+      const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't1', name: 'echo', input: {} }))
+      const echo: ToolDefinition = {
+        name: 'echo',
+        description: 'Echoes input',
+        input_schema: { type: 'object', properties: {} },
+        execute: async () => 'echoed',
+      }
+      const events: Array<{ event: string; detail: unknown }> = []
+
+      await runAgent(baseConfig({ rules: join(dir, 'actauth.yml'), tools: [echo] }), modelCall, 'hi', [], {
+        onEvent: (event, detail) => events.push({ event, detail }),
+      })
+
+      expect(events).toContainEqual({
+        event: 'actauth:decision',
+        detail: { tool: 'echo', decision: 'allow', reason: "matched rule 'echo-allowed'" },
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('defaults tools to agents/<name>/tools/index when omitted entirely', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('no tool called'))
+
+    // No tools override — 'customer-service' matches this repo's real
+    // agents/customer-service/tools/index.ts, which exports 4 tools.
+    // skillsDirs: [] isolates this from customer-service's own real
+    // skills folder also defaulting in and adding an unrelated Skill tool.
+    await runAgent(baseConfig({ name: 'customer-service', rules: [], skillsDirs: [] }), modelCall, 'hi')
+
+    const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
+    expect(toolsSentToModel.map((t: { name: string }) => t.name).sort()).toEqual([
+      'get_shipment_details',
+      'issue_refund',
+      'lookup_order',
+      'send_email',
+    ])
+  })
+
+  it('defaults to no tools (not a crash) when the agent has no tools/index folder at all', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('no tools here'))
+
+    // 'test-agent' has no agents/test-agent/tools/ in this repo.
+    await runAgent(baseConfig({ tools: undefined }), modelCall, 'hi')
+
+    const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
+    expect(toolsSentToModel).toEqual([])
+  })
+
+  it('an explicit empty tools array opts out of the default, even when a real tools folder exists', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('no tool called'))
+
+    await runAgent(baseConfig({ name: 'customer-service', tools: [], rules: [], skillsDirs: [] }), modelCall, 'hi')
+
+    const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
+    expect(toolsSentToModel).toEqual([])
   })
 
   it('passes args through to the invoked skill for $ARGUMENTS/$1/$2 substitution', async () => {

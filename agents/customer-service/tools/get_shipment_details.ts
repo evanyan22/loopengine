@@ -22,4 +22,7 @@ export const getShipmentDetails: ToolDefinition = {
     if (!res.ok) return { error: `shipment lookup failed: ${res.status}` }
     return res.json()
   },
+  // Read-only, no side effects — safe to run in ToolLane's parallel lane
+  // alongside lookup_order. See lookup_order.ts's own comment.
+  safe: true,
 }

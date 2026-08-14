@@ -73,11 +73,44 @@ describe('discoverAgents', () => {
     expect(entries.get('folder-agent')?.config.name).toBe('folder-agent')
   })
 
-  it('throws on a file missing config or createModelCall', async () => {
+  it('synthesizes createModelCall from config.model when a module has no createModelCall of its own', async () => {
+    const dir = tmpDir()
+    writeFileSync(
+      join(dir, 'declarative-agent.ts'),
+      `export const config = { name: 'declarative-agent', systemPrompt: 'test', rules: [], model: { provider: 'deepseek', model: 'deepseek-chat' } }\n`,
+    )
+
+    const originalKey = process.env.DEEPSEEK_API_KEY
+    delete process.env.DEEPSEEK_API_KEY
+    try {
+      // Discovery itself must not throw over a missing API key — only
+      // importing model-calls/deepseek-model-call.ts, never constructing
+      // its client (see synthesizeCreateModelCall's own doc comment).
+      const entries = await discoverAgents(dir)
+      const entry = entries.get('declarative-agent')
+      expect(entry).toBeDefined()
+      expect(typeof entry?.createModelCall).toBe('function')
+
+      // The real client is only built the first time createModelCall() is
+      // actually called — and only then does a missing API key surface.
+      expect(() => entry?.createModelCall()).toThrow(/DEEPSEEK_API_KEY/)
+    } finally {
+      if (originalKey !== undefined) process.env.DEEPSEEK_API_KEY = originalKey
+    }
+  })
+
+  it('throws on a file with config but neither createModelCall nor config.model', async () => {
     const dir = tmpDir()
     writeFileSync(join(dir, 'broken.ts'), `export const config = { name: 'broken', systemPrompt: 'x', rules: [] }\n`)
 
-    await expect(discoverAgents(dir)).rejects.toThrow(/does not export both/)
+    await expect(discoverAgents(dir)).rejects.toThrow(/neither 'createModelCall' nor 'config.model'/)
+  })
+
+  it('throws on a file missing config entirely', async () => {
+    const dir = tmpDir()
+    writeFileSync(join(dir, 'no-config.ts'), `export function createModelCall() { return async () => ({ stop_reason: 'end_turn', content: [] }) }\n`)
+
+    await expect(discoverAgents(dir)).rejects.toThrow(/does not export 'config'/)
   })
 
   it('throws on two files declaring the same AgentConfig.name', async () => {

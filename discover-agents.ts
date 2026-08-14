@@ -14,7 +14,7 @@
 import { existsSync, readdirSync, type Dirent } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AgentConfig } from './agent-config.js'
+import type { AgentConfig, AgentModelConfig } from './agent-config.js'
 import type { ModelCall } from './run-agent.js'
 
 export interface AgentModule {
@@ -23,14 +23,39 @@ export interface AgentModule {
   createModelCall: () => ModelCall
 }
 
-function isAgentModule(mod: unknown): mod is AgentModule {
-  return (
-    typeof mod === 'object' &&
-    mod !== null &&
-    'config' in mod &&
-    'createModelCall' in mod &&
-    typeof (mod as { createModelCall: unknown }).createModelCall === 'function'
-  )
+interface RawAgentModule {
+  config?: AgentConfig
+  createModelCall?: () => ModelCall
+}
+
+function isRawAgentModule(mod: unknown): mod is RawAgentModule {
+  return typeof mod === 'object' && mod !== null && 'config' in mod
+}
+
+/** Builds a lazy, memoized createModelCall from AgentConfig.model, for a
+ * module that doesn't export its own — see that field's own doc comment.
+ * The provider's SDK module is imported here, eagerly, but that's cheap
+ * and safe with no API key at all: importing model-calls/*.ts only
+ * defines functions, it never constructs a client at module top level
+ * (see e.g. createAnthropicModelCall's own body) — so this can't fail
+ * discovery the way eagerly building the actual client would. The real
+ * client is only built the first time the returned function is actually
+ * called, and reused after that, the same "don't crash the whole server
+ * over one agent's missing API key, don't rebuild per call" reasoning
+ * agents/customer-service/index.ts's own hand-written createModelCall
+ * used before this existed. */
+async function synthesizeCreateModelCall(model: AgentModelConfig): Promise<() => ModelCall> {
+  let cached: ModelCall | undefined
+  if (model.provider === 'anthropic') {
+    const { createAnthropicModelCall } = await import('./model-calls/anthropic-model-call.js')
+    return () => (cached ??= createAnthropicModelCall(model))
+  }
+  if (model.provider === 'openai') {
+    const { createOpenAIModelCall } = await import('./model-calls/openai-model-call.js')
+    return () => (cached ??= createOpenAIModelCall(model))
+  }
+  const { createDeepSeekModelCall } = await import('./model-calls/deepseek-model-call.js')
+  return () => (cached ??= createDeepSeekModelCall(model))
 }
 
 /** Resolves one directory entry to an agent module's path, or undefined if
@@ -56,11 +81,11 @@ function resolveModulePath(dir: string, entry: Dirent): { path: string; label: s
 
 /** Scans `dir` for agent modules — direct `.ts`/`.js` files, or
  * subdirectories with an `index.ts`/`index.js` (see resolveModulePath) —
- * each expected to export `config` and `createModelCall`, the same shape
- * every agent in this repo's own reference app already exports. Throws,
- * rather than skipping, on a module that doesn't match that shape or a
- * duplicate AgentConfig.name — both are almost always a bug, not
- * something to silently ignore. */
+ * each expected to export `config`, and either its own `createModelCall`
+ * or a `config.model` for one to be synthesized from (see
+ * AgentModelConfig's own doc comment). Throws, rather than skipping, on a
+ * module that doesn't match that shape or a duplicate AgentConfig.name —
+ * both are almost always a bug, not something to silently ignore. */
 export async function discoverAgents(dir: string): Promise<Map<string, AgentModule>> {
   const entries = new Map<string, AgentModule>()
 
@@ -70,8 +95,18 @@ export async function discoverAgents(dir: string): Promise<Map<string, AgentModu
 
     const mod: unknown = await import(pathToFileURL(resolved.path).href)
 
-    if (!isAgentModule(mod)) {
-      throw new Error(`${resolved.label} in ${dir} does not export both 'config' and 'createModelCall' — every agent module must.`)
+    if (!isRawAgentModule(mod) || !mod.config) {
+      throw new Error(`${resolved.label} in ${dir} does not export 'config' — every agent module must.`)
+    }
+
+    let createModelCall = mod.createModelCall
+    if (typeof createModelCall !== 'function') {
+      if (!mod.config.model) {
+        throw new Error(
+          `${resolved.label} in ${dir} exports 'config' but neither 'createModelCall' nor 'config.model' — every agent module must have one or the other.`,
+        )
+      }
+      createModelCall = await synthesizeCreateModelCall(mod.config.model)
     }
 
     const name = mod.config.name
@@ -79,7 +114,7 @@ export async function discoverAgents(dir: string): Promise<Map<string, AgentModu
       throw new Error(`Duplicate agent name '${name}' — ${resolved.label} in ${dir} isn't the first module to declare AgentConfig.name '${name}'.`)
     }
 
-    entries.set(name, mod)
+    entries.set(name, { config: mod.config, createModelCall })
   }
 
   return entries
