@@ -192,26 +192,29 @@ export function createModelCall(): ModelCall {
 
 `agents/file-agent/index.ts` and `agents/customer-service/index.ts` are two complete, working
 examples — same `runAgent` loop, entirely different personas and tools.
+`agents/customer-service/` shows the folder form fully filled in:
 
-`agents/customer-service/tools/` is the pattern for splitting tool
-implementations out once there are enough of them to matter — one file
-per tool, an `index.ts` aggregating them into the array `AgentConfig.tools`
-expects. `agents/customer-service/skills/` sits alongside it the same
-way, and so does `agents/customer-service/actauth.yml` — everything
-specific to one agent lives under that agent's own folder, not scattered
-across separate top-level trees connected only by a matching directory
-name (which nothing enforces staying in sync — rename the agent folder
-and forget to rename a sibling tree, and things break silently). A
-permission story with per-tenant/environment scoping and `when`
-conditions reads better as the `actauth.yml` data it actually is than as
-a TypeScript array literal, which is why it's split out unlike scope
-resolution and the `AgentConfig` assembly — those stay in the agent's own
-`index.ts` since they're tied to request-handling code (`tenantFor`,
-`sessionIdFor`) that has no data-file equivalent. `agents/file-agent/`
-follows the same shape — the one exception is its Composio-sourced GitHub
-tool, which isn't in `tools/` at all: it's fetched dynamically at runtime
-(see "External tool gateways" below), not static code with a file of its
-own to live in.
+```
+agents/customer-service/
+  index.ts                          AgentConfig assembly + scope resolution (tenantFor, sessionIdFor)
+  actauth.yml                       ActAuth rules — which tool needs which scope/decision
+  tools/
+    index.ts                        Aggregates the tools below into AgentConfig.tools
+    lookup_order.ts                 One file per tool
+    get_shipment_details.ts
+    issue_refund.ts
+    send_email.ts
+    orders-store.ts                 Shared in-memory store the tools above read/write
+  skills/
+    firecrawl/SKILL.md              One <skill-name>/SKILL.md per skill (see "Skills" below)
+```
+
+Everything specific to this one agent lives under its own folder instead of
+scattered across separate top-level trees keyed only by a matching
+directory name. `agents/file-agent/` follows the same shape, minus
+`orders-store.ts` — its one difference is a Composio-sourced GitHub tool
+that isn't in `tools/` at all, since it's fetched dynamically at runtime
+rather than being static code (see "External tool gateways" below).
 
 ## Retrieval (RAG)
 
