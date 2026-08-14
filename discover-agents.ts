@@ -11,8 +11,8 @@
 // silently collide in ActAuth's rules today regardless of this helper;
 // surfacing that collision loudly here, at discovery time, is a real
 // safety property this adds, not just convenience.
-import { readdirSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readdirSync, type Dirent } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { AgentConfig } from './agent-config.js'
 import type { ModelCall } from './run-agent.js'
@@ -33,32 +33,50 @@ function isAgentModule(mod: unknown): mod is AgentModule {
   )
 }
 
-/** Scans `dir`'s direct files only (not subdirectories — put shared,
- * non-agent code in a subdirectory to keep it out of discovery, no
- * separate exclude-list mechanism needed) for `.ts`/`.js` modules, each
- * expected to export `config` and `createModelCall` — the same shape
- * every agents/*.ts file in this repo's own reference app already
- * exports. Throws, rather than skipping, on a file that doesn't match
- * that shape or a duplicate AgentConfig.name — both are almost always a
- * bug in the agent file, not something to silently ignore. */
+/** Resolves one directory entry to an agent module's path, or undefined if
+ * this entry isn't one — a `.ts`/`.js` file directly (the common case), or
+ * a subdirectory containing an `index.ts`/`index.js` (the same "a
+ * directory can be a module" convention Node's own `require()` resolution
+ * already uses — no new mental model to learn). A subdirectory with
+ * neither is ordinary supporting code living alongside an agent's own
+ * folder (a `tools.ts` split out of a large agent, say), not an agent
+ * itself, and is silently skipped rather than treated as an error. */
+function resolveModulePath(dir: string, entry: Dirent): { path: string; label: string } | undefined {
+  if (entry.isFile() && /\.(ts|js)$/.test(entry.name) && !entry.name.endsWith('.d.ts')) {
+    return { path: resolve(dir, entry.name), label: entry.name }
+  }
+  if (entry.isDirectory()) {
+    for (const indexName of ['index.ts', 'index.js']) {
+      const indexPath = join(dir, entry.name, indexName)
+      if (existsSync(indexPath)) return { path: resolve(indexPath), label: `${entry.name}/${indexName}` }
+    }
+  }
+  return undefined
+}
+
+/** Scans `dir` for agent modules — direct `.ts`/`.js` files, or
+ * subdirectories with an `index.ts`/`index.js` (see resolveModulePath) —
+ * each expected to export `config` and `createModelCall`, the same shape
+ * every agent in this repo's own reference app already exports. Throws,
+ * rather than skipping, on a module that doesn't match that shape or a
+ * duplicate AgentConfig.name — both are almost always a bug, not
+ * something to silently ignore. */
 export async function discoverAgents(dir: string): Promise<Map<string, AgentModule>> {
   const entries = new Map<string, AgentModule>()
 
-  const files = readdirSync(dir, { withFileTypes: true }).filter(
-    (entry) => entry.isFile() && /\.(ts|js)$/.test(entry.name) && !entry.name.endsWith('.d.ts'),
-  )
+  for (const dirent of readdirSync(dir, { withFileTypes: true })) {
+    const resolved = resolveModulePath(dir, dirent)
+    if (!resolved) continue
 
-  for (const file of files) {
-    const modulePath = resolve(dir, file.name)
-    const mod: unknown = await import(pathToFileURL(modulePath).href)
+    const mod: unknown = await import(pathToFileURL(resolved.path).href)
 
     if (!isAgentModule(mod)) {
-      throw new Error(`${file.name} in ${dir} does not export both 'config' and 'createModelCall' — every agent module must.`)
+      throw new Error(`${resolved.label} in ${dir} does not export both 'config' and 'createModelCall' — every agent module must.`)
     }
 
     const name = mod.config.name
     if (entries.has(name)) {
-      throw new Error(`Duplicate agent name '${name}' — ${file.name} in ${dir} isn't the first file to declare AgentConfig.name '${name}'.`)
+      throw new Error(`Duplicate agent name '${name}' — ${resolved.label} in ${dir} isn't the first module to declare AgentConfig.name '${name}'.`)
     }
 
     entries.set(name, mod)

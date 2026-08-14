@@ -45,7 +45,7 @@ describe('discoverAgents', () => {
     expect(new Set(entries.keys())).toEqual(new Set(['agent-a', 'agent-b']))
   })
 
-  it('ignores subdirectories, only scanning direct files', async () => {
+  it('ignores a subdirectory with no index.ts/index.js — ordinary supporting code, not an agent', async () => {
     const dir = tmpDir()
     writeAgentFile(dir, 'real-agent.ts', 'real-agent')
     mkdirSync(join(dir, 'shared'))
@@ -54,6 +54,23 @@ describe('discoverAgents', () => {
     const entries = await discoverAgents(dir)
 
     expect([...entries.keys()]).toEqual(['real-agent'])
+  })
+
+  it('discovers a subdirectory with an index.ts as one agent module, same as a flat file', async () => {
+    const dir = tmpDir()
+    writeAgentFile(dir, 'flat-agent.ts', 'flat-agent')
+    mkdirSync(join(dir, 'folder-agent'))
+    writeAgentFile(dir, 'folder-agent/index.ts', 'folder-agent')
+    // A sibling file next to index.ts (e.g. a tools.ts split out of a
+    // large agent) must never be independently discovered as its own
+    // agent — only the top-level entries of `dir` are ever candidates,
+    // and folder-agent/ is exactly one such candidate, not two.
+    writeFileSync(join(dir, 'folder-agent', 'tools.ts'), 'export const tools = []\n')
+
+    const entries = await discoverAgents(dir)
+
+    expect(new Set(entries.keys())).toEqual(new Set(['flat-agent', 'folder-agent']))
+    expect(entries.get('folder-agent')?.config.name).toBe('folder-agent')
   })
 
   it('throws on a file missing config or createModelCall', async () => {

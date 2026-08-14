@@ -129,7 +129,7 @@ export async function runAgent(
   // one named constant so the two can never drift out of sync.
   const tailMessages = 4
   const contextClip = new ContextClipper({ budgetTokens: config.contextBudgetTokens ?? 8000, tailMessages })
-  const rules = new RuleSet(config.rules, config.defaultDecision ?? 'ask')
+  const rules = typeof config.rules === 'string' ? RuleSet.fromYamlFile(config.rules) : new RuleSet(config.rules, config.defaultDecision ?? 'ask')
   const gate = new Gate(rules, config.approver ?? new ConsoleApprover())
   const toolLane = new ToolLane({ isSafe: config.isSafeTool ?? (() => false) })
 

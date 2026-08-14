@@ -10,5 +10,5 @@
     "declaration": true,
     "outDir": "dist"
   },
-  "include": ["*.ts", "adapters/*.ts", "agents/*.ts", "model-calls/*.ts", "scripts/*.ts"]
+  "include": ["*.ts", "adapters/*.ts", "agents/**/*.ts", "model-calls/*.ts", "scripts/*.ts"]
 }

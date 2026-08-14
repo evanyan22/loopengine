@@ -1,0 +1,50 @@
+# See agent-config.ts's `rules` doc comment for how this file is loaded,
+# and examples/actauth.yml in the actauth package for the format itself.
+# Rules are matched most-specific-scope-first; if nothing matches,
+# default_decision applies.
+default_decision: deny
+
+rules:
+  # These three don't depend on environment OR tenant — same decision for
+  # everyone, everywhere — so both segments are wildcarded rather than
+  # repeated per environment/tenant.
+  - name: lookup-order-always-allowed
+    scope: "*/*/customer-service"
+    tool: lookup_order
+    decision: allow
+
+  - name: shipment-details-always-allowed
+    scope: "*/*/customer-service"
+    tool: get_shipment_details
+    decision: allow
+
+  - name: send-email-always-allowed
+    scope: "*/*/customer-service"
+    tool: send_email
+    decision: allow
+
+  # issue_refund depends on both dimensions:
+  #  - environment: staging never moves real money, so every tenant can
+  #    skip the human-in-the-loop step there and let QA iterate without
+  #    approving every test run.
+  #  - tenant, in production specifically: 'acme-corp' (a caller
+  #    presenting the trusted API key — see tenantFor in index.ts) gets
+  #    the same auto-allow a trusted, established account might earn in a
+  #    real deployment; every other tenant still needs approval, since a
+  #    real refund is happening. Same rule set, same agent code — ActAuth's
+  #    specificity resolution (exact tenant beats the '*' fallback) is what
+  #    actually picks the right one, not a code fork.
+  - name: refund-staging-always-allowed
+    scope: "*/staging/customer-service"
+    tool: issue_refund
+    decision: allow
+
+  - name: refund-acme-corp-production-allowed
+    scope: acme-corp/production/customer-service
+    tool: issue_refund
+    decision: allow
+
+  - name: refund-production-needs-approval
+    scope: "*/production/customer-service"
+    tool: issue_refund
+    decision: ask

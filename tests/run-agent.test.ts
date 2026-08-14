@@ -181,7 +181,7 @@ describe('runAgent', () => {
     })
 
     const events: Array<{ event: string; detail: unknown }> = []
-    const config = baseConfig({ skillsDirs: ['skills/file-agent'] })
+    const config = baseConfig({ skillsDirs: ['agents/file-agent/skills'] })
 
     const result = await runAgent(config, modelCall, 'summarize', [], {
       onEvent: (event, detail) => events.push({ event, detail }),
@@ -224,7 +224,7 @@ describe('runAgent', () => {
       return textResponse('done')
     })
 
-    const config = baseConfig({ skillsDirs: ['skills/file-agent'] })
+    const config = baseConfig({ skillsDirs: ['agents/file-agent/skills'] })
     const result = await runAgent(config, modelCall, 'summarize foo.txt', [])
 
     // summarize-files' SKILL.md has no $ARGUMENTS placeholder, so passing
@@ -257,7 +257,7 @@ describe('runAgent', () => {
 
     const events: Array<{ event: string; detail: unknown }> = []
     const config = baseConfig({
-      skillsDirs: ['skills/file-agent'],
+      skillsDirs: ['agents/file-agent/skills'],
       tools: [echo],
       rules: [{ scopePattern: 'default/production/test-agent', tool: 'echo', decision: 'allow' }],
     })

@@ -1,0 +1,27 @@
+# See agent-config.ts's `rules` doc comment for how this file is loaded,
+# and examples/actauth.yml in the actauth package for the format itself.
+default_decision: ask
+
+rules:
+  - name: read-file-allowed
+    scope: default/production/file-agent
+    tool: read_file
+    decision: allow
+
+  - name: list-dir-allowed
+    scope: default/production/file-agent
+    tool: list_dir
+    decision: allow
+
+  - name: write-file-needs-approval
+    scope: default/production/file-agent
+    tool: write_file
+    decision: ask
+
+  # Read-only (GitHub's GET /user/repos under the hood) — allowed like
+  # read_file/list_dir rather than ask'd like write_file, on the same
+  # reasoning: nothing this call does needs a human in the loop.
+  - name: github-list-repos-allowed
+    scope: default/production/file-agent
+    tool: composio_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER
+    decision: allow

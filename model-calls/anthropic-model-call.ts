@@ -1,9 +1,11 @@
-// The one real ModelCall implementation loopengine ships. Every example
-// agent (file-agent.ts, customer-service-agent.ts, rag-agent.ts) still
-// uses a canned, turn-counting fake so the whole loop is runnable with no
-// API key — swap that fake for createAnthropicModelCall(...) and nothing
-// in run-agent.ts, the adapters, or any AgentConfig changes. ModelCall is
-// the only seam this needed.
+// One of the real ModelCall implementations loopengine ships (see also
+// openai-model-call.ts, deepseek-model-call.ts — the latter is what
+// agents/customer-service/index.ts actually uses). file-agent.ts and
+// rag-agent.ts still use a canned, turn-counting fake so the whole loop
+// is runnable with no API key — swap that fake for
+// createAnthropicModelCall(...) and nothing in run-agent.ts, the
+// adapters, or any AgentConfig changes. ModelCall is the only seam this
+// needed.
 //
 // loopengine's own Message type mirrors Anthropic's native shape closely
 // on purpose: `content` is either a plain string or a ModelContentBlock[]

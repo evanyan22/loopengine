@@ -5,7 +5,7 @@
 //   npx tsx adapters/http.ts
 //
 //   # single JSON response, once the whole loop finishes — customer-service
-//   # defines its own sessionIdFor (see agents/customer-service-agent.ts),
+//   # defines its own sessionIdFor (see agents/customer-service/index.ts),
 //   # so its request bodies key sessions off customerEmail; other agents
 //   # take a plain sessionId field instead, or omit it entirely for a
 //   # fresh one-off session (see defaultSessionIdFor below) — either way

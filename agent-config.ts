@@ -26,9 +26,20 @@ export interface AgentConfig {
   systemPrompt: string
   /** Hand-written tools. Default []. */
   tools?: ToolDefinition[]
-  /** ActAuth rules, e.g. { scopePattern: 'default/production/customer-service', tool: 'issue_refund', decision: 'ask' } */
-  rules: Rule[]
-  /** Decision when no rule matches. Default 'ask' — new tools are opt-in, not silently allowed. */
+  /** ActAuth rules — either inline (handy for tests and small/synthetic
+   * configs) or a path to an `actauth.yml` file (same shape as
+   * `examples/actauth.yml` in the actauth package: top-level
+   * `default_decision` + a `rules:` list with `scope`/`tool`/`decision`/
+   * optional `when`), resolved against `process.cwd()` the same way
+   * `skillsDirs` is. A real agent with more than a couple of rules should
+   * use the file form — see agents/customer-service/actauth.yml — since a
+   * permission story with `when` conditions and per-tenant/environment
+   * scoping reads better as data than as a TypeScript array literal.
+   * `defaultDecision` below only applies to the inline-array form; the
+   * file form carries its own `default_decision` and ignores it. */
+  rules: Rule[] | string
+  /** Decision when no rule matches, for the inline-array `rules` form only.
+   * Default 'ask' — new tools are opt-in, not silently allowed. */
   defaultDecision?: Decision
   /** Default ConsoleApprover (blocks on stdin) — pass e.g. a Slack-backed Approver for unattended agents. */
   approver?: Approver

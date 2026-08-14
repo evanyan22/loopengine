@@ -97,9 +97,13 @@ console.log(result.text)
 The full exported surface: `runAgent`, `AgentConfig`/`ToolSchema`/`ToolDefinition`,
 `FileSessionStore`/`RedisSessionStore`/`createSessionStore`, `VectorIndex`/
 `embed`/`cosineSimilarity` (for RAG — see below), `discoverAgents` (scans a
-directory for `config`/`createModelCall` modules and builds a name → entry
-map, keyed by `AgentConfig.name` — see `agent-registry.ts` for the ~15-line
-wrapper this repo's own adapters use), and `createAnthropicModelCall`/
+directory for `config`/`createModelCall` modules — a flat `.ts`/`.js` file,
+or a subdirectory with an `index.ts`/`index.js`, the same "a directory can
+be a module" convention Node's own `require()` already uses, for an agent
+whose own implementation outgrows one file, like `agents/customer-service/`
+— and builds a name → entry map, keyed by `AgentConfig.name` — see
+`agent-registry.ts` for the ~15-line wrapper this repo's own adapters use),
+and `createAnthropicModelCall`/
 `createOpenAIModelCall`/`createDeepSeekModelCall` (real, ready-to-use
 `ModelCall`s). See `index.ts` for the exact list.
 
@@ -115,18 +119,22 @@ build with the library, not as library API itself.
 
 ```bash
 npm install
-npx tsx agents/file-agent.ts             # run the file-summarizer demo agent
-npx tsx agents/customer-service-agent.ts # run the customer-service demo agent
-npx tsx agents/rag-agent.ts              # run the retrieval-augmented demo agent
+npx tsx agents/file-agent/index.ts        # run the file-summarizer demo agent
+npx tsx agents/customer-service/index.ts  # run the customer-service demo agent (needs DEEPSEEK_API_KEY)
+npx tsx agents/rag-agent.ts               # run the retrieval-augmented demo agent
 ```
 
-All demo agents use a **simulated** model call (no `ANTHROPIC_API_KEY` is
-wired up) — see "Wiring a real model" below.
+`file-agent` and `rag-agent` still use a **simulated**, turn-counting model
+call (no API key needed) — see "Wiring a real model" below.
+`customer-service` is wired to a real `createDeepSeekModelCall` and needs
+`DEEPSEEK_API_KEY` set in the environment.
 
 ## Defining your own agent
 
 An agent is an `AgentConfig` (`agent-config.ts`): a name, a system prompt, a
-list of tools, and ActAuth permission rules.
+list of tools, and ActAuth permission rules — inline, or as a path to an
+`actauth.yml` file (see `agents/customer-service/actauth.yml`) in the same
+shape as `examples/actauth.yml` in the actauth package itself.
 
 ```ts
 import type { AgentConfig } from './agent-config.js'
@@ -152,13 +160,37 @@ export const config: AgentConfig = {
 }
 ```
 
-`agents/file-agent.ts` and `agents/customer-service-agent.ts` are two complete, working
+`agents/file-agent/index.ts` and `agents/customer-service/index.ts` are two complete, working
 examples — same `runAgent` loop, entirely different personas and tools.
 
 A file exporting `config` and `createModelCall` and saved into `agents/` is
 runnable through both adapters immediately — `agent-registry.ts` finds it
 automatically (by `AgentConfig.name`, not the filename) at startup.
-Nothing to edit, no import to add, no adapter change.
+Nothing to edit, no import to add, no adapter change. An agent that
+outgrows one file can become `agents/<name>/index.ts` instead —
+`discoverAgents` finds a subdirectory's `index.ts`/`index.js` the same way
+it finds a flat file (see "Using loopengine as a library" above for the
+full explanation).
+
+`agents/customer-service/tools/` is the pattern for splitting tool
+implementations out once there are enough of them to matter — one file
+per tool, an `index.ts` aggregating them into the array `AgentConfig.tools`
+expects. `agents/customer-service/skills/` sits alongside it the same
+way, and so does `agents/customer-service/actauth.yml` — everything
+specific to one agent lives under that agent's own folder, not scattered
+across separate top-level trees connected only by a matching directory
+name (which nothing enforces staying in sync — rename the agent folder
+and forget to rename a sibling tree, and things break silently). A
+permission story with per-tenant/environment scoping and `when`
+conditions reads better as the `actauth.yml` data it actually is than as
+a TypeScript array literal, which is why it's split out unlike scope
+resolution and the `AgentConfig` assembly — those stay in the agent's own
+`index.ts` since they're tied to request-handling code (`tenantFor`,
+`sessionIdFor`) that has no data-file equivalent. `agents/file-agent/`
+follows the same shape — the one exception is its Composio-sourced GitHub
+tool, which isn't in `tools/` at all: it's fetched dynamically at runtime
+(see "External tool gateways" below), not static code with a file of its
+own to live in.
 
 ## Retrieval (RAG)
 
@@ -206,7 +238,7 @@ import { connectComposioSource } from 'mcpplug'
 
 // Resolved once, at module-eval time — not per runAgent() call. A gateway
 // connection is exactly the kind of setup cost runAgent() shouldn't pay on
-// every turn; see agents/file-agent.ts for the working example this is
+// every turn; see agents/file-agent/index.ts for the working example this is
 // drawn from.
 const composioTools = await connectComposioSource('composio', {
   slugs: ['GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER'],
@@ -228,7 +260,7 @@ const config: AgentConfig = {
 Same ActAuth gating, ToolLane scheduling, and ContextClip budget tracking
 as any other tool call — `runAgent` has no idea one `execute` shells out
 through Composio instead of touching the filesystem or a vector index.
-`agents/file-agent.ts` is a complete, working example, verified end-to-end
+`agents/file-agent/index.ts` is a complete, working example, verified end-to-end
 against a real linked GitHub account. `slugs` is explicit, not
 auto-discovered — an agent should only see the Composio actions its own
 config actually lists; find them with the `composio` CLI's
@@ -358,7 +390,7 @@ the lock above actually prevents.
 Session-key derivation is `AgentConfig.sessionIdFor(body)` — deliberately
 not the HTTP adapter's call, since what counts as "one conversation" is
 business logic specific to what the agent is for, not a transport concern.
-`customer-service-agent.ts` defines its own, hashing `customerEmail` so raw
+`customer-service/index.ts` defines its own, hashing `customerEmail` so raw
 addresses never end up in storage keys — different customers can never
 read or write each other's history, and concurrent messages from the same
 customer are serialized rather than dropped. A missing `customerEmail` is a
@@ -419,7 +451,7 @@ a request, so it can't resolve a function value either — it treats one as
 unset and falls back to its own default, which matters for the
 standalone/CLI paths that pass `config` to `runAgent` directly, skipping
 `adapters/http.ts`'s resolution entirely (confirmed live:
-`customer-service-agent.ts`'s own `if (import.meta.url === ...)` block
+`customer-service/index.ts`'s own `if (import.meta.url === ...)` block
 resolves to the plain `default` tenant, not a leaked function reference).
 Verified live end to end otherwise: a header-derived tenant correctly
 resolves to different ActAuth rules per tenant (specific overrides a
@@ -451,10 +483,12 @@ and any tool-specific secrets set as environment variables.
 
 ## Wiring a real model
 
-Every example agent (`agents/file-agent.ts`, `agents/customer-service-agent.ts`,
-`agents/rag-agent.ts`) still uses a canned, turn-counting `ModelCall` so the
-whole loop is runnable and testable with no API key. To go live, swap it for
-one of the two real `ModelCall` implementations this repo ships:
+`agents/file-agent/index.ts` and `agents/rag-agent.ts` still use a canned,
+turn-counting `ModelCall` so the whole loop is runnable and testable with no
+API key. `agents/customer-service/index.ts` is already wired to a real one
+(see below) — a working example of the swap, not just a snippet. To go live
+on the others, swap their `createModelCall` for one of the real `ModelCall`
+implementations this repo ships:
 
 ```ts
 import { createAnthropicModelCall } from './model-calls/anthropic-model-call.js'
@@ -489,6 +523,20 @@ const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', 
 Nothing else in `run-agent.ts`, the adapters, or any `AgentConfig` needs to
 change — `ModelCall` is the only seam a real API call needs.
 
+`agents/customer-service/index.ts`'s own `createModelCall` builds its
+`createDeepSeekModelCall` instance lazily, on first call, and memoizes it —
+not once at module-eval time the way `agents/file-agent/index.ts`'s
+Composio connection is built. `agent-registry.ts`'s `discoverAgents()`
+imports every agent module at startup, for every agent, not just this
+one; building the DeepSeek client eagerly would mean the whole server
+fails to start whenever `DEEPSEEK_API_KEY` isn't set, even just to run
+`file-agent`. Memoizing after first use (rather than a fresh instance per
+call) is safe here specifically because the returned `ModelCall` is a
+pure function of the messages you pass it — reusable across every
+session/request, unlike the stateful simulated ones (which count their
+own turns and need a fresh instance per session) every other demo agent
+still returns from its own `createModelCall`.
+
 loopengine's own `Message` type carries real block-native history: `content`
 is either a plain string or a `ModelContentBlock[]` — the same shape
 `ModelResponse.content` already used — so a model's `tool_use` requests and
@@ -522,7 +570,8 @@ translation functions.
 
 ## Skills
 
-Agents can discover and invoke `SKILL.md` files (see `skills/`), the same
+Agents can discover and invoke `SKILL.md` files (see
+`agents/file-agent/skills/`, `agents/customer-service/skills/`), the same
 convention production coding agents use: a short frontmatter index (`name`,
 `description`) stays in context at all times, and the full body is loaded
 only when the model actually invokes that skill — through a real `Skill`
@@ -531,23 +580,37 @@ whenever `skillsDirs` is set, not just handled after the fact. Set
 `skillsDirs` on an `AgentConfig` to enable it; omit it for agents that
 don't need skills (`agents/rag-agent.ts` doesn't).
 
-Point `skillsDirs` at a subdirectory scoped to that agent
-(`skills/file-agent/`, not the shared `skills/` root) — `SkillGarden`'s
-discovery recursively walks whatever root it's given with no per-agent
-filtering, so two agents both pointed at `skills/` would each see every
-skill under it, not just their own.
+Point `skillsDirs` at a subdirectory scoped to that agent — a top-level
+shared `skills/` root, with every agent pointed at it, would mean
+`SkillGarden`'s discovery (which recursively walks whatever root it's
+given, with no per-agent filtering) hands each agent every other agent's
+skills too, not just its own. Nesting under that agent's own
+`agents/<name>/skills/` is what keeps that from happening. The top-level
+`skills/` root that remains (see `skills/README.md`) is reserved for a
+skill genuinely meant to be shared across every agent that opts in, which
+doesn't exist in this repo today — nothing here is actually shared, per
+every skill/tool this repo ships.
 
-To install one of SkillGarden's bundled skills (e.g. `firecrawl`) into an
-agent's own subdirectory, use its `add` CLI:
+To install one of SkillGarden's bundled skills (e.g. `firecrawl`), its
+`add` CLI always writes to `<dir>/<agent>/<skill>/SKILL.md` — `<dir>`
+defaults to `skills/`, predating this repo's own move to nesting
+everything under `agents/<name>/`. Pointing `--dir` at
+`agents/file-agent/skills` doesn't produce the clean flat result you
+might expect, because the tool still appends `<agent>/<skill>` on top of
+whatever `--dir` you give it:
 
 ```bash
-npx skillgarden add firecrawl --agent file-agent
-# -> Added file-agent:firecrawl -> skills/file-agent/firecrawl/SKILL.md
+npx skillgarden add firecrawl --agent file-agent --dir agents/file-agent/skills
+# -> Added file-agent:firecrawl -> agents/file-agent/skills/file-agent/firecrawl/SKILL.md
 ```
 
-That writes `skills/file-agent/firecrawl/SKILL.md`, which discovery then
-surfaces as `file-agent:firecrawl` — no code change needed beyond having
-already set `skillsDirs: 'skills/file-agent'` on that agent's config.
+That's a real, redundant extra `file-agent/` segment (verified — this
+isn't hypothetical), since the CLI has no way to know this repo already
+folded the agent name into `--dir`. Move the result up one level after
+running it — `mv agents/file-agent/skills/file-agent/firecrawl agents/file-agent/skills/firecrawl && rmdir agents/file-agent/skills/file-agent` —
+to match how every other skill in this repo is actually laid out, or just
+create `SKILL.md` by hand at the flat path directly, which is all the
+`add` CLI does anyway (copy one bundled file, no other side effects).
 
 ## Project layout
 
@@ -562,12 +625,24 @@ session-store.ts           SessionStore: FileSessionStore, RedisSessionStore, cr
 model-calls/anthropic-model-call.ts   createAnthropicModelCall — a real ModelCall this repo ships
 model-calls/openai-model-call.ts       createOpenAIModelCall — same seam, OpenAI's Chat Completions API
 model-calls/deepseek-model-call.ts     createDeepSeekModelCall — same seam, reuses openai-model-call.ts's translation
-agents/file-agent.ts               Example agent: summarizes text files
-agents/customer-service-agent.ts  Example agent: order/shipment lookup, refund, email
-agents/rag-agent.ts                Example agent: retrieves from an in-memory vector index
+agents/file-agent/index.ts               Example agent: summarizes text files
+agents/file-agent/tools/                 Its hand-written tools, one file per tool
+agents/file-agent/skills/                Its SKILL.md files
+agents/file-agent/actauth.yml            Its ActAuth rules
+agents/customer-service/index.ts         Example agent: order/shipment lookup, refund, email
+agents/customer-service/tools/           Its tools, one file per tool
+agents/customer-service/skills/          Its SKILL.md files
+agents/customer-service/actauth.yml      Its ActAuth rules
+agents/rag-agent.ts                      Example agent: retrieves from an in-memory vector index
 adapters/cli.ts             Channel adapter: command line
 adapters/http.ts            Channel adapter: HTTP API
-skills/                     SKILL.md files discoverable by agents, scoped per agent subdirectory
+tools/README.md             Root tools/ — for a tool genuinely shared across agents; empty today
+skills/README.md            Root skills/ — same, for a shared SKILL.md; empty today
 examples/file-agent/        Sample input files + generated output for the file-agent demo
 Dockerfile, docker-compose.yml   Container build + local Redis for testing
 ```
+
+Every agent's own tools/skills live under `agents/<name>/` — the root
+`tools/`/`skills/` directories are reserved for something genuinely meant
+to be shared across every agent that opts in, which doesn't exist in this
+repo yet (see each directory's own `README.md`).

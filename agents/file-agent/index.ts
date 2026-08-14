@@ -1,37 +1,16 @@
 // Same file-summarizing agent as the original main.ts, rewritten as an
 // AgentConfig driven through the generic runAgent loop.
-import { readFileSync, writeFileSync } from 'node:fs'
+//
+// Everything about this one agent lives under this folder: tools/ (one
+// file per hand-written tool), skills/, and actauth.yml alongside it —
+// see agents/customer-service/index.ts's own comment for the full reasoning.
+// The Composio-sourced GitHub tool below isn't in tools/ for the same
+// reason it never was: it's fetched dynamically at runtime, not static
+// code with a file of its own to live in.
 import { connectComposioSource } from 'mcpplug'
-import type { AgentConfig } from '../agent-config.js'
-import { runAgent, type ModelCall } from '../run-agent.js'
-
-const handWrittenTools = [
-  {
-    name: 'read_file',
-    description: 'Read a text file',
-    input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
-    execute: async (input: Record<string, unknown>) => readFileSync(input.path as string, 'utf8'),
-  },
-  {
-    name: 'list_dir',
-    description: 'List files in the working directory',
-    input_schema: { type: 'object', properties: {} },
-    execute: async () => ['examples/file-agent/a.txt', 'examples/file-agent/b.txt'],
-  },
-  {
-    name: 'write_file',
-    description: 'Write a text file',
-    input_schema: {
-      type: 'object',
-      properties: { path: { type: 'string' }, content: { type: 'string' } },
-      required: ['path', 'content'],
-    },
-    execute: async (input: Record<string, unknown>) => {
-      writeFileSync(input.path as string, input.content as string)
-      return `wrote ${(input.content as string).length} bytes to ${input.path}`
-    },
-  },
-]
+import type { AgentConfig } from '../../agent-config.js'
+import { runAgent, type ModelCall } from '../../run-agent.js'
+import { tools as handWrittenTools } from './tools/index.js'
 
 // Resolved once, at module-eval time, not per runAgent() call — a
 // gateway connection (mcpplug shells out to the composio CLI) is exactly
@@ -49,20 +28,9 @@ export const config: AgentConfig = {
   name: 'file-agent',
   systemPrompt: 'You summarize text files into other text files.',
   tools: [...handWrittenTools, ...composioTools],
-  rules: [
-    { scopePattern: 'default/production/file-agent', tool: 'read_file', decision: 'allow' },
-    { scopePattern: 'default/production/file-agent', tool: 'list_dir', decision: 'allow' },
-    { scopePattern: 'default/production/file-agent', tool: 'write_file', decision: 'ask' },
-    // Read-only (GitHub's GET /user/repos under the hood) — allowed like
-    // read_file/list_dir rather than ask'd like write_file, on the same
-    // reasoning: nothing this call does needs a human in the loop.
-    {
-      scopePattern: 'default/production/file-agent',
-      tool: 'composio_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER',
-      decision: 'allow',
-    },
-  ],
-  defaultDecision: 'ask',
+  // See agents/file-agent/actauth.yml for the actual rules — same
+  // decisions this array used to hold inline, now as data.
+  rules: 'agents/file-agent/actauth.yml',
   approver: {
     // ConsoleApprover would block this non-interactive demo on stdin — a
     // tiny auto-approving stand-in that still exercises the real 'ask' path.
@@ -72,14 +40,14 @@ export const config: AgentConfig = {
       return true
     },
   },
-  // Scoped to this agent's own subdirectory, not the shared skills/ root —
+  // Scoped to this agent's own skills/ subdirectory, not any shared root —
   // SkillGarden's discovery recursively walks whatever root it's given
-  // with no per-agent filtering, so pointing at skills/ itself would mean
+  // with no per-agent filtering, so pointing at a shared root would mean
   // this agent picks up (and exposes to the model as callable) any other
   // agent's skills dropped in there too. Nesting depth becomes the
   // namespace relative to *this* root, so summarize-files still gets the
   // plain name 'summarize-files' below, not 'file-agent:summarize-files'.
-  skillsDirs: ['skills/file-agent'],
+  skillsDirs: ['agents/file-agent/skills'],
   isSafeTool: (call) =>
     call.name === 'read_file' ||
     call.name === 'list_dir' ||
@@ -134,7 +102,7 @@ export function createModelCall(): ModelCall {
   }
 }
 
-// Only run standalone when invoked directly (`tsx agents/file-agent.ts`),
+// Only run standalone when invoked directly (`tsx agents/file-agent/index.ts`),
 // not when imported by the agent registry.
 if (import.meta.url === `file://${process.argv[1]}`) {
   runAgent(config, createModelCall(), 'Summarize examples/file-agent/a.txt and examples/file-agent/b.txt into examples/file-agent/summary.txt.', [], {

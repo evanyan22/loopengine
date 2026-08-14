@@ -10,13 +10,18 @@ services:
       - '8787:8787'
     environment:
       REDIS_URL: redis://redis:6379
-      # ANTHROPIC_API_KEY: set this once run-agent.ts's ModelCall is wired to the real API.
+      # DEEPSEEK_API_KEY: agents/customer-service/index.ts's real
+      # createDeepSeekModelCall needs this — set here to actually run it
+      # through this compose file rather than have every request fail once
+      # a real message comes in. ANTHROPIC_API_KEY / OPENAI_API_KEY: only
+      # needed if file-agent or rag-agent get wired to a real model call
+      # too — see README's "Wiring a real model".
       # This compose file is local/dev-testing (see README's project layout:
       # "Container build + local Redis for testing"), not a real production
       # deployment — staging is the correct default here, not an oversight.
       # A real production deployment (a separate target, per the README's
       # own "Deployment" section) would set LOOPENGINE_ENV: production, or
-      # omit it — production is customer-service-agent.ts's own default.
+      # omit it — production is agents/customer-service/index.ts's own default.
       LOOPENGINE_ENV: staging
     depends_on:
       - redis
