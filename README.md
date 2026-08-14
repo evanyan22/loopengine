@@ -136,8 +136,31 @@ list of tools, and ActAuth permission rules — inline, or as a path to an
 `actauth.yml` file (see `agents/customer-service/actauth.yml`) in the same
 shape as `examples/actauth.yml` in the actauth package itself.
 
+There are two ways to add one under `agents/`, and `agent-registry.ts`
+(built on `discoverAgents`) finds either automatically at startup — by
+`AgentConfig.name`, not the filename or folder name. Nothing to edit, no
+import to add, no adapter change, either way:
+
+1. **A flat file**, `agents/<name>.ts` — the default; start here.
+   `agents/rag-agent.ts` is a complete, working example.
+2. **A folder**, `agents/<name>/index.ts` — for an agent whose
+   implementation outgrows one file. `discoverAgents` finds a
+   subdirectory's `index.ts`/`index.js` the same way it finds a flat
+   file, the same "a directory can be a module" convention Node's own
+   `require()` resolution already uses. `agents/customer-service/` and
+   `agents/file-agent/` are complete, working examples — see below for
+   what else moves under the folder once you switch.
+
+Either way, the module must export **both** `config` and `createModelCall`
+— `discoverAgents` throws at startup on a module in `agents/` that exports
+only one (a real, load-bearing check: a module you forgot to finish wiring
+up, or an unrelated `.ts` file that doesn't belong in `agents/` at all,
+should fail loudly here rather than silently not showing up):
+
 ```ts
 import type { AgentConfig } from './agent-config.js'
+import type { ModelCall } from './run-agent.js'
+import { createAnthropicModelCall } from './model-calls/anthropic-model-call.js'
 
 export const config: AgentConfig = {
   name: 'my-agent',
@@ -158,19 +181,17 @@ export const config: AgentConfig = {
   ],
   defaultDecision: 'ask', // anything not covered by a rule requires approval
 }
+
+// A factory, not a shared instance — see "Wiring a real model" below for
+// why (a stateful/simulated ModelCall needs a fresh instance per
+// session; a real one like this can just return the same one every time).
+export function createModelCall(): ModelCall {
+  return createAnthropicModelCall({ model: 'claude-sonnet-5' }) // reads ANTHROPIC_API_KEY from the env
+}
 ```
 
 `agents/file-agent/index.ts` and `agents/customer-service/index.ts` are two complete, working
 examples — same `runAgent` loop, entirely different personas and tools.
-
-A file exporting `config` and `createModelCall` and saved into `agents/` is
-runnable through both adapters immediately — `agent-registry.ts` finds it
-automatically (by `AgentConfig.name`, not the filename) at startup.
-Nothing to edit, no import to add, no adapter change. An agent that
-outgrows one file can become `agents/<name>/index.ts` instead —
-`discoverAgents` finds a subdirectory's `index.ts`/`index.js` the same way
-it finds a flat file (see "Using loopengine as a library" above for the
-full explanation).
 
 `agents/customer-service/tools/` is the pattern for splitting tool
 implementations out once there are enough of them to matter — one file
