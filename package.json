@@ -47,7 +47,7 @@
     "openai": "^7.4.0",
     "reflowkit": "^0.0.1",
     "sessionknit": "^0.0.2",
-    "skillgarden": "^0.0.4",
+    "skillgarden": "^0.0.5",
     "toollane": "^0.0.1"
   },
   "devDependencies": {

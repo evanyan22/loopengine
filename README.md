@@ -549,26 +549,15 @@ folder unless you mean for it to see both; and don't move a skill to the
 global root just because it feels reusable in theory — wait until a
 second agent actually needs the exact same one.
 
-To install one of SkillGarden's bundled skills (e.g. `firecrawl`), its
-`add` CLI always writes to `<dir>/<agent>/<skill>/SKILL.md` — `<dir>`
-defaults to `skills/`, predating this repo's own move to nesting
-everything under `agents/<name>/`. Pointing `--dir` at
-`agents/file-agent/skills` doesn't produce the clean flat result you
-might expect, because the tool still appends `<agent>/<skill>` on top of
-whatever `--dir` you give it:
+To install one of SkillGarden's bundled skills (e.g. `firecrawl`) into an
+agent-specific folder, pass `--agent` and no `--dir` — it defaults to
+`agents/<agent>/skills/<skill>/SKILL.md`, matching how every skill in this
+repo is actually laid out:
 
 ```bash
-npx skillgarden add firecrawl --agent file-agent --dir agents/file-agent/skills
-# -> Added file-agent:firecrawl -> agents/file-agent/skills/file-agent/firecrawl/SKILL.md
+npx skillgarden add firecrawl --agent file-agent
+# -> Added file-agent:firecrawl -> agents/file-agent/skills/firecrawl/SKILL.md
 ```
-
-That's a real, redundant extra `file-agent/` segment (verified — this
-isn't hypothetical), since the CLI has no way to know this repo already
-folded the agent name into `--dir`. Move the result up one level after
-running it — `mv agents/file-agent/skills/file-agent/firecrawl agents/file-agent/skills/firecrawl && rmdir agents/file-agent/skills/file-agent` —
-to match how every other skill in this repo is actually laid out, or just
-create `SKILL.md` by hand at the flat path directly, which is all the
-`add` CLI does anyway (copy one bundled file, no other side effects).
 
 ## Project layout
 
