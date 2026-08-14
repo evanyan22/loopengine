@@ -103,7 +103,22 @@ export async function runAgent(
   options: RunAgentOptions = {},
 ): Promise<RunAgentResult> {
   const log = options.onEvent ?? (() => {})
-  const scope: Scope = { tenant: 'default', environment: 'production', ...config.scope, agent: config.name }
+  // config.scope fields can be functions (see AgentConfig.scope) that
+  // only adapters/http.ts is positioned to call — it alone has a
+  // request's headers/body to resolve them with. This function never
+  // does; a config reaching here with an unresolved function value means
+  // either it came through an adapter that doesn't do that resolution
+  // (adapters/cli.ts, or a standalone `if (import.meta.url === ...)`
+  // block calling runAgent directly, as every demo agent's own does) or
+  // resolution was skipped. Spreading a function into what ActAuth
+  // expects to be a plain string would silently produce a garbage scope
+  // key no rule could ever match — filtered out here instead, falling
+  // back to the hardcoded default below, the same safe-by-default
+  // treatment an entirely absent field already gets.
+  const staticScope = Object.fromEntries(
+    Object.entries(config.scope ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  )
+  const scope: Scope = { tenant: 'default', environment: 'production', ...staticScope, agent: config.name }
 
   const skillGarden = config.skillsDirs?.length
     ? new SkillGarden({ dirs: config.skillsDirs, indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 })

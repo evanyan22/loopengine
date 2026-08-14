@@ -16,12 +16,47 @@ const orders: Record<string, { total: number; status: string }> = {
 // concept of "customer" at all). Hashed so raw emails never end up in
 // Redis keys / filenames; conversationId lets one customer have more than
 // one thread (defaults to a single ongoing conversation per customer).
+//
+// customerEmail is only ever client-asserted here, never verified —
+// anyone can send someone else's email and get routed straight into that
+// person's existing session. A real fix means deriving this from a
+// validated auth token instead, which needs a real auth backend this demo
+// doesn't have — see AgentConfig.sessionIdFor's own doc comment for why
+// that's a deliberately deferred, not forgotten, gap.
 function sessionIdFor(body: Record<string, unknown>): string | undefined {
   const customerEmail = typeof body.customerEmail === 'string' ? body.customerEmail.trim() : ''
   if (!customerEmail) return undefined
   const conversationId = typeof body.conversationId === 'string' ? body.conversationId : 'default'
   const hash = createHash('sha256').update(customerEmail.toLowerCase()).digest('hex').slice(0, 24)
   return `customer-${hash}-${conversationId}`
+}
+
+// Maps a caller's API key to the tenant they're verified to be calling
+// as — stands in for a real lookup (a database, an auth provider) a
+// production deployment would use instead. Real key material, not real
+// customers: this is illustrative demo data, not a secret.
+const API_KEY_TENANTS: Record<string, string> = {
+  'acme-trusted-key': 'acme-corp',
+}
+
+// Resolves tenant from a header, never the body — see AgentConfig.scope's
+// own doc comment for why that distinction matters (scope feeds ActAuth's
+// permission decisions directly, so it has to come from something
+// verified). No x-api-key at all resolves to the plain 'default' tenant
+// explicitly — a real resolution, not a rejection — so every existing
+// curl example that never set one still works exactly as before this
+// existed. Only a *present but wrong* key is treated as a real auth
+// failure (401): rules below give 'acme-corp' more autonomy than
+// 'default' gets, so silently falling back to 'default' on a bad key
+// would be safe, not dangerous — but a caller presenting a key at all is
+// asserting an identity, and getting that silently ignored instead of
+// rejected is exactly the kind of thing that's confusing to debug, so
+// it's rejected outright instead.
+function tenantFor(headers: Record<string, string | string[] | undefined>): string | undefined {
+  const apiKey = headers['x-api-key']
+  if (apiKey === undefined) return 'default'
+  if (typeof apiKey !== 'string') return undefined
+  return API_KEY_TENANTS[apiKey] // undefined for an unrecognized key -> reject
 }
 
 // `.example` is IANA-reserved for documentation (RFC 2606) — guaranteed
@@ -41,9 +76,13 @@ const ENVIRONMENT = process.env.LOOPENGINE_ENV ?? 'production'
 export const config: AgentConfig = {
   name: 'customer-service',
   systemPrompt: 'You are a support agent for Acme. Be concise and empathetic. Never promise a refund before issue_refund succeeds.',
-  // Only overrides environment — tenant stays run-agent.ts's own default
-  // ('default'), since nothing here (yet) differentiates by tenant.
-  scope: { environment: ENVIRONMENT },
+  // environment is a plain string (fixed for this deployment — see
+  // ENVIRONMENT above); tenant is a function instead, resolved per
+  // request by tenantFor above, since who's calling can vary request to
+  // request in a way environment never does. Only adapters/http.ts can
+  // actually call tenantFor (see AgentConfig.scope's own doc comment) —
+  // the standalone run below never does, so it always sees 'default'.
+  scope: { tenant: tenantFor, environment: ENVIRONMENT },
   tools: [
     {
       name: 'lookup_order',
@@ -88,20 +127,26 @@ export const config: AgentConfig = {
     },
   ],
   rules: [
-    // These three don't depend on environment — same decision whether
-    // staging or production — so the environment segment is wildcarded
-    // rather than duplicated per environment.
-    { scopePattern: 'default/*/customer-service', tool: 'lookup_order', decision: 'allow' },
-    { scopePattern: 'default/*/customer-service', tool: 'get_shipment_details', decision: 'allow' },
-    { scopePattern: 'default/*/customer-service', tool: 'send_email', decision: 'allow' },
-    // issue_refund is the one tool where environment matters: staging
-    // never moves real money, so it's safe to skip the human-in-the-loop
-    // step there and let QA iterate without approving every test run;
-    // production always needs one, since a real refund happens. Same
-    // rules array, same agent code, different behavior per deployment —
-    // driven entirely by ENVIRONMENT above, no code fork.
-    { scopePattern: 'default/staging/customer-service', tool: 'issue_refund', decision: 'allow' },
-    { scopePattern: 'default/production/customer-service', tool: 'issue_refund', decision: 'ask' },
+    // These three don't depend on environment OR tenant — same decision
+    // for everyone, everywhere — so both segments are wildcarded rather
+    // than repeated per environment/tenant.
+    { scopePattern: '*/*/customer-service', tool: 'lookup_order', decision: 'allow' },
+    { scopePattern: '*/*/customer-service', tool: 'get_shipment_details', decision: 'allow' },
+    { scopePattern: '*/*/customer-service', tool: 'send_email', decision: 'allow' },
+    // issue_refund depends on both dimensions:
+    //  - environment: staging never moves real money, so every tenant
+    //    can skip the human-in-the-loop step there and let QA iterate
+    //    without approving every test run.
+    //  - tenant, in production specifically: 'acme-corp' (a caller
+    //    presenting the trusted API key — see tenantFor above) gets the
+    //    same auto-allow a trusted, established account might earn in a
+    //    real deployment; every other tenant still needs approval, since
+    //    a real refund is happening. Same rules array, same agent code —
+    //    ActAuth's specificity resolution (exact tenant beats the '*'
+    //    fallback) is what actually picks the right one, not a code fork.
+    { scopePattern: '*/staging/customer-service', tool: 'issue_refund', decision: 'allow' },
+    { scopePattern: 'acme-corp/production/customer-service', tool: 'issue_refund', decision: 'allow' },
+    { scopePattern: '*/production/customer-service', tool: 'issue_refund', decision: 'ask' },
   ],
   defaultDecision: 'deny',
   approver: {

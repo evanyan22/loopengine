@@ -269,6 +269,18 @@ curl -X POST localhost:8787/agents/file-agent/messages \
 anonymous session," since `customerEmail` is a real, meaningful identity
 for that agent, not an arbitrary key.
 
+`customer-service` also sets `AgentConfig.scope.tenant` to a function
+(`tenantFor` — see "Sessions and multi-tenancy" below), resolving tenant
+from an `x-api-key` header. The request above with no header behaves
+exactly as before — `issue_refund` still asks for approval. Add a
+trusted key and it doesn't:
+
+```bash
+curl -X POST localhost:8787/agents/customer-service/messages \
+  -H 'content-type: application/json' -H 'x-api-key: acme-trusted-key' \
+  -d '{"customerEmail":"a@example.com","message":"order A-1001 arrived broken"}'
+```
+
 **HTTP, streamed:** same request, `/stream` suffix, one Server-Sent Event per
 loop step instead of a single response after the whole thing finishes —
 a `session` event first (announcing whatever `sessionId` got used, generated
@@ -350,7 +362,16 @@ business logic specific to what the agent is for, not a transport concern.
 addresses never end up in storage keys — different customers can never
 read or write each other's history, and concurrent messages from the same
 customer are serialized rather than dropped. A missing `customerEmail` is a
-real validation failure for that agent (`400`), not something to paper over.
+real validation failure for that agent (`400`), not something to paper
+over. `customerEmail` is still only ever client-asserted, though, not
+verified — anyone can send someone else's email and get routed into that
+person's existing session. Closing that for real means deriving the
+session identity from something verified instead (an auth header, not a
+body field), which would need `sessionIdFor` to see headers too — a real,
+known gap, deliberately not built yet, since nothing in this repo has a
+concrete use for it and the shape it should take isn't obvious without one
+(see `AgentConfig.scope` below for the equivalent capability where a real
+consumer *does* exist today).
 
 An agent that doesn't define `sessionIdFor` falls back to a plain
 client-supplied `sessionId` field (`adapters/http.ts`'s
@@ -365,14 +386,56 @@ continue that exact conversation can pass it in explicitly next time.
 
 `SessionStore` itself is agent-agnostic — nothing in `session-store.ts` or
 `sessionknit` knows which agent is calling `withSession`, so both adapters
-namespace the *actual* key by agent name before it ever reaches
-`SessionStore`: `` `${agentName}:${sessionIdFor(...)}` `` in
-`adapters/http.ts`, `` `${agent}:${session}` `` in `adapters/cli.ts`.
-Without that, two different agents given the same session identifier (a
-client reusing one `sessionId`/`--session` value across agents, most
-likely) would read and write the exact same underlying log — one agent's
-tool calls and results spliced straight into another's conversation as if
-it had always been there.
+namespace the *actual* key before it ever reaches `SessionStore`:
+`` `${tenant}:${environment}:${agentName}:${sessionIdFor(...)}` `` in
+`adapters/http.ts`, `` `${agent}:${session}` `` in `adapters/cli.ts` (no
+tenant/environment dimension — `adapters/cli.ts` never resolves scope at
+all). Without agent-namespacing, two different agents given the same
+session identifier (a client reusing one `sessionId`/`--session` value
+across agents, most likely) would read and write the exact same
+underlying log — one agent's tool calls and results spliced straight into
+another's conversation as if it had always been there.
+
+`AgentConfig.scope` fields (`tenant`/`environment`) are the same idea one
+level over — but each field can independently be a plain string *or* a
+function resolving it per request from headers/body, with one deliberate
+difference from `sessionIdFor`: function values receive headers, not just
+the body. Scope feeds directly into permission decisions, so it has to
+come from something verified (an `Authorization`/API-key header checked
+against your own tenant mapping), never a raw client-asserted body field —
+a `sessionIdFor`-style body field is fine for "which conversation," but
+trusting it for "which tenant" would let any caller claim to be any
+tenant and inherit that tenant's rules. `adapters/http.ts`'s
+`resolveScope` calls any function-valued field with `(headers, body)`;
+a plain-string field (environment, usually) passes through untouched.
+A resolver returning `undefined` is a real auth failure (`401`), not
+"fall back to defaults" — the same asymmetry `sessionIdFor` already has
+for a missing `customerEmail`; if "no header at all" should mean some
+specific default rather than a rejection, the resolver itself has to
+return that value explicitly. Omit a field (or `scope` entirely) and
+nothing changes: `run-agent.ts`'s own hardcoded `default`/`production`
+applies, exactly as before this existed. `run-agent.ts` itself never sees
+a request, so it can't resolve a function value either — it treats one as
+unset and falls back to its own default, which matters for the
+standalone/CLI paths that pass `config` to `runAgent` directly, skipping
+`adapters/http.ts`'s resolution entirely (confirmed live:
+`customer-service-agent.ts`'s own `if (import.meta.url === ...)` block
+resolves to the plain `default` tenant, not a leaked function reference).
+Verified live end to end otherwise: a header-derived tenant correctly
+resolves to different ActAuth rules per tenant (specific overrides a
+wildcard fallback, same specificity resolution `scopePattern` always
+had), and an unverifiable request is rejected outright rather than
+silently proceeding under default rules.
+
+`adapters/http.ts` also folds the resolved tenant and environment into
+the `SessionStore` key, read from `config.scope` *after* `resolveScope`
+has run (falling back to `'default'`/`'production'`, the same defaults
+`run-agent.ts` itself uses, for whichever field wasn't set). Without
+this, two different tenants — or two different environments — whose
+`sessionIdFor` happens to produce the same raw id would collide on the
+exact same underlying log, splicing one's conversation into the other's —
+verified live: the same raw `sessionId` sent under two different
+verified tenants lands in two genuinely separate session files, not one.
 
 ## Deployment
 
