@@ -308,7 +308,7 @@ curl -X POST localhost:8787/agents/customer-service/messages \
 ```
 
 `customerEmail` is specific to `customer-service` — it defines its own
-`AgentConfig.sessionIdFor` (see "Sessions and multi-tenancy" below). Other
+`AgentConfig.sessionIdFor` (see "Sessions" below). Other
 agents take a plain `sessionId` field instead — and it's optional: omit it
 for a fresh, one-off session (a generated id, echoed back in the response
 as `sessionId` so you can pass it in explicitly to continue that same
@@ -326,7 +326,7 @@ anonymous session," since `customerEmail` is a real, meaningful identity
 for that agent, not an arbitrary key.
 
 `customer-service` also sets `AgentConfig.scope.tenant` to a function
-(`tenantFor` — see "Sessions and multi-tenancy" below), resolving tenant
+(`tenantFor` — see "Multi-tenancy" below), resolving tenant
 from an `x-api-key` header. The request above with no header behaves
 exactly as before — `issue_refund` still asks for approval. Add a
 trusted key and it doesn't:
@@ -361,137 +361,101 @@ output tokens — no `ModelCall` implementation here (fake or
 `createAnthropicModelCall`) streams partial text from the model itself, so
 there's nothing at the token level to forward yet.
 
-## Sessions and multi-tenancy
+## Sessions
 
-`session-store.ts` exposes one method, `withSession(sessionId, fn)`, that
-resumes history, runs `fn` **exclusively** for that session, and appends
-whatever new messages `fn` produced — this is what stops two concurrent
-requests for the same conversation from racing on read-modify-write.
+A session is one ongoing conversation — its message history persists
+between requests via a `SessionStore`, so a caller can send one message,
+get a reply, and come back later and continue where it left off.
 
-History itself is a [`sessionknit`](https://www.npmjs.com/package/sessionknit)
-log, not a flat file rewritten whole on every turn: each message is one
-entry in an append-only, parent-linked chain, so a turn only ever appends,
-never rewrites what's already durable. That buys two things a flat
-rewrite can't:
+**Storage.** `SessionStore` exposes one method, `withSession(sessionId,
+fn)`: it loads that session's history, runs `fn` **exclusively** for that
+session (so two concurrent requests for the same conversation can't race
+on read-modify-write), and appends whatever new messages `fn` produced.
+History is an append-only [`sessionknit`](https://www.npmjs.com/package/sessionknit)
+log rather than a flat file rewritten every turn, which buys two things:
 
-- **Non-blocking, debounced writes** instead of a full read-modify-write of
-  the entire session every turn.
-- **Interruption detection.** `run-agent.ts` pushes the assistant's full
-  response — tool_use blocks included — as one message before any tool
-  runs, then one message bundling every tool_result once they've all
-  settled. If the process dies in that window, the next `resume()` sees an
-  assistant message with an unanswered tool_use block, flags the session
-  as resumed-after-interruption, and injects a note into context saying so
-  — instead of silently resending an incomplete turn as if it were clean.
+- **Non-blocking, debounced writes** — a turn only appends, it never
+  rewrites what's already durable.
+- **Interruption detection** — a turn's assistant response (including any
+  tool calls) is saved *before* those tools run, then the results are
+  saved once they've all settled. If the process dies in between, the
+  next resume sees an unanswered tool call, flags the session as
+  resumed-after-interruption, and tells the model so in context — instead
+  of silently replaying a half-finished turn as if it were clean.
 
-Two implementations, same `SessionStore` interface:
+Two implementations, same interface — `createSessionStore()` picks
+between them based on `REDIS_URL` (set it and you get Redis, otherwise
+the file store):
 
-- `FileSessionStore` — one JSONL entry log per session under `.sessions/`,
+- `FileSessionStore` — one JSONL log per session under `.sessions/`,
   locked in-process. Fine for local dev and the CLI.
-- `RedisSessionStore` — same log shape (a Redis list of entries, one
-  `RPUSH` per append), with a real distributed lock, safe across multiple
-  server instances. The lock renews itself (`lockTtlMs / 3` by default)
-  for as long as a turn runs, instead of a flat TTL that a long turn (a
-  real model call plus several tool round-trips) could outlast — if
-  renewal ever confirms the lock was lost anyway (not just a failed
-  renewal attempt — a network blip there isn't proof of loss), the turn's
-  result is rejected rather than silently returned as if mutual exclusion
-  held the whole time.
+- `RedisSessionStore` — same log shape in a Redis list, with a real
+  distributed lock (safe across multiple server instances) that renews
+  itself for as long as a turn runs, instead of a flat TTL a long turn
+  could outlast.
 
-`createSessionStore()` picks between them based on `REDIS_URL` — set it and
-you get Redis, otherwise it falls back to the file store. Either way,
-turn-level exclusivity (no two concurrent turns for the same session
-interleaving) is still this module's job, not SessionKnit's — SessionKnit's
-own topology repair (reattaching sibling branches under a shared
-`parentId`) is a defensive read-side repair for crash/corruption recovery,
-not something normal operation exercises. `run-agent.ts` bundles a whole
-turn's `tool_use`/`tool_result` blocks into one message each, and
-`withSession` appends new messages sequentially, so even a turn with
-several parallel tool calls only ever produces a linear chain in the
-durable log — not races between two full concurrent turns, which is what
-the lock above actually prevents.
+**Session keys.** Two questions decide which log a message lands in:
+*which conversation* is this, and *which agent's* conversation is it?
 
-Session-key derivation is `AgentConfig.sessionIdFor(body)` — deliberately
-not the HTTP adapter's call, since what counts as "one conversation" is
-business logic specific to what the agent is for, not a transport concern.
-`customer-service/index.ts` defines its own, hashing `customerEmail` so raw
-addresses never end up in storage keys — different customers can never
-read or write each other's history, and concurrent messages from the same
-customer are serialized rather than dropped. A missing `customerEmail` is a
-real validation failure for that agent (`400`), not something to paper
-over. `customerEmail` is still only ever client-asserted, though, not
-verified — anyone can send someone else's email and get routed into that
-person's existing session. Closing that for real means deriving the
-session identity from something verified instead (an auth header, not a
-body field), which would need `sessionIdFor` to see headers too — a real,
-known gap, deliberately not built yet, since nothing in this repo has a
-concrete use for it and the shape it should take isn't obvious without one
-(see `AgentConfig.scope` below for the equivalent capability where a real
-consumer *does* exist today).
+- *Which conversation* — `AgentConfig.sessionIdFor(body)`. This is
+  business logic ("what counts as one conversation" depends on what the
+  agent is for), so it lives on the agent, not the adapter.
+  `agents/customer-service/index.ts` hashes `customerEmail` from the
+  request body into a session id, so different customers can never read
+  or write each other's history, and a request with no `customerEmail` is
+  rejected (`400`) rather than silently starting an anonymous session. An
+  agent that doesn't define `sessionIdFor` falls back to a plain
+  client-supplied `sessionId` field — or, if that's missing too, a
+  generated one, returned in the response so the caller can pass it back
+  in to continue that exact conversation later.
+- *Which agent* — `SessionStore` itself doesn't know or care which agent
+  is calling it, so both adapters prefix the id with the agent's name
+  before it ever reaches `SessionStore`. Without that, two different
+  agents handed the same raw session id (a client reusing one `sessionId`
+  value across agents) would read and write the exact same log.
 
-An agent that doesn't define `sessionIdFor` falls back to a plain
-client-supplied `sessionId` field (`adapters/http.ts`'s
-`defaultSessionIdFor`) — the same shape `adapters/cli.ts`'s `--session`
-flag already uses — and if that's missing too, one gets generated rather
-than the request being rejected, mirroring what omitting `--session` now
-does for the CLI: a fresh, isolated, one-off session rather than an error
-or (worse) a shared bucket every untagged caller collides into. The
-generated id comes back in the response (`sessionId` in the JSON body, a
-`session` SSE event first for the streamed route) so a caller that wants to
-continue that exact conversation can pass it in explicitly next time.
+`adapters/http.ts` also folds the caller's tenant and environment into
+that key (see "Multi-tenancy" below) — without that, two different
+tenants whose `sessionIdFor` happens to produce the same raw id would
+collide on the same log too. Verified live: the same raw `sessionId` sent
+under two different tenants lands in two separate session files, not one.
 
-`SessionStore` itself is agent-agnostic — nothing in `session-store.ts` or
-`sessionknit` knows which agent is calling `withSession`, so both adapters
-namespace the *actual* key before it ever reaches `SessionStore`:
-`` `${tenant}:${environment}:${agentName}:${sessionIdFor(...)}` `` in
-`adapters/http.ts`, `` `${agent}:${session}` `` in `adapters/cli.ts` (no
-tenant/environment dimension — `adapters/cli.ts` never resolves scope at
-all). Without agent-namespacing, two different agents given the same
-session identifier (a client reusing one `sessionId`/`--session` value
-across agents, most likely) would read and write the exact same
-underlying log — one agent's tool calls and results spliced straight into
-another's conversation as if it had always been there.
+## Multi-tenancy
 
-`AgentConfig.scope` fields (`tenant`/`environment`) are the same idea one
-level over — but each field can independently be a plain string *or* a
-function resolving it per request from headers/body, with one deliberate
-difference from `sessionIdFor`: function values receive headers, not just
-the body. Scope feeds directly into permission decisions, so it has to
-come from something verified (an `Authorization`/API-key header checked
-against your own tenant mapping), never a raw client-asserted body field —
-a `sessionIdFor`-style body field is fine for "which conversation," but
-trusting it for "which tenant" would let any caller claim to be any
-tenant and inherit that tenant's rules. `adapters/http.ts`'s
-`resolveScope` calls any function-valued field with `(headers, body)`;
-a plain-string field (environment, usually) passes through untouched.
-A resolver returning `undefined` is a real auth failure (`401`), not
-"fall back to defaults" — the same asymmetry `sessionIdFor` already has
-for a missing `customerEmail`; if "no header at all" should mean some
-specific default rather than a rejection, the resolver itself has to
-return that value explicitly. Omit a field (or `scope` entirely) and
-nothing changes: `run-agent.ts`'s own hardcoded `default`/`production`
-applies, exactly as before this existed. `run-agent.ts` itself never sees
-a request, so it can't resolve a function value either — it treats one as
-unset and falls back to its own default, which matters for the
-standalone/CLI paths that pass `config` to `runAgent` directly, skipping
-`adapters/http.ts`'s resolution entirely (confirmed live:
-`customer-service/index.ts`'s own `if (import.meta.url === ...)` block
-resolves to the plain `default` tenant, not a leaked function reference).
-Verified live end to end otherwise: a header-derived tenant correctly
-resolves to different ActAuth rules per tenant (specific overrides a
-wildcard fallback, same specificity resolution `scopePattern` always
-had), and an unverifiable request is rejected outright rather than
-silently proceeding under default rules.
+`AgentConfig.scope` (`{ tenant, environment }`) is what feeds ActAuth's
+permission rules — a support agent might allow more for a trusted
+tenant, or relax approval requirements outside production. Each field is
+either:
 
-`adapters/http.ts` also folds the resolved tenant and environment into
-the `SessionStore` key, read from `config.scope` *after* `resolveScope`
-has run (falling back to `'default'`/`'production'`, the same defaults
-`run-agent.ts` itself uses, for whichever field wasn't set). Without
-this, two different tenants — or two different environments — whose
-`sessionIdFor` happens to produce the same raw id would collide on the
-exact same underlying log, splicing one's conversation into the other's —
-verified live: the same raw `sessionId` sent under two different
-verified tenants lands in two genuinely separate session files, not one.
+- a **plain string**, fixed for the whole deployment (environment
+  usually is), or
+- a **function** `(headers, body) => string | undefined`, resolved fresh
+  per request (tenant often needs to be, since who's calling varies
+  request to request).
+
+Function-valued fields only ever see `headers`, never just `body` — scope
+feeds permission decisions directly, so it has to come from something
+verified (an `Authorization`/API-key header checked against your own
+mapping), never a client-asserted body field anyone could fake to claim
+another tenant's permissions. Only `adapters/http.ts` actually calls these
+functions, via `resolveScope`. Two rules govern the result:
+
+- Returning `undefined` is a real auth failure (`401`) — not "fall back
+  to a default." If no header at all should mean some specific tenant
+  rather than a rejection, the resolver must return that value itself.
+- Omitting a field (or `scope` entirely) changes nothing: `run-agent.ts`'s
+  own hardcoded `default`/`production` applies, same as before `scope`
+  existed.
+
+`run-agent.ts` never sees a request, so it can't call a function-valued
+field either — the standalone/CLI paths that pass `config` to `runAgent`
+directly (skipping `adapters/http.ts`'s resolution) just treat an
+unresolved function as unset and fall back to the same default. Verified
+live end to end: a header-derived tenant resolves to different ActAuth
+rules per tenant (a specific tenant's rule overrides a wildcard
+fallback), an unverifiable request is rejected outright, and the
+standalone path correctly falls back to `default` rather than leaking a
+function reference into the scope.
 
 ## Deployment
 
@@ -508,112 +472,82 @@ and any tool-specific secrets set as environment variables.
 ## Wiring a real model
 
 `agents/file-agent/index.ts` and `agents/rag-agent.ts` still use a canned,
-turn-counting `ModelCall` so the whole loop is runnable and testable with no
-API key. `agents/customer-service/index.ts` is already wired to a real one
-(see below) — a working example of the swap, not just a snippet. To go live
-on the others, swap their `createModelCall` for one of the real `ModelCall`
-implementations this repo ships:
+turn-counting `ModelCall` so the whole loop runs with no API key.
+`agents/customer-service/index.ts` is already wired to a real one — a
+working example of the swap, not just a snippet. To go live on the
+others, swap `createModelCall` for one of the real `ModelCall`s this repo
+ships — same shape, one call:
 
 ```ts
 import { createAnthropicModelCall } from './model-calls/anthropic-model-call.js'
+// createOpenAIModelCall / createDeepSeekModelCall work the same way
 
-const modelCall = createAnthropicModelCall({ model: 'claude-sonnet-5' }) // reads ANTHROPIC_API_KEY from the env
-
+const modelCall = createAnthropicModelCall({ model: 'claude-sonnet-5' }) // reads ANTHROPIC_API_KEY
 const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', [])
 ```
 
-```ts
-import { createOpenAIModelCall } from './model-calls/openai-model-call.js'
+| factory | env var read | example model |
+| --- | --- | --- |
+| `createAnthropicModelCall` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` |
+| `createOpenAIModelCall` | `OPENAI_API_KEY` | `gpt-4.1` |
+| `createDeepSeekModelCall` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 
-// model is required (no built-in default) — OpenAI's current flagship
-// name changes too often to hardcode safely; reads OPENAI_API_KEY from the env
-const modelCall = createOpenAIModelCall({ model: 'gpt-4.1' })
+`model` is always required — no hardcoded default, since a flagship
+model name changes too often to bake one in safely. Nothing else in
+`run-agent.ts`, the adapters, or any `AgentConfig` needs to change —
+`ModelCall` is the only seam a real API call needs.
 
-const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', [])
-```
+`agents/customer-service/index.ts`'s `createModelCall` builds its
+`createDeepSeekModelCall` instance lazily, on first call, and memoizes it,
+rather than at module load — `discoverAgents()` imports every agent at
+startup, so building it eagerly would crash the whole server without
+`DEEPSEEK_API_KEY`, even just to run `file-agent`.
 
-```ts
-import { createDeepSeekModelCall } from './model-calls/deepseek-model-call.js'
-
-// model is required, same reasoning as OpenAI's; reads DEEPSEEK_API_KEY
-// from the env — throws immediately, with a DeepSeek-specific message, if
-// neither that nor apiKey is set, rather than the OpenAI SDK's own
-// constructor silently accepting OPENAI_API_KEY instead.
-const modelCall = createDeepSeekModelCall({ model: 'deepseek-chat' })
-
-const result = await runAgent(config, modelCall, 'order A-1001 arrived broken', [])
-```
-
-Nothing else in `run-agent.ts`, the adapters, or any `AgentConfig` needs to
-change — `ModelCall` is the only seam a real API call needs.
-
-`agents/customer-service/index.ts`'s own `createModelCall` builds its
-`createDeepSeekModelCall` instance lazily, on first call, and memoizes it —
-not once at module-eval time the way `agents/file-agent/index.ts`'s
-Composio connection is built. `agent-registry.ts`'s `discoverAgents()`
-imports every agent module at startup, for every agent, not just this
-one; building the DeepSeek client eagerly would mean the whole server
-fails to start whenever `DEEPSEEK_API_KEY` isn't set, even just to run
-`file-agent`. Memoizing after first use (rather than a fresh instance per
-call) is safe here specifically because the returned `ModelCall` is a
-pure function of the messages you pass it — reusable across every
-session/request, unlike the stateful simulated ones (which count their
-own turns and need a fresh instance per session) every other demo agent
-still returns from its own `createModelCall`.
-
-loopengine's own `Message` type carries real block-native history: `content`
-is either a plain string or a `ModelContentBlock[]` — the same shape
-`ModelResponse.content` already used — so a model's `tool_use` requests and
-this loop's `tool_result` replies round-trip with real per-call identity
-(`tool_use_id`) rather than being flattened into prose. That's what makes
-parallel tool calls unambiguous (a result links back to the exact call that
-requested it, not just "a call to this tool name") and lets a denied or
-failed call carry `is_error: true`, which Claude is specifically trained to
-react to. `model-calls/anthropic-model-call.ts` translates directly to and from
-Anthropic's native `TextBlockParam`/`ToolUseBlockParam`/`ToolResultBlockParam`
-types — no flattening step in between. This was verified against the real
-SDK (with a stubbed `fetch`, not a live call) — request shape, tool schemas,
-and response mapping all round-trip correctly end to end.
-
-`model-calls/openai-model-call.ts` translates to and from OpenAI's Chat Completions
-shape instead, verified the same way (stubbed `fetch`, real SDK, full
-`runAgent` round trip including a tool call). The one structural mismatch:
-loopengine bundles a whole turn's `tool_result` blocks into a single
-user-role message (mirroring Anthropic's shape); OpenAI has no equivalent —
-each becomes its own top-level `role: 'tool'` message, so one loopengine
-`Message` can expand into several OpenAI messages, never the reverse.
-
-`model-calls/deepseek-model-call.ts` reuses `openai-model-call.ts`'s translation
-verbatim (exported, not duplicated) rather than reimplementing it —
-DeepSeek's Chat Completions API is wire-compatible with OpenAI's (verified
-against DeepSeek's own docs), down to the same `tool_calls` response
-shape. The one real difference: DeepSeek documents `max_tokens`, not the
-newer `max_completion_tokens` OpenAI's endpoint expects, so only the
-request-building call site differs, not the shared message/response
-translation functions.
+All three factories translate loopengine's `Message`/`ModelResponse` to
+and from their provider's real request/response shape (verified against
+the real SDKs with a stubbed `fetch`, tool calls included).
+`model-calls/deepseek-model-call.ts` reuses `openai-model-call.ts`'s
+translation directly rather than reimplementing it, since DeepSeek's
+Chat Completions API is wire-compatible with OpenAI's.
 
 ## Skills
 
-Agents can discover and invoke `SKILL.md` files (see
-`agents/file-agent/skills/`, `agents/customer-service/skills/`), the same
-convention production coding agents use: a short frontmatter index (`name`,
+Agents can discover and invoke `SKILL.md` files, the same convention
+production coding agents use: a short frontmatter index (`name`,
 `description`) stays in context at all times, and the full body is loaded
 only when the model actually invokes that skill — through a real `Skill`
 tool schema (`{skill: string, args?: string}`) declared to the model
 whenever `skillsDirs` is set, not just handled after the fact. Set
-`skillsDirs` on an `AgentConfig` to enable it; omit it for agents that
-don't need skills (`agents/rag-agent.ts` doesn't).
+`skillsDirs` (an array of directory paths) on an `AgentConfig` to enable
+it; omit it for agents that don't need skills (`agents/rag-agent.ts`
+doesn't). `SkillGarden` discovery recursively walks every directory it's
+given with **no per-agent filtering** — whatever `SKILL.md` files live
+under a `skillsDirs` path, the agent sees all of them, which is the whole
+reason the two kinds below live in different places.
 
-Point `skillsDirs` at a subdirectory scoped to that agent — a top-level
-shared `skills/` root, with every agent pointed at it, would mean
-`SkillGarden`'s discovery (which recursively walks whatever root it's
-given, with no per-agent filtering) hands each agent every other agent's
-skills too, not just its own. Nesting under that agent's own
-`agents/<name>/skills/` is what keeps that from happening. The top-level
-`skills/` root that remains (see `skills/README.md`) is reserved for a
-skill genuinely meant to be shared across every agent that opts in, which
-doesn't exist in this repo today — nothing here is actually shared, per
-every skill/tool this repo ships.
+**Agent-specific** — a skill only one agent needs, under that agent's own
+folder, pointed at by only that agent's `skillsDirs`:
+
+```
+agents/customer-service/skills/
+  firecrawl/SKILL.md      Only customer-service's skillsDirs points here
+```
+
+**Global** — a skill genuinely meant to be shared, at the repo-root
+`skills/` (see `skills/README.md`), pointed at by every agent's
+`skillsDirs` that wants it:
+
+```
+skills/
+  README.md                Explains the convention; no shared skill exists yet
+  (some-shared-skill)/SKILL.md   Would be seen by every agent pointed here
+```
+
+Nothing lives in the global root today — every skill this repo ships is
+agent-specific. Don't point an agent at the global root *and* its own
+folder unless you mean for it to see both; and don't move a skill to the
+global root just because it feels reusable in theory — wait until a
+second agent actually needs the exact same one.
 
 To install one of SkillGarden's bundled skills (e.g. `firecrawl`), its
 `add` CLI always writes to `<dir>/<agent>/<skill>/SKILL.md` — `<dir>`
