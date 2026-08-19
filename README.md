@@ -7,6 +7,25 @@ and permission rules, run through a transparent ReAct loop. No chain DSL,
 no hidden control flow — `run-agent.ts` is a single function you can read
 top to bottom. Run agents over a CLI, an HTTP API, or both.
 
+Once you define an agent, the loop turns it into something you can put in
+front of real users or real systems:
+
+- **Callable over CLI or HTTP** — a script you run locally, or a real
+  service other apps can hit.
+- **Does real work, safely** — tools can hit a database, send emails, call
+  GitHub/Slack, anything with an `execute` function. Permission rules gate
+  what happens without a human: safe reads auto-run, risky actions (a
+  refund, a send) get approval or are denied outright, so you can wire up
+  powerful tools without trusting the model blindly.
+- **Remembers** — conversations persist across requests, so a caller can
+  send one message, get a reply, and continue later.
+- **Multi-tenant out of the box** — the same deployed agent can serve
+  different customers/orgs with different permission levels, with no
+  forking required.
+
+So the payoff: you write one `AgentConfig`, and get a deployable,
+persistent, permission-safe service — not just a prompt-and-response demo.
+
 ## Quick start
 
 ```bash
