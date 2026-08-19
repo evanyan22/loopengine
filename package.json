@@ -1,6 +1,6 @@
 {
   "name": "loopengine",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "type": "module",
   "description": "Runtime for tool-using AI agents with a transparent ReAct loop.",
   "license": "MIT",
@@ -11,9 +11,14 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "loopengine": "dist/cli.js"
+  },
   "files": [
     "dist/index.js",
     "dist/index.d.ts",
+    "dist/cli.js",
+    "dist/cli.d.ts",
     "dist/run-agent.js",
     "dist/run-agent.d.ts",
     "dist/agent-config.js",
@@ -33,7 +38,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/cli.js",
     "prepublishOnly": "npm run build",
     "start": "node dist/adapters/http.js",
     "test": "vitest run"

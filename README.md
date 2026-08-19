@@ -43,9 +43,17 @@ and build agents in, not a library you import into an existing app.
 
 ### Define your first agent
 
-An agent is just an `AgentConfig`: `name`, `systemPrompt`, `tools`, `rules`,
-and a `model`. Drop it in a folder under `agents/` — `agents/<name>/index.ts`
-— and it's picked up automatically, no registry to edit, no import to add.
+```bash
+npx loopengine add-agent weather-agent
+# -> Created agents/weather-agent/index.ts
+```
+
+That's the fastest way to start: it generates `agents/<name>/index.ts`
+with a working `AgentConfig` stub, so you don't have to memorize the
+folder shape by hand. Or write it yourself — an agent is just an
+`AgentConfig`: `name`, `systemPrompt`, `tools`, `rules`, and a `model`.
+Drop it in a folder under `agents/` — `agents/<name>/index.ts` — and it's
+picked up automatically, no registry to edit, no import to add.
 
 Most fields don't even need to be written out — they default to a
 conventional path under the agent's own folder:
