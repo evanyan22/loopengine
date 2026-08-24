@@ -257,10 +257,31 @@ Add `/stream` to the URL for a Server-Sent Events response — one event per
 loop step (tool call, permission decision, budget check) instead of a
 single reply at the end.
 
-**Dev playground:** with the server running, open
-`http://localhost:8787/playground` in a browser — pick an agent, chat
-with it, and watch that same loop-step event stream render live instead
-of reading raw SSE frames. Same `/messages/stream` route underneath.
+Three small browser pages, all cross-linked, share one look
+(`adapters/dev-ui-styles.ts`), and never need a build step — each is a
+self-contained HTML string served straight out of `adapters/http.ts`:
+
+**Agents list:** open `http://localhost:8787/agents` in a browser (the
+same route returns plain `{agents: [...]}` JSON to a non-browser client —
+content-negotiated on the `Accept` header, so nothing that already calls
+it as an API needs to change) to see every registered agent with links
+into the playground and config page below.
+
+**Dev playground:** open `http://localhost:8787/playground` (optionally
+`?agent=<name>` to preselect one) — pick an agent, chat with it, and watch
+that same loop-step event stream render live instead of reading raw SSE
+frames. Same `/messages/stream` route underneath.
+
+**Agent config page:** open `http://localhost:8787/agents/config`
+(optionally `?agent=<name>`) to browse every registered agent's resolved
+config — system prompt, model, tools (with their JSON schemas and
+parallel-safety), the actual ActAuth rules that would be enforced (source,
+default decision, per-rule scope/tool/decision/`when`), and whether
+`sessionIdFor`/`tenantFor`/`isSafeTool`/`approver` are custom or
+defaulted. Backed by `GET /agents/:name/config`, which reuses the same
+rule/tool resolution `runAgent()` itself uses, so it can't drift out of
+sync with what a real request actually gets. Never returns
+`AgentModelConfig.apiKey`.
 
 ## Wiring a real model
 

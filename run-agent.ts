@@ -168,8 +168,12 @@ function loadYamlRules(path: string, agentName: string): RuleSet {
  * outright until real rules exist. `defaultDecision`, if set, still wins
  * over that. An *explicitly* given path that doesn't exist is a real
  * configuration bug, though, and still throws — only the silent, implicit
- * default gets this forgiveness. */
-function loadRules(config: AgentConfig): RuleSet {
+ * default gets this forgiveness.
+ *
+ * Exported (alongside loadDefaultTools below) so adapters/http.ts's
+ * GET /agents/:name/config route can show the same rules runAgent() would
+ * actually enforce, not a re-derived guess at them. */
+export function loadRules(config: AgentConfig): RuleSet {
   if (Array.isArray(config.rules)) return new RuleSet(config.rules, config.defaultDecision ?? 'ask')
 
   const usingDefaultPath = config.rules === undefined
@@ -195,7 +199,7 @@ function loadRules(config: AgentConfig): RuleSet {
  * this default) just gets `[]`, same as if it had explicitly set that. A
  * module that *does* exist but throws while importing, or doesn't export
  * `tools` at all, is a real bug and is not swallowed. */
-async function loadDefaultTools(config: AgentConfig): Promise<ToolDefinition[]> {
+export async function loadDefaultTools(config: AgentConfig): Promise<ToolDefinition[]> {
   const toolsDir = join(agentsRootDir, config.name, 'tools')
   for (const indexName of ['index.ts', 'index.js']) {
     const indexPath = join(toolsDir, indexName)

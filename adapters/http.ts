@@ -28,9 +28,11 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { getEntry, listAgents, type RegistryEntry } from '../agent-registry.js'
 import { createSessionStore } from '../session-store.js'
-import { runAgent } from '../run-agent.js'
+import { runAgent, loadRules, loadDefaultTools } from '../run-agent.js'
 import type { AgentConfig } from '../agent-config.js'
 import { playgroundHtml } from './playground.js'
+import { agentsConfigPageHtml } from './agents-config-page.js'
+import { agentsListPageHtml } from './agents-list-page.js'
 
 const sessions = createSessionStore()
 
@@ -155,6 +157,57 @@ async function parseRequest(req: IncomingMessage, agentName: string): Promise<Pa
   }
 }
 
+// Backs GET /agents/:name/config (the JSON API behind the /agents/config
+// page below). Reuses loadRules/loadDefaultTools rather than re-deriving
+// AgentConfig's defaults independently — so this always shows exactly what
+// runAgent() would actually resolve and enforce, not a second guess at it
+// that could drift out of sync. Never includes AgentModelConfig.apiKey or
+// any function value (approver, isSafeTool, sessionIdFor, tenantFor) —
+// those either aren't JSON-serializable or would leak a secret; each is
+// reported as 'custom' vs its default instead.
+async function describeAgent(entry: RegistryEntry): Promise<Record<string, unknown>> {
+  const { config } = entry
+  const tools = config.tools ?? (await loadDefaultTools(config))
+  const rules = loadRules(config)
+  const rulesSource = Array.isArray(config.rules)
+    ? 'inline'
+    : config.rules !== undefined
+      ? `file: ${config.rules}`
+      : `default: agents/${config.name}/actauth.yml`
+
+  return {
+    name: config.name,
+    systemPrompt: config.systemPrompt,
+    model: config.model
+      ? { provider: config.model.provider, model: config.model.model, maxTokens: config.model.maxTokens }
+      : 'custom (module exports its own createModelCall)',
+    maxTurns: config.maxTurns ?? 25,
+    contextBudgetTokens: config.contextBudgetTokens ?? 8000,
+    skillIndexBudgetTokens: config.skillIndexBudgetTokens ?? 200,
+    skillsDirs: config.skillsDirs ?? [`agents/${config.name}/skills`],
+    tools: tools.map((t) => ({ name: t.name, description: t.description, safe: t.safe === true, input_schema: t.input_schema })),
+    permissions: {
+      source: rulesSource,
+      defaultDecision: rules.defaultDecision,
+      rules: rules.rules,
+    },
+    isSafeTool: config.isSafeTool ? 'custom' : "default (each tool's own `safe` flag)",
+    sessionIdFor: config.sessionIdFor ? 'custom' : 'default (client-supplied `sessionId` field)',
+    tenantFor: config.tenantFor ? 'custom' : "none (every request is the 'default' tenant)",
+    approver: config.approver ? 'custom' : 'default (ConsoleApprover)',
+  }
+}
+
+// GET /agents content-negotiates on this: a browser navigating there sends
+// an Accept header that prefers text/html, so it gets agentsListPageHtml
+// below; fetch()'s own default Accept (`*/*`, the same default every
+// fetch('/agents') call in playground.ts/agents-config-page.ts/
+// agents-list-page.ts itself already relies on) does not include
+// text/html, so this can't silently break an existing JSON consumer.
+function prefersHtml(req: IncomingMessage): boolean {
+  return (req.headers.accept ?? '').includes('text/html')
+}
+
 function writeSseEvent(res: ServerResponse, event: string, data: unknown): void {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
 }
@@ -226,7 +279,14 @@ const server = createServer(async (req, res) => {
   // in-band `error` event, not a fresh status code) — this is the
   // backstop for everything before that point, for both routes.
   try {
-    const streamMatch = req.method === 'POST' && req.url?.match(/^\/agents\/([^/]+)\/messages\/stream$/)
+    // Query strings (the browser pages below link to each other with
+    // ?agent=<name> to deep-link a preselected agent) would otherwise
+    // break every exact-match/regex `$`-anchored route below, which only
+    // ever expected a bare path — stripped once here rather than in each
+    // route individually.
+    const pathname = (req.url ?? '/').split('?')[0]
+
+    const streamMatch = req.method === 'POST' && pathname.match(/^\/agents\/([^/]+)\/messages\/stream$/)
     if (streamMatch) {
       await handleMessagesStream(req, res, decodeURIComponent(streamMatch[1]))
       return
@@ -237,18 +297,44 @@ const server = createServer(async (req, res) => {
     // adapters/playground.ts. GET, not POST, and an exact path match
     // (neither has a :name segment), so no risk of colliding with the
     // regexes above (already partitioned by method).
-    if (req.method === 'GET' && req.url === '/playground') {
+    if (req.method === 'GET' && pathname === '/playground') {
       res.writeHead(200, { 'content-type': 'text/html' }).end(playgroundHtml)
       return
     }
-    if (req.method === 'GET' && req.url === '/agents') {
+    if (req.method === 'GET' && pathname === '/agents') {
+      if (prefersHtml(req)) {
+        res.writeHead(200, { 'content-type': 'text/html' }).end(agentsListPageHtml)
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json' }).end(
         JSON.stringify({ agents: listAgents().map((name) => ({ name, systemPrompt: getEntry(name)!.config.systemPrompt })) }),
       )
       return
     }
 
-    const match = req.method === 'POST' && req.url?.match(/^\/agents\/([^/]+)\/messages$/)
+    // Browser page: lists every registered agent and renders its full
+    // config (tools, permissions, sessionIdFor, ...) via the JSON route
+    // below — see adapters/agents-config-page.ts. A fixed two-segment path,
+    // so it can't collide with the three-segment /agents/:name/config
+    // regex right below it.
+    if (req.method === 'GET' && pathname === '/agents/config') {
+      res.writeHead(200, { 'content-type': 'text/html' }).end(agentsConfigPageHtml)
+      return
+    }
+
+    const configMatch = req.method === 'GET' && pathname.match(/^\/agents\/([^/]+)\/config$/)
+    if (configMatch) {
+      const agentName = decodeURIComponent(configMatch[1])
+      const entry = getEntry(agentName)
+      if (!entry) {
+        res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(await describeAgent(entry)))
+      return
+    }
+
+    const match = req.method === 'POST' && pathname.match(/^\/agents\/([^/]+)\/messages$/)
     if (!match) {
       res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'not found' }))
       return

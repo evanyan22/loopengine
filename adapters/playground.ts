@@ -15,20 +15,16 @@
 // template literal would need every backtick/${ escaped relative to the
 // outer one. Plain string concatenation sidesteps that class of bug
 // entirely rather than relying on getting every escape right.
+import { devUiCss } from './dev-ui-styles.js'
+
 export const playgroundHtml: string = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LoopEngine Playground</title>
-<style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; }
+<style>${devUiCss}
   body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: light-dark(#f7f7f8, #1a1a1e);
-    color: light-dark(#1a1a1e, #e8e8ea);
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -42,19 +38,6 @@ export const playgroundHtml: string = `<!doctype html>
     flex-wrap: wrap;
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-  select, input, textarea, button {
-    font: inherit;
-    color: inherit;
-    background: light-dark(#fff, #26262b);
-    border: 1px solid light-dark(#ccc, #444);
-    border-radius: 6px;
-    padding: 6px 8px;
-  }
-  button {
-    cursor: pointer;
-    background: light-dark(#e8e8ea, #333338);
-  }
-  button:disabled { opacity: 0.5; cursor: default; }
   #agentCaption {
     font-size: 12px;
     color: light-dark(#666, #999);
@@ -63,12 +46,15 @@ export const playgroundHtml: string = `<!doctype html>
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  #configLink { font-size: 12px; white-space: nowrap; text-decoration: none; }
   #sessionLabel {
     margin-left: auto;
     font-size: 12px;
     font-family: ui-monospace, monospace;
     color: light-dark(#666, #999);
   }
+  #sessionLabel.copyable { cursor: pointer; }
+  #sessionLabel.copyable:hover { text-decoration: underline; }
   main {
     flex: 1;
     display: flex;
@@ -116,6 +102,18 @@ export const playgroundHtml: string = `<!doctype html>
   .msg-user .msg-body { background: light-dark(#dbeafe, #1e3a5f); }
   .msg-assistant .msg-body { background: light-dark(#fff, #2a2a2e); border: 1px solid light-dark(#ddd, #3a3a3e); }
   .msg-error .msg-body { background: light-dark(#fee2e2, #4a1f1f); color: light-dark(#991b1b, #f87171); }
+  .msg-thinking .msg-body { display: inline-flex; gap: 4px; padding: 11px 10px; }
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: light-dark(#999, #777);
+    animation: dot-blink 1.4s infinite both;
+  }
+  .dot:nth-child(2) { animation-delay: 0.2s; }
+  .dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes dot-blink { 0%, 80%, 100% { opacity: 0.2; } 40% { opacity: 1; } }
+  .empty-hint { padding: 10px 2px; }
   .event {
     border-left: 3px solid light-dark(#ccc, #444);
     padding: 4px 8px;
@@ -145,19 +143,32 @@ export const playgroundHtml: string = `<!doctype html>
   }
   .send-row { display: flex; gap: 8px; }
   #messageInput { flex: 1; resize: none; height: 40px; }
+  #messageInput:disabled, #sendButton:disabled { cursor: not-allowed; }
   details summary { cursor: pointer; font-size: 12px; color: light-dark(#666, #999); }
+  .advanced-hint { margin: 6px 0 0; font-size: 11px; }
   .advanced-fields { display: flex; gap: 8px; margin-top: 6px; }
   .advanced-fields > div { flex: 1; display: flex; flex-direction: column; gap: 4px; }
   .advanced-fields label { font-size: 11px; color: light-dark(#666, #999); }
   .advanced-fields textarea { height: 50px; font-family: ui-monospace, monospace; font-size: 11px; resize: vertical; }
+  @media (max-width: 720px) {
+    main { flex-direction: column; }
+    .pane { border-right: none; border-bottom: 1px solid light-dark(#ddd, #333); min-height: 160px; }
+    .pane:last-child { border-bottom: none; }
+  }
 </style>
 </head>
 <body>
+<nav class="topnav">
+  <a href="/agents">Agents</a>
+  <a href="/playground" class="active">Playground</a>
+  <a href="/agents/config">Config</a>
+</nav>
 <header>
   <h1>LoopEngine Playground</h1>
   <select id="agentSelect"></select>
   <span id="agentCaption"></span>
   <button id="newConversationButton" type="button">New conversation</button>
+  <a id="configLink" href="/agents/config">Agent config &rarr;</a>
   <span id="sessionLabel">session: (new)</span>
 </header>
 <main>
@@ -173,6 +184,7 @@ export const playgroundHtml: string = `<!doctype html>
 <footer>
   <details>
     <summary>Advanced</summary>
+    <p class="advanced-hint muted">For agents whose sessionIdFor/tenantFor need something beyond a plain sessionId — e.g. customer-service reads customerEmail from the body.</p>
     <div class="advanced-fields">
       <div>
         <label for="extraHeadersInput">Extra headers (one "key: value" per line)</label>
@@ -193,6 +205,7 @@ export const playgroundHtml: string = `<!doctype html>
 (function () {
   var agentSelect = document.getElementById('agentSelect');
   var agentCaption = document.getElementById('agentCaption');
+  var configLink = document.getElementById('configLink');
   var sessionLabel = document.getElementById('sessionLabel');
   var chatPane = document.getElementById('chatPane');
   var timelinePane = document.getElementById('timelinePane');
@@ -204,8 +217,24 @@ export const playgroundHtml: string = `<!doctype html>
 
   var currentAgents = [];
   var sessionId = null;
+  var isSending = false;
+  var thinkingEl = null;
+
+  function clearEmptyHint(pane) {
+    var hint = pane.querySelector('.empty-hint');
+    if (hint) hint.remove();
+  }
+
+  function setEmptyHint(pane, text) {
+    pane.innerHTML = '';
+    var p = document.createElement('p');
+    p.className = 'empty-hint muted';
+    p.textContent = text;
+    pane.appendChild(p);
+  }
 
   function appendChatMessage(role, text) {
+    clearEmptyHint(chatPane);
     var div = document.createElement('div');
     div.className = 'msg msg-' + role;
     var label = document.createElement('div');
@@ -218,6 +247,21 @@ export const playgroundHtml: string = `<!doctype html>
     div.appendChild(body);
     chatPane.appendChild(div);
     chatPane.scrollTop = chatPane.scrollHeight;
+    return div;
+  }
+
+  function showThinking() {
+    var div = appendChatMessage('assistant', '');
+    div.classList.add('msg-thinking');
+    div.querySelector('.msg-body').innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+    thinkingEl = div;
+  }
+
+  function removeThinking() {
+    if (thinkingEl) {
+      thinkingEl.remove();
+      thinkingEl = null;
+    }
   }
 
   function eventCategory(eventName) {
@@ -226,6 +270,7 @@ export const playgroundHtml: string = `<!doctype html>
   }
 
   function appendTimelineEntry(eventName, data) {
+    clearEmptyHint(timelinePane);
     var div = document.createElement('div');
     div.className = 'event ' + eventCategory(eventName);
     var label = document.createElement('div');
@@ -268,18 +313,43 @@ export const playgroundHtml: string = `<!doctype html>
 
   function updateCaption() {
     var name = agentSelect.value;
+    if (!currentAgents.length) {
+      agentCaption.textContent = 'No agents registered — add one under agents/.';
+      configLink.style.display = 'none';
+      return;
+    }
+    configLink.style.display = '';
     var agent = null;
     for (var i = 0; i < currentAgents.length; i++) {
       if (currentAgents[i].name === name) { agent = currentAgents[i]; break; }
     }
     agentCaption.textContent = agent ? agent.systemPrompt : '';
+    configLink.href = '/agents/config' + (name ? '?agent=' + encodeURIComponent(name) : '');
+  }
+
+  function updateSendButtonState() {
+    sendButton.disabled = isSending || !messageInput.value.trim() || !agentSelect.value;
+  }
+
+  function setSending(sending) {
+    isSending = sending;
+    var hasAgents = currentAgents.length > 0;
+    messageInput.disabled = sending || !hasAgents;
+    agentSelect.disabled = sending || !hasAgents;
+    newConversationButton.disabled = sending;
+    sendButton.textContent = sending ? 'Sending\\u2026' : 'Send';
+    updateSendButtonState();
   }
 
   function resetConversation() {
     sessionId = null;
+    removeThinking();
     sessionLabel.textContent = 'session: (new)';
-    chatPane.textContent = '';
-    timelinePane.textContent = '';
+    sessionLabel.classList.remove('copyable');
+    sessionLabel.title = '';
+    var name = agentSelect.value;
+    setEmptyHint(chatPane, name ? 'No messages yet \\u2014 say hi to ' + name + '.' : 'No messages yet \\u2014 pick an agent above to get started.');
+    setEmptyHint(timelinePane, 'Loop events (tool calls, permission checks, budget checks) will appear here as the agent runs.');
   }
 
   function loadAgents() {
@@ -294,10 +364,26 @@ export const playgroundHtml: string = `<!doctype html>
           opt.textContent = currentAgents[i].name;
           agentSelect.appendChild(opt);
         }
+        // Deep-linked from the agents list or config page (?agent=name) —
+        // preselect it if it's a real, currently-registered agent.
+        var requested = new URLSearchParams(location.search).get('agent');
+        if (requested && currentAgents.some(function (a) { return a.name === requested; })) {
+          agentSelect.value = requested;
+        }
+        var hasAgents = currentAgents.length > 0;
+        agentSelect.disabled = !hasAgents;
+        messageInput.disabled = !hasAgents;
+        messageInput.placeholder = hasAgents
+          ? 'Message\\u2026 (Enter to send, Shift+Enter for a new line)'
+          : 'No agents registered';
         updateCaption();
+        resetConversation();
+        updateSendButtonState();
+        if (hasAgents) messageInput.focus();
       })
       .catch(function (err) {
         agentCaption.textContent = 'Could not load agents: ' + err.message;
+        resetConversation();
       });
   }
 
@@ -318,9 +404,13 @@ export const playgroundHtml: string = `<!doctype html>
     if (eventName === 'session') {
       sessionId = data.sessionId;
       sessionLabel.textContent = 'session: ' + sessionId;
+      sessionLabel.title = 'Click to copy session id';
+      sessionLabel.classList.add('copyable');
     } else if (eventName === 'done') {
+      removeThinking();
       appendChatMessage('assistant', data.text);
     } else if (eventName === 'error') {
+      removeThinking();
       appendChatMessage('error', data.error);
     } else {
       appendTimelineEntry(eventName, data);
@@ -328,6 +418,7 @@ export const playgroundHtml: string = `<!doctype html>
   }
 
   function sendMessage() {
+    if (isSending) return;
     var agent = agentSelect.value;
     var message = messageInput.value.trim();
     if (!agent || !message) return;
@@ -345,7 +436,14 @@ export const playgroundHtml: string = `<!doctype html>
 
     appendChatMessage('user', message);
     messageInput.value = '';
-    sendButton.disabled = true;
+    setSending(true);
+    showThinking();
+
+    function finish() {
+      removeThinking();
+      setSending(false);
+      messageInput.focus();
+    }
 
     fetch('/agents/' + encodeURIComponent(agent) + '/messages/stream', {
       method: 'POST',
@@ -359,7 +457,7 @@ export const playgroundHtml: string = `<!doctype html>
             .catch(function () { return { error: 'HTTP ' + response.status }; })
             .then(function (data) {
               appendChatMessage('error', data.error || ('HTTP ' + response.status));
-              sendButton.disabled = false;
+              finish();
             });
         }
 
@@ -371,7 +469,7 @@ export const playgroundHtml: string = `<!doctype html>
           return reader.read().then(function (chunk) {
             if (chunk.done) {
               buffer += decoder.decode();
-              sendButton.disabled = false;
+              finish();
               return;
             }
             buffer += decoder.decode(chunk.value, { stream: true });
@@ -389,14 +487,16 @@ export const playgroundHtml: string = `<!doctype html>
       })
       .catch(function (err) {
         appendChatMessage('error', 'Network error: ' + err.message);
-        sendButton.disabled = false;
+        finish();
       });
   }
 
   agentSelect.addEventListener('change', function () {
     updateCaption();
     resetConversation();
+    updateSendButtonState();
   });
+  messageInput.addEventListener('input', updateSendButtonState);
   newConversationButton.addEventListener('click', resetConversation);
   sendButton.addEventListener('click', sendMessage);
   messageInput.addEventListener('keydown', function (e) {
@@ -405,9 +505,16 @@ export const playgroundHtml: string = `<!doctype html>
       sendMessage();
     }
   });
+  sessionLabel.addEventListener('click', function () {
+    if (!sessionId || !navigator.clipboard) return;
+    navigator.clipboard.writeText(sessionId).then(function () {
+      var original = 'session: ' + sessionId;
+      sessionLabel.textContent = 'copied!';
+      setTimeout(function () { sessionLabel.textContent = original; }, 1000);
+    });
+  });
 
   loadAgents();
-  resetConversation();
 })();
 </script>
 </body>
