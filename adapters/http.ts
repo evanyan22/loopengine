@@ -26,10 +26,11 @@
 // file's call — see AgentConfig.sessionIdFor and defaultSessionIdFor below.
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { getEntry, type RegistryEntry } from '../agent-registry.js'
+import { getEntry, listAgents, type RegistryEntry } from '../agent-registry.js'
 import { createSessionStore } from '../session-store.js'
 import { runAgent } from '../run-agent.js'
 import type { AgentConfig } from '../agent-config.js'
+import { playgroundHtml } from './playground.js'
 
 const sessions = createSessionStore()
 
@@ -228,6 +229,22 @@ const server = createServer(async (req, res) => {
     const streamMatch = req.method === 'POST' && req.url?.match(/^\/agents\/([^/]+)\/messages\/stream$/)
     if (streamMatch) {
       await handleMessagesStream(req, res, decodeURIComponent(streamMatch[1]))
+      return
+    }
+
+    // Dev playground: a browser client on top of the two routes above,
+    // rendering the same SSE events /messages/stream already emits — see
+    // adapters/playground.ts. GET, not POST, and an exact path match
+    // (neither has a :name segment), so no risk of colliding with the
+    // regexes above (already partitioned by method).
+    if (req.method === 'GET' && req.url === '/playground') {
+      res.writeHead(200, { 'content-type': 'text/html' }).end(playgroundHtml)
+      return
+    }
+    if (req.method === 'GET' && req.url === '/agents') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(
+        JSON.stringify({ agents: listAgents().map((name) => ({ name, systemPrompt: getEntry(name)!.config.systemPrompt })) }),
+      )
       return
     }
 

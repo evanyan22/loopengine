@@ -257,6 +257,11 @@ Add `/stream` to the URL for a Server-Sent Events response — one event per
 loop step (tool call, permission decision, budget check) instead of a
 single reply at the end.
 
+**Dev playground:** with the server running, open
+`http://localhost:8787/playground` in a browser — pick an agent, chat
+with it, and watch that same loop-step event stream render live instead
+of reading raw SSE frames. Same `/messages/stream` route underneath.
+
 ## Wiring a real model
 
 Declare `AgentConfig.model` and the runtime builds a real `ModelCall` for
