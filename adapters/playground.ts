@@ -160,7 +160,7 @@ export const playgroundHtml: string = `<!doctype html>
 <body>
 <nav class="topnav">
   <a href="/agents">Agents</a>
-  <a href="/agents/config">Config</a>
+  <a href="/config">Config</a>
   <a href="/playground" class="active">Playground</a>
 </nav>
 <header>

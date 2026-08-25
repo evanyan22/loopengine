@@ -423,3 +423,30 @@ export async function listComposioTools(toolkit: string, cliCommand = 'composio'
   const raw = (await runComposioCli(cliCommand, ['tools', 'list', toolkit])) as RawComposioTool[]
   return raw.map((t) => ({ slug: t.slug, name: t.name, description: t.description }))
 }
+
+export interface ComposioAuthStatus {
+  connected: boolean
+  email?: string
+  org?: string
+}
+
+/** Whether the composio CLI itself (not any one connected app — see
+ * listComposioConnections for that) is authenticated on this machine.
+ * `composio whoami` succeeds once `composio login` has run and fails
+ * otherwise, so a failure here is read as "not connected", not
+ * propagated as an error the way listComposioConnections' own CLI
+ * failures are — this is a normal, expected state for an environment
+ * that just hasn't been logged in yet, not a bug. Deliberately
+ * read-only: login is an interactive, machine-wide CLI session (opens a
+ * browser, affects every agent's gateway tools, not just one web
+ * request), so the global config page's Gateways panel that calls this
+ * only ever shows status + instructions, never drives login/logout
+ * itself. */
+export async function getComposioAuthStatus(cliCommand = 'composio'): Promise<ComposioAuthStatus> {
+  try {
+    const raw = (await runComposioCli(cliCommand, ['whoami'])) as { email?: string; current_org_name?: string }
+    return { connected: true, email: raw.email, org: raw.current_org_name }
+  } catch {
+    return { connected: false }
+  }
+}

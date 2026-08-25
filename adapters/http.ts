@@ -34,6 +34,7 @@ import { SkillGarden } from 'skillgarden'
 import { playgroundHtml } from './playground.js'
 import { agentsConfigPageHtml } from './agents-config-page.js'
 import { agentsListPageHtml } from './agents-list-page.js'
+import { globalConfigPageHtml } from './global-config-page.js'
 import {
   addGatewayTool,
   agentDir,
@@ -57,6 +58,7 @@ import {
   ActauthRuleExistsError,
   ActauthRuleNotFoundError,
 } from '#actauth-admin.js'
+import { describeModelProviders, describeGateways } from '#global-config.js'
 import type { Decision } from 'actauth'
 
 const sessions = createSessionStore()
@@ -634,11 +636,30 @@ const server = createServer(async (req, res) => {
       return
     }
 
+    // Browser page: the account-wide counterpart to the per-agent
+    // Overview/Skills/Tools/ActAuth tabs below — a left sidebar of
+    // Models/Gateways (plus a plain link out to the per-agent Agents
+    // page), neither of which is a property of any one agent (see
+    // global-config.ts's own header comment for why those live in a
+    // separate module and page from adapters/agents-config-page.ts).
+    if (req.method === 'GET' && pathname === '/config') {
+      res.writeHead(200, { 'content-type': 'text/html' }).end(globalConfigPageHtml)
+      return
+    }
+    if (req.method === 'GET' && pathname === '/config/models') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(describeModelProviders()))
+      return
+    }
+    if (req.method === 'GET' && pathname === '/config/gateways') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(await describeGateways()))
+      return
+    }
+
     // Browser page: lists every registered agent and renders its full
     // config (tools, permissions, sessionIdFor, ...) via the JSON route
-    // below — see adapters/agents-config-page.ts. A fixed two-segment path,
-    // so it can't collide with the three-segment /agents/:name/config
-    // regex right below it.
+    // below — see adapters/agents-config-page.ts. A fixed two-segment
+    // path, so it can't collide with the three-segment
+    // /agents/:name/config regex right below it.
     if (req.method === 'GET' && pathname === '/agents/config') {
       res.writeHead(200, { 'content-type': 'text/html' }).end(agentsConfigPageHtml)
       return

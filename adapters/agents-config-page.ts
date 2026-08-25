@@ -39,6 +39,33 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     flex-direction: column;
     height: 100vh;
   }
+  /* Outer Agents/Models/Gateways section sidebar — matches
+     adapters/global-config-page.ts's own left nav, so this page (with
+     Agents pre-selected) and /config (with Models pre-selected) read as
+     two views of the same shell rather than unrelated pages. Models and
+     Gateways are real links out to /config?section=..., not client-side
+     panels rendered here too — that data/logic already lives in
+     global-config-page.ts, duplicating it here would just be two places
+     it could drift apart. Named .section-sidebar (not .sidebar) to avoid
+     colliding with nav.sidebar right below, which is the agent picker,
+     not this new outer one. */
+  .page-body { flex: 1; display: flex; min-height: 0; }
+  nav.section-sidebar {
+    width: 150px;
+    flex-shrink: 0;
+    border-right: 1px solid light-dark(#ddd, #333);
+    padding: 6px;
+  }
+  nav.section-sidebar a {
+    display: block;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 13px;
+    text-decoration: none;
+    color: inherit;
+  }
+  nav.section-sidebar a:hover { background: light-dark(#eee, #26262b); }
+  nav.section-sidebar a.active { background: light-dark(#dbeafe, #1e3a5f); font-weight: 600; }
   .layout { flex: 1; display: flex; min-height: 0; }
   nav.sidebar {
     width: 220px;
@@ -47,12 +74,6 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-  }
-  nav.sidebar h1 {
-    font-size: 14px;
-    margin: 0;
-    padding: 12px 14px;
-    border-bottom: 1px solid light-dark(#ddd, #333);
   }
   #agentList { list-style: none; margin: 0; padding: 6px; flex: 1; }
   #agentList li {
@@ -261,18 +282,24 @@ export const agentsConfigPageHtml: string = `<!doctype html>
 <body>
 <nav class="topnav">
   <a href="/agents">Agents</a>
-  <a href="/agents/config" class="active">Config</a>
+  <a href="/config" class="active">Config</a>
   <a href="/playground">Playground</a>
+</nav>
+<div class="page-body">
+<nav class="section-sidebar">
+  <a href="/agents/config" class="active">Agents</a>
+  <a href="/config?section=models">Models</a>
+  <a href="/config?section=gateways">Gateways</a>
 </nav>
 <div class="layout">
 <nav class="sidebar">
-  <h1>Agents</h1>
   <ul id="agentList"></ul>
 </nav>
 <main>
   <div id="empty">Pick an agent to see its config.</div>
   <div id="detail" style="display:none"></div>
 </main>
+</div>
 </div>
 <script>
 (function () {

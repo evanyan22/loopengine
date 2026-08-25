@@ -52,7 +52,7 @@ export const agentsListPageHtml: string = `<!doctype html>
 <body>
 <nav class="topnav">
   <a href="/agents" class="active">Agents</a>
-  <a href="/agents/config">Config</a>
+  <a href="/config">Config</a>
   <a href="/playground">Playground</a>
 </nav>
 <main>

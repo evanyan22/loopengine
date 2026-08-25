@@ -36,6 +36,15 @@ if (cmd === 'tools' && rest[0] === 'list') {
   process.exit(0)
 }
 
+if (cmd === 'whoami') {
+  if (process.env.COMPOSIO_FAKE_WHOAMI_FAIL) {
+    process.stderr.write('composio: not logged in\n')
+    process.exit(1)
+  }
+  process.stdout.write(JSON.stringify({ account_type: 'human', email: 'test@example.com', current_org_name: 'test-org' }))
+  process.exit(0)
+}
+
 if (cmd !== 'execute') {
   process.stderr.write(`unsupported command: ${cmd}\n`)
   process.exit(1)
