@@ -47,7 +47,7 @@
   "scripts": {
     "build": "tsc && chmod +x dist/cli.js",
     "prepublishOnly": "npm run build",
-    "start": "node dist/adapters/http.js",
+    "start": "node --env-file-if-exists=.env dist/adapters/http.js",
     "test": "vitest run"
   },
   "dependencies": {

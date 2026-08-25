@@ -271,7 +271,7 @@ its "Gateway tools" tab — alongside "Overview" and "Actauth" — to see its
 connected sources and add or remove one.
 
 ```bash
-npx tsx adapters/http.ts
+npx tsx --env-file-if-exists=.env adapters/http.ts
 # open http://localhost:8787/agents/config
 ```
 
@@ -347,7 +347,7 @@ npx tsx adapters/cli.ts --agent customer-service --session s1 "order A-1001 arri
 **HTTP:**
 
 ```bash
-npx tsx adapters/http.ts
+npx tsx --env-file-if-exists=.env adapters/http.ts
 curl -X POST localhost:8787/agents/customer-service/messages \
   -H 'content-type: application/json' \
   -d '{"customerEmail":"a@example.com","message":"order A-1001 arrived broken"}'
