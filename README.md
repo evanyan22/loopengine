@@ -22,6 +22,10 @@ front of real users or real systems:
 - **Multi-tenant out of the box** — the same deployed agent can serve
   different customers/orgs with different permission levels, with no
   forking required.
+- **Composable into bigger agents** — drop one agent's folder under
+  another's `subagents/` and it becomes a tool the parent can delegate
+  to, own tools/rules/loop intact. No chain DSL for orchestration either:
+  the parent's model just decides when to call it, like any other tool.
 
 So the payoff: you write one `AgentConfig`, and get a deployable,
 persistent, permission-safe service — not just a prompt-and-response demo.
