@@ -95,7 +95,7 @@ export const globalConfigPageHtml: string = `<!doctype html>
 <body>
 <nav class="topnav">
   <a href="/agents">Agents</a>
-  <a href="/config" class="active">Config</a>
+  <a href="/agents/config" class="active">Config</a>
   <a href="/playground">Playground</a>
 </nav>
 <div class="layout">
