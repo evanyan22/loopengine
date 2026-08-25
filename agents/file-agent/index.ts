@@ -8,8 +8,8 @@
 // reason it never was: it's fetched dynamically at runtime, not static
 // code with a file of its own to live in.
 import { connectComposioSource } from 'mcpplug'
-import type { AgentConfig } from '../../agent-config.js'
-import type { ModelCall } from '../../run-agent.js'
+import type { AgentConfig } from '#agent-config.js'
+import type { ModelCall } from '#run-agent.js'
 import { tools as handWrittenTools } from './tools/index.js'
 
 // Resolved once, at module-eval time, not per runAgent() call — a

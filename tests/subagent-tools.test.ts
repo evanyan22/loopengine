@@ -1,8 +1,8 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { runAgent, type Message, type ModelCall, type ModelResponse } from '../run-agent.js'
-import type { AgentConfig } from '../agent-config.js'
+import { runAgent, type Message, type ModelCall, type ModelResponse } from '#run-agent.js'
+import type { AgentConfig } from '#agent-config.js'
 
 // agentsRootDir (run-agent.ts) is resolved next to run-agent.ts itself,
 // not process.cwd() — but in this test run they're the same directory,
@@ -55,8 +55,11 @@ export function createModelCall() {
   )
 }
 
+const extraDirsToClean: string[] = []
+
 afterEach(() => {
   rmSync(PARENT_DIR, { recursive: true, force: true })
+  for (const dir of extraDirsToClean.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
 describe('subagent auto-loading (agents/<name>/subagents/*)', () => {
@@ -147,5 +150,120 @@ export function createModelCall() {
     const secondCallMessages = (modelCall as ReturnType<typeof vi.fn>).mock.calls[1][0] as Message[]
     expect(firstToolResult(secondCallMessages)?.content).toBe('"billing resolved via disputes-agent"')
     expect(result.text).toBe('done')
+  })
+
+  it('resolves an omitted tools/rules on a subagent against its own nested folder, not agents/<name>/', async () => {
+    const dir = join(PARENT_DIR, 'subagents', 'billing-agent-owndefaults')
+    mkdirSync(join(dir, 'tools'), { recursive: true })
+    writeFileSync(
+      join(dir, 'tools', 'index.ts'),
+      `export const tools = [{
+  name: 'lookup_invoice',
+  description: 'Look up an invoice',
+  input_schema: { type: 'object', properties: {} },
+  execute: async () => 'INV-1002: $49 Pro plan renewal',
+}]
+`,
+    )
+    writeFileSync(
+      join(dir, 'actauth.yml'),
+      `default_decision: deny
+rules:
+  - name: lookup-invoice-allowed
+    scope: "*/*"
+    tool: lookup_invoice
+    decision: allow
+`,
+    )
+    // tools and rules both omitted — must come from ./tools/index.ts and
+    // ./actauth.yml right here, not agents/billing-agent-owndefaults/...
+    writeFileSync(
+      join(dir, 'index.ts'),
+      `export const config = {
+  name: 'billing-agent-owndefaults',
+  systemPrompt: 'x',
+  toolDescription: 'Delegate billing questions.',
+  skillsDirs: [],
+}
+export function createModelCall() {
+  let call = 0
+  return async () => {
+    call++
+    if (call === 1) return { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'b1', name: 'lookup_invoice', input: {} }] }
+    return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'billing-agent-owndefaults answered' }] }
+  }
+}
+`,
+    )
+
+    let call = 0
+    const modelCall: ModelCall = vi.fn(async () => {
+      call++
+      if (call === 1) return toolUseResponse({ id: 't1', name: 'billing-agent-owndefaults', input: { request: 'what is INV-1002' } })
+      return textResponse('done')
+    })
+
+    await runAgent(baseConfig(), modelCall, 'what is INV-1002')
+
+    const secondCallMessages = (modelCall as ReturnType<typeof vi.fn>).mock.calls[1][0] as Message[]
+    expect(firstToolResult(secondCallMessages)?.content).toBe('"billing-agent-owndefaults answered"')
+  })
+
+  it('does not leak an unrelated top-level agent\'s tools/rules into a same-named subagent', async () => {
+    // A real top-level-style agents/<name>/ folder — same bare name as
+    // the nested subagent below, standing in for an unrelated agent that
+    // happens to share a name. Its tool and permissive actauth.yml must
+    // never be reachable from the subagent.
+    const flatDir = join(process.cwd(), 'agents', 'collision-name-agent')
+    extraDirsToClean.push(flatDir)
+    mkdirSync(join(flatDir, 'tools'), { recursive: true })
+    writeFileSync(
+      join(flatDir, 'tools', 'index.ts'),
+      `export const tools = [{
+  name: 'flat_secret_tool',
+  description: 'Should never be reachable from the subagent below',
+  input_schema: { type: 'object', properties: {} },
+  execute: async () => 'LEAKED',
+}]
+`,
+    )
+    writeFileSync(join(flatDir, 'actauth.yml'), 'default_decision: allow\n')
+
+    // The subagent: same bare name, own nested folder, no tools/rules of
+    // its own at all — so both must resolve to "nothing here" (empty
+    // tools, deny-everything), never to the flat folder above.
+    const nestedDir = join(PARENT_DIR, 'subagents', 'collision-name-agent')
+    mkdirSync(nestedDir, { recursive: true })
+    writeFileSync(
+      join(nestedDir, 'index.ts'),
+      `export const config = {
+  name: 'collision-name-agent',
+  systemPrompt: 'x',
+  toolDescription: 'x',
+  skillsDirs: [],
+}
+export function createModelCall() {
+  return async (messages, system, tools) => ({
+    stop_reason: 'end_turn',
+    content: [{ type: 'text', text: 'tools seen: ' + tools.map((t) => t.name).sort().join(',') }],
+  })
+}
+`,
+    )
+
+    let call = 0
+    const modelCall: ModelCall = vi.fn(async () => {
+      call++
+      if (call === 1) return toolUseResponse({ id: 't1', name: 'collision-name-agent', input: { request: 'hi' } })
+      return textResponse('done')
+    })
+
+    await runAgent(baseConfig(), modelCall, 'hi')
+
+    const secondCallMessages = (modelCall as ReturnType<typeof vi.fn>).mock.calls[1][0] as Message[]
+    // Empty, not "flat_secret_tool" — proves the subagent's tools default
+    // resolved against its own nested (empty) folder, not the flat
+    // same-named top-level one.
+    expect(firstToolResult(secondCallMessages)?.content).toBe('"tools seen: "')
   })
 })

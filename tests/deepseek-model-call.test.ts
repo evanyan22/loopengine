@@ -1,8 +1,8 @@
 import OpenAI from 'openai'
 import { describe, expect, it } from 'vitest'
 import { createDeepSeekModelCall } from '../model-calls/deepseek-model-call.js'
-import { runAgent, type ModelCall } from '../run-agent.js'
-import type { AgentConfig } from '../agent-config.js'
+import { runAgent, type ModelCall } from '#run-agent.js'
+import type { AgentConfig } from '#agent-config.js'
 
 /** Stubbed fetch, not a live call — same approach as
  * openai-model-call.test.ts. DeepSeek's Chat Completions API is wire-

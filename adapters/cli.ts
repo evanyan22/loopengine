@@ -17,7 +17,7 @@
 import { randomUUID } from 'node:crypto'
 import { getEntry, listAgents } from '../agent-registry.js'
 import { createSessionStore } from '../session-store.js'
-import { runAgent } from '../run-agent.js'
+import { runAgent } from '#run-agent.js'
 
 function parseArgs(argv: string[]) {
   let agent = ''

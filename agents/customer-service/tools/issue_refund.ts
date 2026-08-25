@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '../../../agent-config.js'
+import type { ToolDefinition } from '#agent-config.js'
 import { orders } from './orders-store.js'
 
 export const issueRefund: ToolDefinition = {

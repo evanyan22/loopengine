@@ -6,8 +6,8 @@
 // file-agent.ts. The model decides when to call it; run-agent.ts doesn't
 // know or care that "executing" this particular tool means a vector
 // search instead of a filesystem read or an MCP round-trip.
-import type { AgentConfig } from '../agent-config.js'
-import type { ModelCall } from '../run-agent.js'
+import type { AgentConfig } from '#agent-config.js'
+import type { ModelCall } from '#run-agent.js'
 import { VectorIndex } from '../vector-index.js'
 
 // A tiny knowledge base — short excerpts from the sibling libraries'

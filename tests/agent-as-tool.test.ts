@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { agentAsTool } from '../agent-as-tool.js'
-import type { AgentConfig } from '../agent-config.js'
-import type { ModelCall } from '../run-agent.js'
+import type { AgentConfig } from '#agent-config.js'
+import type { ModelCall } from '#run-agent.js'
 
 function baseConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {

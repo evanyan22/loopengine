@@ -14,8 +14,8 @@
 import { existsSync, readdirSync, type Dirent } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AgentConfig, AgentModelConfig } from './agent-config.js'
-import type { ModelCall } from './run-agent.js'
+import type { AgentConfig, AgentModelConfig } from '#agent-config.js'
+import type { ModelCall } from '#run-agent.js'
 
 export interface AgentModule {
   config: AgentConfig

@@ -3,7 +3,7 @@
 // `adapters/*.ts`, and the Dockerfile are this repo's own reference app
 // built on top of this surface, not part of it — see the README section
 // "Using loopengine as a library" for the boundary and why.
-export { runAgent } from './run-agent.js'
+export { runAgent } from '#run-agent.js'
 export type {
   Message,
   ModelCall,
@@ -11,9 +11,9 @@ export type {
   ModelResponse,
   RunAgentOptions,
   RunAgentResult,
-} from './run-agent.js'
+} from '#run-agent.js'
 
-export type { AgentConfig, AgentModelConfig, ToolSchema, ToolDefinition } from './agent-config.js'
+export type { AgentConfig, AgentModelConfig, ToolSchema, ToolDefinition } from '#agent-config.js'
 
 export { FileSessionStore, RedisSessionStore, createSessionStore } from './session-store.js'
 export type { SessionStore, SessionResult, RedisSessionStoreOptions } from './session-store.js'

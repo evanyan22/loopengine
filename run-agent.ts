@@ -12,7 +12,7 @@ import { SkillGarden } from 'skillgarden'
 import { ContextClipper, type Message as ContextClipMessage } from 'contextclip'
 import { ToolLane, type ToolCall as LaneCall, type SafetyClassifier } from 'toollane'
 import { Reflow } from 'reflowkit'
-import type { AgentConfig, ToolDefinition, ToolSchema } from './agent-config.js'
+import type { AgentConfig, ToolDefinition, ToolSchema } from '#agent-config.js'
 import { loadAgentModule } from './discover-agents.js'
 import { agentAsTool } from './agent-as-tool.js'
 
@@ -201,8 +201,7 @@ export function loadRules(config: AgentConfig): RuleSet {
  * this default) just gets `[]`, same as if it had explicitly set that. A
  * module that *does* exist but throws while importing, or doesn't export
  * `tools` at all, is a real bug and is not swallowed. */
-export async function loadDefaultTools(config: AgentConfig): Promise<ToolDefinition[]> {
-  const toolsDir = join(agentsRootDir, config.name, 'tools')
+async function loadToolsFromDir(toolsDir: string): Promise<ToolDefinition[]> {
   for (const indexName of ['index.ts', 'index.js']) {
     const indexPath = join(toolsDir, indexName)
     if (!existsSync(indexPath)) continue
@@ -213,6 +212,55 @@ export async function loadDefaultTools(config: AgentConfig): Promise<ToolDefinit
     return mod.tools
   }
   return []
+}
+
+export async function loadDefaultTools(config: AgentConfig): Promise<ToolDefinition[]> {
+  return loadToolsFromDir(join(agentsRootDir, config.name, 'tools'))
+}
+
+/** Every other folder-form default in this file (loadDefaultTools,
+ * loadRules, the skillsDirs default below) resolves against
+ * `agents/<name>/` — correct for a top-level agent, where that's exactly
+ * where its module lives, but wrong for a subagent: its `config` only
+ * carries its own bare name (e.g. 'billing-agent'), not the nested folder
+ * loadSubagentTools actually found it in
+ * (`agents/support-orchestrator/subagents/billing-agent/`). Left alone,
+ * an omitted `tools`/`rules`/`skillsDirs` on a subagent would silently
+ * resolve against `agents/billing-agent/...` instead — empty, if no such
+ * top-level folder exists, or worse, some *unrelated* top-level agent's
+ * tools/rules/skills, if one happens to share the same name.
+ *
+ * This patches exactly those three fields — only when the subagent's own
+ * config left them unset — to resolve against `dir`, its real folder,
+ * before it's ever handed to agentAsTool/runAgent. An explicit value on
+ * the subagent's own config (its author opted out on purpose) is always
+ * left untouched. `rules` gets the same "missing file is fine, empty
+ * deny-everything ruleset" fallback loadRules's own default path gets —
+ * computed here instead of left to loadRules, since leaving `rules`
+ * unset would have it fall through to loadRules's *own* (wrong,
+ * name-based) default path instead of this one. */
+async function resolveSubagentConfig(config: AgentConfig, dir: string): Promise<AgentConfig> {
+  const resolved = { ...config }
+
+  if (resolved.tools === undefined) {
+    resolved.tools = await loadToolsFromDir(join(dir, 'tools'))
+  }
+
+  if (resolved.rules === undefined) {
+    const rulesPath = join(dir, 'actauth.yml')
+    if (existsSync(rulesPath)) {
+      resolved.rules = rulesPath
+    } else {
+      resolved.rules = []
+      resolved.defaultDecision = resolved.defaultDecision ?? 'deny'
+    }
+  }
+
+  if (resolved.skillsDirs === undefined) {
+    resolved.skillsDirs = [join(dir, 'skills')]
+  }
+
+  return resolved
 }
 
 /** Auto-loads agents/<name>/subagents/<child>/index.{ts,js} — each one a
@@ -227,13 +275,15 @@ export async function loadDefaultTools(config: AgentConfig): Promise<ToolDefinit
  * own handling in discover-agents.ts.
  *
  * Each subagent is loaded via loadAgentModule — the same per-module
- * resolution discoverAgents itself uses — so a subagent's own `config`
- * goes through this exact same function again the next time *it* runs
- * (inside agentAsTool's execute, via runAgent). That's what makes nesting
- * (a subagent with its own subagents/ folder) work with no extra
- * recursion code: it's just this function being called again, one level
- * down. A folder can't be its own ancestor, so this can't cycle the way a
- * hand-wired agentAsTool(getEntry(...)) call elsewhere could. */
+ * resolution discoverAgents itself uses — then patched by
+ * resolveSubagentConfig (see its own doc comment for why) before being
+ * wrapped. Its own `config` goes through this exact same function again
+ * the next time *it* runs (inside agentAsTool's execute, via runAgent).
+ * That's what makes nesting (a subagent with its own subagents/ folder)
+ * work with no extra recursion code: it's just this function being
+ * called again, one level down. A folder can't be its own ancestor, so
+ * this can't cycle the way a hand-wired agentAsTool(getEntry(...)) call
+ * elsewhere could. */
 async function loadSubagentTools(config: AgentConfig): Promise<ToolDefinition[]> {
   const subagentsDir = join(agentsRootDir, config.name, 'subagents')
   if (!existsSync(subagentsDir)) return []
@@ -242,12 +292,14 @@ async function loadSubagentTools(config: AgentConfig): Promise<ToolDefinition[]>
   for (const dirent of readdirSync(subagentsDir, { withFileTypes: true })) {
     if (!dirent.isDirectory()) continue
 
-    const indexPath = ['index.ts', 'index.js'].map((n) => join(subagentsDir, dirent.name, n)).find((p) => existsSync(p))
+    const dir = join(subagentsDir, dirent.name)
+    const indexPath = ['index.ts', 'index.js'].map((n) => join(dir, n)).find((p) => existsSync(p))
     if (!indexPath) continue
 
     const label = `agents/${config.name}/subagents/${dirent.name}/index`
     const subagent = await loadAgentModule(indexPath, label)
-    tools.push(agentAsTool(subagent.config, subagent.createModelCall))
+    const subagentConfig = await resolveSubagentConfig(subagent.config, dir)
+    tools.push(agentAsTool(subagentConfig, subagent.createModelCall))
   }
   return tools
 }

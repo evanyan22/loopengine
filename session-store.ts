@@ -30,7 +30,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { Redis } from 'ioredis'
 import { SessionKnit, FileStorage, type Storage, type SessionEntry } from 'sessionknit'
-import type { Message } from './run-agent.js'
+import type { Message } from '#run-agent.js'
 
 export interface SessionResult<T> {
   /** Exactly what this turn added — durably appended as-is, in order.

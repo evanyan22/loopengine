@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { FileStorage } from 'sessionknit'
-import type { Message } from '../run-agent.js'
+import type { Message } from '#run-agent.js'
 import { FileSessionStore } from '../session-store.js'
 
 const dirs: string[] = []

@@ -1,8 +1,8 @@
 import OpenAI from 'openai'
 import { describe, expect, it } from 'vitest'
 import { createOpenAIModelCall } from '../model-calls/openai-model-call.js'
-import { runAgent, type ModelCall } from '../run-agent.js'
-import type { AgentConfig } from '../agent-config.js'
+import { runAgent, type ModelCall } from '#run-agent.js'
+import type { AgentConfig } from '#agent-config.js'
 
 /** Stubbed fetch, not a live call — same approach as
  * anthropic-model-call.test.ts, captures the exact request body sent to

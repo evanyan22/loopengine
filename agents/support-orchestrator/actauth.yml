@@ -1,0 +1,11 @@
+# See agent-config.ts's `rules` doc comment for how this file is loaded.
+# Governs support-orchestrator's own tools — which is just the
+# billing-agent subagent (see subagents/billing-agent/), one tool named
+# after the subagent itself.
+default_decision: deny
+
+rules:
+  - name: billing-agent-always-allowed
+    scope: "*/*"
+    tool: billing-agent
+    decision: allow

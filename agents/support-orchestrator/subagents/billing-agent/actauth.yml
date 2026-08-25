@@ -1,0 +1,11 @@
+# See agent-config.ts's `rules` doc comment for how this file is loaded.
+# Governs billing-agent's own tools. Resolved from *this* nested folder
+# by run-agent.ts's resolveSubagentConfig, not agents/billing-agent/
+# (there is no such top-level agent) — see index.ts's own comment.
+default_decision: deny
+
+rules:
+  - name: lookup-invoice-always-allowed
+    scope: "*/*"
+    tool: lookup_invoice
+    decision: allow
