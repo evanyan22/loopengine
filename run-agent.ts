@@ -3,7 +3,7 @@
 // differ. runAgent itself does no I/O and holds no state between calls:
 // callers own conversation history, which is what lets the same function
 // serve a one-shot CLI invocation and a long-lived chat session.
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parse as parseYaml } from 'yaml'
@@ -13,6 +13,8 @@ import { ContextClipper, type Message as ContextClipMessage } from 'contextclip'
 import { ToolLane, type ToolCall as LaneCall, type SafetyClassifier } from 'toollane'
 import { Reflow } from 'reflowkit'
 import type { AgentConfig, ToolDefinition, ToolSchema } from './agent-config.js'
+import { loadAgentModule } from './discover-agents.js'
+import { agentAsTool } from './agent-as-tool.js'
 
 // Resolved relative to *this file's own location* (via import.meta.url),
 // not process.cwd() — the same reasoning agent-registry.ts's own
@@ -213,6 +215,43 @@ export async function loadDefaultTools(config: AgentConfig): Promise<ToolDefinit
   return []
 }
 
+/** Auto-loads agents/<name>/subagents/<child>/index.{ts,js} — each one a
+ * full AgentConfig, wrapped with agentAsTool and merged into `config`'s
+ * own tools, no import or AgentConfig.tools edit required. Unlike
+ * loadDefaultTools, this always runs regardless of whether `config.tools`
+ * was left to its own default or set explicitly — see AgentConfig.tools's
+ * own doc comment for why subagents are a distinct concern from
+ * hand-written tools. A missing subagents/ folder is just `[]`, same
+ * missing-is-fine treatment tools/ and skills/ get; a subdirectory with
+ * neither index.ts nor index.js is skipped, same as resolveModulePath's
+ * own handling in discover-agents.ts.
+ *
+ * Each subagent is loaded via loadAgentModule — the same per-module
+ * resolution discoverAgents itself uses — so a subagent's own `config`
+ * goes through this exact same function again the next time *it* runs
+ * (inside agentAsTool's execute, via runAgent). That's what makes nesting
+ * (a subagent with its own subagents/ folder) work with no extra
+ * recursion code: it's just this function being called again, one level
+ * down. A folder can't be its own ancestor, so this can't cycle the way a
+ * hand-wired agentAsTool(getEntry(...)) call elsewhere could. */
+async function loadSubagentTools(config: AgentConfig): Promise<ToolDefinition[]> {
+  const subagentsDir = join(agentsRootDir, config.name, 'subagents')
+  if (!existsSync(subagentsDir)) return []
+
+  const tools: ToolDefinition[] = []
+  for (const dirent of readdirSync(subagentsDir, { withFileTypes: true })) {
+    if (!dirent.isDirectory()) continue
+
+    const indexPath = ['index.ts', 'index.js'].map((n) => join(subagentsDir, dirent.name, n)).find((p) => existsSync(p))
+    if (!indexPath) continue
+
+    const label = `agents/${config.name}/subagents/${dirent.name}/index`
+    const subagent = await loadAgentModule(indexPath, label)
+    tools.push(agentAsTool(subagent.config, subagent.createModelCall))
+  }
+  return tools
+}
+
 export async function runAgent(
   config: AgentConfig,
   modelCall: ModelCall,
@@ -234,7 +273,10 @@ export async function runAgent(
   // (including `[]`) is used as-is; omitted entirely defaults to
   // importing agents/<name>/tools/index.{ts,js} — see loadDefaultTools's
   // own doc comment for the full reasoning and the cases that can't use it.
-  const tools = config.tools ?? (await loadDefaultTools(config))
+  // agents/<name>/subagents/* is merged in on top either way — see
+  // loadSubagentTools's own doc comment for why that one isn't gated by
+  // whether `tools` was explicit.
+  const tools = [...(config.tools ?? (await loadDefaultTools(config))), ...(await loadSubagentTools(config))]
 
   // Omitted entirely (undefined): default to this agent's own
   // agents/<name>/skills — the folder-form convention every agent in

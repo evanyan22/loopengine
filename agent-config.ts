@@ -45,6 +45,15 @@ export interface AgentConfig {
   /** Also doubles as the ActAuth scope.agent segment. */
   name: string
   systemPrompt: string
+  /** Required only when this agent is wrapped with `agentAsTool` (see
+   * agent-as-tool.ts) — the ToolDefinition.description shown to a
+   * *parent* agent's model, so it knows when to delegate here.
+   * `systemPrompt` isn't a substitute: it's instructions for this agent
+   * itself, not a pitch to a caller deciding whether to invoke it.
+   * `agentAsTool` throws if this is missing. Irrelevant for an agent
+   * that's only ever run directly (via runAgent/CLI/HTTP), so it's
+   * optional here rather than required on every AgentConfig. */
+  toolDescription?: string
   /** See AgentModelConfig's own doc comment. Omit entirely and the module
    * must export its own `createModelCall` instead — `discoverAgents`
    * throws at startup on a module with neither. */
@@ -61,7 +70,14 @@ export interface AgentConfig {
    * missing-is-fine treatment `skillsDirs` gets. An agent that needs to
    * merge in tools from somewhere else too (e.g.
    * `agents/file-agent/index.ts`'s Composio-sourced ones) can't rely on
-   * this default and still needs to set `tools` explicitly. */
+   * this default and still needs to set `tools` explicitly.
+   *
+   * Unlike this field, `agents/<name>/subagents/*` (see
+   * agent-as-tool.ts) is *always* merged in on top of whatever `tools`
+   * resolves to, explicit array or default alike — subagents are a
+   * distinct concern (delegation) from hand-written tools (integration
+   * code), so setting `tools` explicitly doesn't opt an agent out of its
+   * own subagents/ folder the way it opts out of the tools/ default. */
   tools?: ToolDefinition[]
   /** ActAuth rules — either inline (handy for tests and small/synthetic
    * configs) or a path to an `actauth.yml` file (same shape as

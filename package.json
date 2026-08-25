@@ -35,6 +35,8 @@
     "dist/model-calls/deepseek-model-call.d.ts",
     "dist/discover-agents.js",
     "dist/discover-agents.d.ts",
+    "dist/agent-as-tool.js",
+    "dist/agent-as-tool.d.ts",
     "LICENSE"
   ],
   "scripts": {

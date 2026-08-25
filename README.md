@@ -64,6 +64,10 @@ conventional path under the agent's own folder:
 | `tools` | `agents/<name>/tools/index.ts`'s exported `tools` (missing → no tools) |
 | `skillsDirs` | `agents/<name>/skills` (missing → no skills) |
 
+There's no `subagents` field to omit — `agents/<name>/subagents/*` is its
+own folder convention, always merged into `tools` on top of whatever the
+table above resolves to. See "Subagents" below.
+
 `rules` is how you gate what a tool can do without approval — see
 "Tool permission and multi-tenancy" below.
 
@@ -188,7 +192,69 @@ Either kind of tool goes through the same permission gating, parallel
 scheduling, and context-budget tracking. See `agents/file-agent/index.ts`
 for a working example.
 
-### 4. Tool permission and multi-tenancy
+### 4. Subagents — an agent as another agent's tool
+
+Drop a folder under `agents/<name>/subagents/<child>/` and `child` becomes
+one of `name`'s tools automatically — no import, no `AgentConfig.tools`
+edit, nothing to register by hand:
+
+```
+agents/support-orchestrator/
+  index.ts                        # the orchestrator's own AgentConfig
+  subagents/
+    billing-agent/index.ts        # a full AgentConfig, same shape as a top-level agent
+    refunds-agent/index.ts
+```
+
+Scaffold one directly:
+
+```bash
+npx loopengine add-subagent support-orchestrator billing-agent
+# -> Created agents/support-orchestrator/subagents/billing-agent/index.ts
+```
+
+A subagent is a normal `AgentConfig` plus one required field —
+`toolDescription`, the text the *parent's* model reads to decide when to
+delegate to it (its own `systemPrompt` is instructions for itself, not a
+pitch to a caller deciding whether to invoke it):
+
+```ts
+export const config: AgentConfig = {
+  name: 'billing-agent',
+  systemPrompt: 'You answer billing questions.',
+  toolDescription: 'Call this for any billing-related question.',
+  model: { provider: 'anthropic', model: 'claude-sonnet-5' },
+}
+```
+
+Calling that tool runs the subagent's whole ReAct loop — its own tools,
+rules, permissions — to completion, and only its final text comes back;
+the parent never sees the subagent's turns or tool calls. Orchestration
+needs no separate concept on top of this: an "orchestrator" is just an
+agent whose tools happen to be other agents, and the model decides which
+to call, in what order, the same as any other tool — no chain DSL.
+
+Subagents nest — a subagent's own `subagents/` folder works the same way,
+one level down, addressed by joining names with `/`:
+
+```bash
+npx loopengine add-subagent support-orchestrator/billing-agent disputes-agent
+```
+
+A few things worth knowing before reaching for this:
+
+- **The call blocks.** Every tool call in the loop is awaited before the
+  next model turn, so a slow subagent blocks its parent's turn — and if
+  the parent is itself a subagent of another agent, that blocks too.
+  There's no background/async or streaming pattern here.
+- **Permissions don't inherit.** Each agent's own `actauth.yml` governs
+  only its own tools; delegating to a subagent neither grants nor
+  inherits permissions in either direction.
+- **`maxTurns` compounds.** A request that reaches a grandchild subagent
+  spends turns at every level (default 25 each) — a "simple" answer can
+  cost far more than any one agent's own turn budget suggests.
+
+### 5. Tool permission and multi-tenancy
 
 Every tool call is gated by [`actauth`](https://www.npmjs.com/package/actauth):
 each rule in `AgentConfig.rules` maps a `scope` (tenant/environment) + tool
@@ -222,7 +288,7 @@ undefined` — from headers only, never the request body, since it feeds
 permission decisions directly. No `tenantFor` means every request is the
 `'default'` tenant.
 
-### 5. Sessions
+### 6. Sessions
 
 A session is one ongoing conversation. Message history persists between
 requests automatically — send a message, get a reply, come back later with

@@ -30,5 +30,7 @@ export type { OpenAIModelCallOptions } from './model-calls/openai-model-call.js'
 export { createDeepSeekModelCall } from './model-calls/deepseek-model-call.js'
 export type { DeepSeekModelCallOptions } from './model-calls/deepseek-model-call.js'
 
-export { discoverAgents } from './discover-agents.js'
+export { discoverAgents, loadAgentModule } from './discover-agents.js'
 export type { AgentModule } from './discover-agents.js'
+
+export { agentAsTool } from './agent-as-tool.js'

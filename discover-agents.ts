@@ -79,6 +79,32 @@ function resolveModulePath(dir: string, entry: Dirent): { path: string; label: s
   return undefined
 }
 
+/** Imports one agent module at `path` and resolves it to an AgentModule —
+ * the single-file version of what discoverAgents does over a whole
+ * directory, factored out so run-agent.ts's subagent loader (see
+ * agent-as-tool.ts / loadSubagentTools) can load one `subagents/<name>/
+ * index.ts` at a time without duplicating this resolution logic.
+ * `label` is only used in error messages — discoverAgents passes
+ * `'<file> in <dir>'`, callers loading a single known path can just pass
+ * that path. */
+export async function loadAgentModule(path: string, label: string): Promise<AgentModule> {
+  const mod: unknown = await import(pathToFileURL(path).href)
+
+  if (!isRawAgentModule(mod) || !mod.config) {
+    throw new Error(`${label} does not export 'config' — every agent module must.`)
+  }
+
+  let createModelCall = mod.createModelCall
+  if (typeof createModelCall !== 'function') {
+    if (!mod.config.model) {
+      throw new Error(`${label} exports 'config' but neither 'createModelCall' nor 'config.model' — every agent module must have one or the other.`)
+    }
+    createModelCall = await synthesizeCreateModelCall(mod.config.model)
+  }
+
+  return { config: mod.config, createModelCall }
+}
+
 /** Scans `dir` for agent modules — direct `.ts`/`.js` files, or
  * subdirectories with an `index.ts`/`index.js` (see resolveModulePath) —
  * each expected to export `config`, and either its own `createModelCall`
@@ -93,28 +119,14 @@ export async function discoverAgents(dir: string): Promise<Map<string, AgentModu
     const resolved = resolveModulePath(dir, dirent)
     if (!resolved) continue
 
-    const mod: unknown = await import(pathToFileURL(resolved.path).href)
+    const agentModule = await loadAgentModule(resolved.path, `${resolved.label} in ${dir}`)
 
-    if (!isRawAgentModule(mod) || !mod.config) {
-      throw new Error(`${resolved.label} in ${dir} does not export 'config' — every agent module must.`)
-    }
-
-    let createModelCall = mod.createModelCall
-    if (typeof createModelCall !== 'function') {
-      if (!mod.config.model) {
-        throw new Error(
-          `${resolved.label} in ${dir} exports 'config' but neither 'createModelCall' nor 'config.model' — every agent module must have one or the other.`,
-        )
-      }
-      createModelCall = await synthesizeCreateModelCall(mod.config.model)
-    }
-
-    const name = mod.config.name
+    const name = agentModule.config.name
     if (entries.has(name)) {
       throw new Error(`Duplicate agent name '${name}' — ${resolved.label} in ${dir} isn't the first module to declare AgentConfig.name '${name}'.`)
     }
 
-    entries.set(name, { config: mod.config, createModelCall })
+    entries.set(name, agentModule)
   }
 
   return entries
