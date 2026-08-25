@@ -5,8 +5,10 @@
 // doc comments, or the README's "Define your first agent"), so using
 // that convention doesn't mean memorizing its shape and hand-writing it
 // every time.
+import { realpathSync } from 'node:fs'
 import { access, mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
 
@@ -187,8 +189,20 @@ async function main(): Promise<void> {
   process.exitCode = 1
 }
 
-// Only run when executed directly — not when scaffoldAgent is imported
-// for testing.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
-  main()
+// A package-manager shim (npx, node_modules/.bin) invokes this file
+// through a symlink, not its real path — process.argv[1] is the
+// symlink's path, while Node resolves import.meta.url to the real path
+// when loading an ES module. Comparing the raw argv[1] against the
+// resolved module URL fails in exactly that case and main() silently
+// never runs — realpath argv[1] first so both sides are resolved. (Same
+// bug, same fix, as create-loopengine's own cli.ts — see its git history
+// for the live symlink repro, and skillgarden's CLI before that.)
+function isMain(): boolean {
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+  } catch {
+    return false
+  }
 }
+if (isMain()) main()

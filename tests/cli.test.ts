@@ -1,8 +1,12 @@
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync, readFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AgentExistsError, AgentNameError, AgentNotFoundError, scaffoldAgent, scaffoldSubagent } from '../cli.js'
+
+const cliSourcePath = join(dirname(fileURLToPath(import.meta.url)), '..', 'cli.ts')
 
 const dirs: string[] = []
 function tmpDir(): string {
@@ -87,5 +91,34 @@ describe('scaffoldSubagent', () => {
     expect(indexPath).toBe(
       join(dir, 'agents', 'support-orchestrator', 'subagents', 'billing-agent', 'subagents', 'disputes-agent', 'index.ts'),
     )
+  })
+})
+
+describe('main() invoked through a symlink', () => {
+  // A package-manager shim (npx, node_modules/.bin) invokes the CLI
+  // through a symlink, not the real file — process.argv[1] is the
+  // symlink's path, while Node resolves import.meta.url to the real path
+  // when loading an ES module. Comparing the raw argv[1] against the
+  // resolved module URL fails in exactly that case and main() silently
+  // never runs (exit 0, no output, nothing scaffolded) — this is exactly
+  // how a real `npx loopengine add-agent` invocation resolves once
+  // installed as a dependency, unlike every other test in this file,
+  // which imports scaffoldAgent/scaffoldSubagent directly and never goes
+  // through argv/isMain() at all. Same bug/fix as create-loopengine's own
+  // cli.ts and skillgarden's CLI before that.
+  it('still runs main() and scaffolds an agent', () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'loopengine-bin-'))
+    const shimPath = join(binDir, 'loopengine')
+    symlinkSync(cliSourcePath, shimPath)
+
+    const parent = tmpDir()
+
+    const output = execFileSync('npx', ['tsx', shimPath, 'add-agent', 'weather-agent'], {
+      encoding: 'utf8',
+      cwd: parent,
+    })
+
+    expect(output).toContain('Created agents/weather-agent/index.ts')
+    expect(readFileSync(join(parent, 'agents', 'weather-agent', 'index.ts'), 'utf8')).toContain("name: 'weather-agent'")
   })
 })
