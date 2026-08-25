@@ -1,0 +1,13 @@
+sources:
+  - provider: composio
+    name: github
+    slugs:
+      - GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER
+  - provider: composio
+    name: sentry
+    slugs:
+      - SENTRY_ADD_REMOVE_USER_EMAIL_BY_ID
+  - provider: composio
+    name: clickup
+    slugs:
+      - CLICKUP_CREATE_CHAT_MESSAGE

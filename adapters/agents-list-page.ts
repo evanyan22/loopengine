@@ -52,8 +52,8 @@ export const agentsListPageHtml: string = `<!doctype html>
 <body>
 <nav class="topnav">
   <a href="/agents" class="active">Agents</a>
-  <a href="/playground">Playground</a>
   <a href="/agents/config">Config</a>
+  <a href="/playground">Playground</a>
 </nav>
 <main>
   <h1>Registered agents</h1>
@@ -88,8 +88,8 @@ export const agentsListPageHtml: string = `<!doctype html>
           '<div><div class="name">' + escapeHtml(agent.name) + '</div>' +
           '<div class="prompt">' + escapeHtml(agent.systemPrompt) + '</div></div>' +
           '<div class="links">' +
-          '<a href="/playground' + qs + '">Playground</a>' +
           '<a href="/agents/config' + qs + '">Config</a>' +
+          '<a href="/playground' + qs + '">Playground</a>' +
           '</div>';
         agentUl.appendChild(li);
       }

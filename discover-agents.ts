@@ -82,7 +82,7 @@ function resolveModulePath(dir: string, entry: Dirent): { path: string; label: s
 /** Imports one agent module at `path` and resolves it to an AgentModule —
  * the single-file version of what discoverAgents does over a whole
  * directory, factored out so run-agent.ts's subagent loader (see
- * agent-as-tool.ts / loadSubagentTools) can load one `subagents/<name>/
+ * agent-as-tool.ts / loadSubagentAsTools) can load one `subagents/<name>/
  * index.ts` at a time without duplicating this resolution logic.
  * `label` is only used in error messages — discoverAgents passes
  * `'<file> in <dir>'`, callers loading a single known path can just pass

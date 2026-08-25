@@ -289,10 +289,15 @@ describe('runAgent', () => {
   it('defaults skillsDirs to agents/<name>/skills when omitted entirely', async () => {
     const modelCall: ModelCall = vi.fn(async () => textResponse('no skills invoked'))
 
-    // No skillsDirs override — 'file-agent' matches this repo's real
-    // agents/file-agent/skills/ folder, so the default alone should be
-    // enough to discover and declare its skill.
-    await runAgent(baseConfig({ name: 'file-agent' }), modelCall, 'hi')
+    // No skillsDirs override — 'customer-service' matches this repo's
+    // real agents/customer-service/skills/ folder, so the default alone
+    // should be enough to discover and declare its skill. Not
+    // 'file-agent': that agent's own agents/file-agent/gateway-tools.yml
+    // (see gateway-tools.ts) would make this test depend on a real
+    // composio CLI/network call it has nothing to do with — runAgent
+    // resolves gateway tools by folder-name convention alone, with no
+    // way to opt a synthetic test config out of it.
+    await runAgent(baseConfig({ name: 'customer-service' }), modelCall, 'hi')
 
     const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
     expect(toolsSentToModel).toContainEqual(expect.objectContaining({ name: 'Skill' }))

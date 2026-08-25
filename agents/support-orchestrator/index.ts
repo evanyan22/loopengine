@@ -1,6 +1,6 @@
 // Demonstrates the subagent feature end to end. This orchestrator's only
 // "tool" is agents/support-orchestrator/subagents/billing-agent/ — see
-// run-agent.ts's loadSubagentTools and the README's "Subagents" section.
+// run-agent.ts's loadSubagentAsTools and the README's "Subagents" section.
 // Nothing here imports or registers billing-agent by hand; the folder
 // alone is what wires it in.
 import type { AgentConfig } from '#agent-config.js'

@@ -4,30 +4,23 @@
 // Everything about this one agent lives under this folder: tools/ (one
 // file per hand-written tool), skills/, and actauth.yml alongside it —
 // see agents/customer-service/index.ts's own comment for the full reasoning.
-// The Composio-sourced GitHub tool below isn't in tools/ for the same
-// reason it never was: it's fetched dynamically at runtime, not static
-// code with a file of its own to live in.
-import { connectComposioSource } from 'mcpplug'
+// The Composio-sourced GitHub tool used to be fetched here directly, at
+// module-eval time, via mcpplug's connectComposioSource — it's now
+// registered instead, in ./gateway-tools.yml (see gateway-tools.ts),
+// picked up automatically by run-agent.ts's loadGatewayToolsFromDir on
+// every request, the same mechanism the /agents/gateway-tools admin page
+// writes to for any other agent. Nothing here needs to know mcpplug
+// exists anymore, or block module load on a CLI subprocess call.
 import type { AgentConfig } from '#agent-config.js'
 import type { ModelCall } from '#run-agent.js'
-import { tools as handWrittenTools } from './tools/index.js'
-
-// Resolved once, at module-eval time, not per runAgent() call — a
-// gateway connection (mcpplug shells out to the composio CLI) is exactly
-// the kind of setup cost runAgent's own I/O-per-call tolerance (see
-// SkillGarden's re-scan above) doesn't extend to. Same reasoning
-// rag-agent.ts builds its VectorIndex once at import time rather than
-// per call; this is that pattern's async form. connectComposioSource
-// only needs the CLI to answer `--get-schema`, which doesn't require an
-// authenticated account — only actually *calling* the tool below does.
-const composioTools = await connectComposioSource('composio', {
-  slugs: ['GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER'],
-}).then((source) => source.loadTools())
 
 export const config: AgentConfig = {
   name: 'file-agent',
   systemPrompt: 'You summarize text files into other text files.',
-  tools: [...handWrittenTools, ...composioTools],
+  // No tools here — it defaults to importing agents/file-agent/tools/index.js
+  // (see AgentConfig.tools's own doc comment), the same file this used to
+  // import and assign directly as handWrittenTools. Composio's GitHub
+  // tool doesn't need a place here either now — see ./gateway-tools.yml.
   // No rules here — it defaults to agents/file-agent/actauth.yml (see
   // AgentConfig.rules's own doc comment), the same path this used to set
   // explicitly.
@@ -52,7 +45,7 @@ export const config: AgentConfig = {
   isSafeTool: (call) =>
     call.name === 'read_file' ||
     call.name === 'list_dir' ||
-    call.name === 'composio_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER',
+    call.name === 'github_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER',
 }
 
 // SIMULATED — no ANTHROPIC_API_KEY is configured in this environment.
@@ -96,7 +89,7 @@ export function createModelCall(): ModelCall {
     if (turn === 5) {
       return {
         stop_reason: 'tool_use',
-        content: [{ type: 'tool_use', id: 't6', name: 'composio_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER', input: { per_page: 5 } }],
+        content: [{ type: 'tool_use', id: 't6', name: 'github_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER', input: { per_page: 5 } }],
       }
     }
     return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done — wrote a one-paragraph summary to examples/file-agent/summary.txt.' }] }

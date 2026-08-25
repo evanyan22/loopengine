@@ -258,7 +258,37 @@ A few things worth knowing before reaching for this:
   spends turns at every level (default 25 each) — a "simple" answer can
   cost far more than any one agent's own turn budget suggests.
 
-### 5. Tool permission and multi-tenancy
+### 5. Gateway tool sources — connecting external tools from a web page
+
+Beyond hand-written tools and subagents, an agent can pull tools from an
+external gateway — [Composio](https://composio.dev) today, with
+[`mcpplug`](https://www.npmjs.com/package/mcpplug)'s `ToolSource`
+interface designed so more providers (Nango, Arcade, Scalekit, ...) slot
+in later as thin adapters, same shape. Unlike hand-written tools, these
+are meant to be managed by an operator at runtime, not committed to code:
+run the HTTP adapter, open `/agents/config`, pick an agent, and switch to
+its "Gateway tools" tab — alongside "Overview" and "Actauth" — to see its
+connected sources and add or remove one.
+
+```bash
+npx tsx adapters/http.ts
+# open http://localhost:8787/agents/config
+```
+
+Adding a source (via the page, or `POST /agents/:name/gateway-tools` with
+`{ provider: 'composio', name: 'gh', slugs: [...] }`) writes
+`agents/<name>/gateway-tools.yml` — read fresh off disk on every request,
+same "no restart to see an edit" behavior `actauth.yml` already has.
+Composio's own OAuth is out of band: run `composio link <toolkit>` once
+on the machine running the server, then use the page purely to pick which
+already-authorized slugs to expose to which agent.
+
+A newly-added tool is **denied by default**, same "opt-in, not silently
+allowed" rule every tool in this repo follows — pass a `decision` when
+adding a source (or use the page's permission dropdown) to seed an
+`actauth.yml` rule for it instead, or add the rule by hand afterward.
+
+### 6. Tool permission and multi-tenancy
 
 Every tool call is gated by [`actauth`](https://www.npmjs.com/package/actauth):
 each rule in `AgentConfig.rules` maps a `scope` (tenant/environment) + tool
@@ -292,7 +322,7 @@ undefined` — from headers only, never the request body, since it feeds
 permission decisions directly. No `tenantFor` means every request is the
 `'default'` tenant.
 
-### 6. Sessions
+### 7. Sessions
 
 A session is one ongoing conversation. Message history persists between
 requests automatically — send a message, get a reply, come back later with

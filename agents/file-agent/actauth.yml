@@ -27,5 +27,13 @@ rules:
   # reasoning: nothing this call does needs a human in the loop.
   - name: github-list-repos-allowed
     scope: default/production
-    tool: composio_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER
+    tool: github_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER
+    decision: allow
+  - name: composio-sentry_SENTRY_ADD_REMOVE_USER_EMAIL_BY_ID-web-added
+    scope: "*/*"
+    tool: sentry_SENTRY_ADD_REMOVE_USER_EMAIL_BY_ID
+    decision: allow
+  - name: composio-clickup_CLICKUP_CREATE_CHAT_MESSAGE-web-added
+    scope: "*/*"
+    tool: clickup_CLICKUP_CREATE_CHAT_MESSAGE
     decision: allow

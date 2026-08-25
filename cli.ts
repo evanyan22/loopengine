@@ -29,7 +29,7 @@ export const config: AgentConfig = {
 
 /** Same shape as agentIndexTemplate, plus `toolDescription` — the one
  * field a subagent needs that a top-level agent doesn't. run-agent.ts's
- * loadSubagentTools wraps this config with agentAsTool, which throws
+ * loadSubagentAsTools wraps this config with agentAsTool, which throws
  * without a real toolDescription: it's what the parent agent's model
  * reads to decide when to delegate here, and systemPrompt (instructions
  * for this agent itself) isn't a substitute. See agent-as-tool.ts. */
@@ -88,7 +88,7 @@ function resolveParentDir(baseDir: string, parent: string): string {
 /** Writes <parentDir>/subagents/<name>/index.ts under baseDir and
  * returns its path, where <parentDir> is `parent` resolved by
  * resolveParentDir — the folder convention run-agent.ts's
- * loadSubagentTools auto-discovers, so this subagent becomes one of
+ * loadSubagentAsTools auto-discovers, so this subagent becomes one of
  * `parent`'s tools with no further edits: no import, no
  * AgentConfig.tools entry, nothing to register by hand. Requires
  * `parent` to already exist (its own index.ts) — a subagent without a

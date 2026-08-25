@@ -28,11 +28,26 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { getEntry, listAgents, type RegistryEntry } from '../agent-registry.js'
 import { createSessionStore } from '../session-store.js'
-import { runAgent, loadRules, loadDefaultTools } from '#run-agent.js'
+import { runAgent, loadRules, loadDefaultTools, loadSubagentAsTools } from '#run-agent.js'
 import type { AgentConfig } from '#agent-config.js'
+import { SkillGarden } from 'skillgarden'
 import { playgroundHtml } from './playground.js'
 import { agentsConfigPageHtml } from './agents-config-page.js'
 import { agentsListPageHtml } from './agents-list-page.js'
+import {
+  addGatewayTool,
+  agentDir,
+  describeGatewayTools,
+  listComposioConnections,
+  listComposioTools,
+  loadGatewayToolsFromDir,
+  removeGatewayTool,
+  removeGatewayToolSlug,
+  GatewayToolExistsError,
+  GatewayToolNotFoundError,
+  type GatewayToolEntry,
+} from '#gateway-tools.js'
+import type { Decision } from 'actauth'
 
 const sessions = createSessionStore()
 
@@ -165,15 +180,44 @@ async function parseRequest(req: IncomingMessage, agentName: string): Promise<Pa
 // any function value (approver, isSafeTool, sessionIdFor, tenantFor) —
 // those either aren't JSON-serializable or would leak a secret; each is
 // reported as 'custom' vs its default instead.
+//
+// Includes subagents (loadSubagentAsTools) and gateway-registered tools
+// (loadGatewayToolsFromDir) alongside config.tools/loadDefaultTools —
+// omitting either would make this page lie about what runAgent()
+// actually resolves, exactly the drift its own reasoning above is meant
+// to prevent.
+function describeTool(t: { name: string; description: string; safe?: boolean; input_schema: Record<string, unknown> }) {
+  return { name: t.name, description: t.description, safe: t.safe === true, input_schema: t.input_schema }
+}
+
 async function describeAgent(entry: RegistryEntry): Promise<Record<string, unknown>> {
   const { config } = entry
-  const tools = config.tools ?? (await loadDefaultTools(config))
+  // Kept separate (not just concatenated into one `tools` array — though
+  // that's still returned too, below, for Overview's own at-a-glance
+  // count) so the "Tools" tab can show where each one actually comes
+  // from: hand-written (agents/<name>/tools/), delegated to a subagent
+  // (agentAsTool), or registered through a gateway (gateway-tools.ts) —
+  // three different things an operator would reason about differently,
+  // flattened together they'd just look like an undifferentiated list.
+  const localTools = config.tools ?? (await loadDefaultTools(config))
+  const agentAsTools = await loadSubagentAsTools(config)
+  const gatewayTools = await loadGatewayToolsFromDir(agentDir(config.name))
+  const tools = [...localTools, ...agentAsTools, ...gatewayTools]
   const rules = loadRules(config)
   const rulesSource = Array.isArray(config.rules)
     ? 'inline'
     : config.rules !== undefined
       ? `file: ${config.rules}`
       : `default: agents/${config.name}/actauth.yml`
+
+  // Same resolution run-agent.ts's own runAgent() does for its Skill
+  // tool's index — reused rather than re-derived, so a "Skills" tab shows
+  // exactly what the next real request would actually see available, not
+  // a second guess (same reasoning this function's own header comment
+  // already gives for tools/permissions).
+  const skillsDirs = config.skillsDirs ?? [`agents/${config.name}/skills`]
+  const skillGarden = skillsDirs.length ? new SkillGarden({ dirs: skillsDirs, indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 }) : null
+  const skillIndex = skillGarden?.buildIndex().included ?? []
 
   return {
     name: config.name,
@@ -184,8 +228,12 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
     maxTurns: config.maxTurns ?? 25,
     contextBudgetTokens: config.contextBudgetTokens ?? 8000,
     skillIndexBudgetTokens: config.skillIndexBudgetTokens ?? 200,
-    skillsDirs: config.skillsDirs ?? [`agents/${config.name}/skills`],
-    tools: tools.map((t) => ({ name: t.name, description: t.description, safe: t.safe === true, input_schema: t.input_schema })),
+    skillsDirs: skillsDirs,
+    skills: skillIndex.map((s) => ({ name: s.name, description: s.description })),
+    tools: tools.map(describeTool),
+    localTools: localTools.map(describeTool),
+    agentAsTools: agentAsTools.map(describeTool),
+    gatewayTools: gatewayTools.map(describeTool),
     permissions: {
       source: rulesSource,
       defaultDecision: rules.defaultDecision,
@@ -195,6 +243,125 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
     sessionIdFor: config.sessionIdFor ? 'custom' : 'default (client-supplied `sessionId` field)',
     tenantFor: config.tenantFor ? 'custom' : "none (every request is the 'default' tenant)",
     approver: config.approver ? 'custom' : 'default (ConsoleApprover)',
+  }
+}
+
+// Backs POST /agents/:name/gateway-tools — validates the body into a
+// GatewayToolEntry and hands it to gateway-tools.ts's addGatewayTool. Only
+// 'composio' is accepted today (gateway-tools.ts's own GatewayToolEntry
+// union is exactly that narrow); a second provider means one more arm
+// here, not a rewrite.
+function parseGatewayToolEntry(body: Record<string, unknown>): { ok: true; value: GatewayToolEntry } | { ok: false; error: string } {
+  if (body.provider !== 'composio') return { ok: false, error: `unsupported provider '${String(body.provider)}' — only 'composio' today` }
+  if (typeof body.name !== 'string' || !body.name) return { ok: false, error: 'name is required' }
+  if (!Array.isArray(body.slugs) || body.slugs.length === 0 || !body.slugs.every((s) => typeof s === 'string' && s)) {
+    return { ok: false, error: 'slugs must be a non-empty array of strings' }
+  }
+  const entry: GatewayToolEntry = { provider: 'composio', name: body.name, slugs: body.slugs as string[] }
+  if (typeof body.cliCommand === 'string' && body.cliCommand) entry.cliCommand = body.cliCommand
+  return { ok: true, value: entry }
+}
+
+function isDecision(value: unknown): value is Decision {
+  return value === 'allow' || value === 'ask' || value === 'deny'
+}
+
+async function handleToolSourcesGet(res: ServerResponse, agentName: string): Promise<void> {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  const sources = await describeGatewayTools(agentName)
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ sources }))
+}
+
+async function handleToolSourcesPost(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  const body = await readJsonBody(req)
+  const parsed = parseGatewayToolEntry(body)
+  if (!parsed.ok) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsed.error }))
+    return
+  }
+  const decision = isDecision(body.decision) ? body.decision : undefined
+  try {
+    addGatewayTool(agentName, parsed.value, decision)
+  } catch (err) {
+    const status = err instanceof GatewayToolExistsError ? 409 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+  const sources = await describeGatewayTools(agentName)
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ sources }))
+}
+
+function handleToolSourcesDelete(res: ServerResponse, agentName: string, sourceName: string): void {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  try {
+    removeGatewayTool(agentName, sourceName)
+  } catch (err) {
+    const status = err instanceof GatewayToolNotFoundError ? 404 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))
+}
+
+// Backs the per-tool remove icon in the Tools tab's Gateway Tools list
+// (as opposed to handleToolSourcesDelete above, which drops a whole
+// source). Returns the freshly-resolved sources, same as
+// handleToolSourcesPost — so the frontend can apply the result directly
+// instead of making a second, redundant GET for the same data.
+async function handleGatewayToolSlugDelete(res: ServerResponse, agentName: string, sourceName: string, slug: string): Promise<void> {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  try {
+    removeGatewayToolSlug(agentName, sourceName, slug)
+  } catch (err) {
+    const status = err instanceof GatewayToolNotFoundError ? 404 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+  const sources = await describeGatewayTools(agentName)
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ sources }))
+}
+
+// Backs GET /composio/connections and GET /composio/tools — not scoped
+// under /agents/:name/ like the routes above, deliberately: which apps
+// are connected and what they offer isn't a property of any one agent,
+// it's whatever Composio account is authenticated on this machine (via
+// `composio link <toolkit>`), the same one every agent's gateway tools
+// already draw from. These two back the add-a-source picker in
+// adapters/agents-config-page.ts's Gateway Tools section — see
+// listComposioConnections/listComposioTools's own doc comments for why
+// this doesn't need any extra setup beyond that.
+async function handleComposioConnections(res: ServerResponse): Promise<void> {
+  try {
+    const connections = await listComposioConnections()
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ connections }))
+  } catch (err) {
+    res.writeHead(502, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+  }
+}
+
+async function handleComposioTools(res: ServerResponse, toolkit: string | undefined): Promise<void> {
+  if (!toolkit) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'toolkit query parameter is required' }))
+    return
+  }
+  try {
+    const tools = await listComposioTools(toolkit)
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ tools }))
+  } catch (err) {
+    res.writeHead(502, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
   }
 }
 
@@ -331,6 +498,56 @@ const server = createServer(async (req, res) => {
         return
       }
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(await describeAgent(entry)))
+      return
+    }
+
+    // Backs the add-a-source picker (see handleComposioConnections's own
+    // doc comment for why these aren't under /agents/:name/). Checked
+    // before the /agents/... routes below only because they're declared
+    // first here — there's no actual path overlap to worry about, these
+    // don't start with /agents at all.
+    if (req.method === 'GET' && pathname === '/composio/connections') {
+      await handleComposioConnections(res)
+      return
+    }
+    if (req.method === 'GET' && pathname === '/composio/tools') {
+      const toolkit = new URL(req.url ?? '/', 'http://localhost').searchParams.get('toolkit') ?? undefined
+      await handleComposioTools(res, toolkit)
+      return
+    }
+
+    // No standalone admin page for these — gateway-tools.ts's registry is
+    // managed from a "Gateway tools" tab inside /agents/config now (see
+    // adapters/agents-config-page.ts), not its own page. These JSON
+    // routes are what that tab's script calls.
+    // Three segments after gateway-tools/ (sourceName/slug) — checked
+    // before the two-segment (sourceName only) route right below; the
+    // trailing `$` anchor on each means they never actually overlap
+    // regardless of order, but the more specific one reads better first.
+    const gatewayToolSlugDeleteMatch = req.method === 'DELETE' && pathname.match(/^\/agents\/([^/]+)\/gateway-tools\/([^/]+)\/([^/]+)$/)
+    if (gatewayToolSlugDeleteMatch) {
+      await handleGatewayToolSlugDelete(
+        res,
+        decodeURIComponent(gatewayToolSlugDeleteMatch[1]),
+        decodeURIComponent(gatewayToolSlugDeleteMatch[2]),
+        decodeURIComponent(gatewayToolSlugDeleteMatch[3]),
+      )
+      return
+    }
+
+    const gatewayToolsDeleteMatch = req.method === 'DELETE' && pathname.match(/^\/agents\/([^/]+)\/gateway-tools\/([^/]+)$/)
+    if (gatewayToolsDeleteMatch) {
+      handleToolSourcesDelete(res, decodeURIComponent(gatewayToolsDeleteMatch[1]), decodeURIComponent(gatewayToolsDeleteMatch[2]))
+      return
+    }
+
+    const gatewayToolsMatch = pathname.match(/^\/agents\/([^/]+)\/gateway-tools$/)
+    if (gatewayToolsMatch && req.method === 'GET') {
+      await handleToolSourcesGet(res, decodeURIComponent(gatewayToolsMatch[1]))
+      return
+    }
+    if (gatewayToolsMatch && req.method === 'POST') {
+      await handleToolSourcesPost(req, res, decodeURIComponent(gatewayToolsMatch[1]))
       return
     }
 

@@ -15,6 +15,7 @@ import { Reflow } from 'reflowkit'
 import type { AgentConfig, ToolDefinition, ToolSchema } from '#agent-config.js'
 import { loadAgentModule } from './discover-agents.js'
 import { agentAsTool } from './agent-as-tool.js'
+import { loadGatewayToolsFromDir } from './gateway-tools.js'
 
 // Resolved relative to *this file's own location* (via import.meta.url),
 // not process.cwd() — the same reasoning agent-registry.ts's own
@@ -223,7 +224,7 @@ export async function loadDefaultTools(config: AgentConfig): Promise<ToolDefinit
  * `agents/<name>/` — correct for a top-level agent, where that's exactly
  * where its module lives, but wrong for a subagent: its `config` only
  * carries its own bare name (e.g. 'billing-agent'), not the nested folder
- * loadSubagentTools actually found it in
+ * loadSubagentAsTools actually found it in
  * (`agents/support-orchestrator/subagents/billing-agent/`). Left alone,
  * an omitted `tools`/`rules`/`skillsDirs` on a subagent would silently
  * resolve against `agents/billing-agent/...` instead — empty, if no such
@@ -238,13 +239,20 @@ export async function loadDefaultTools(config: AgentConfig): Promise<ToolDefinit
  * deny-everything ruleset" fallback loadRules's own default path gets —
  * computed here instead of left to loadRules, since leaving `rules`
  * unset would have it fall through to loadRules's *own* (wrong,
- * name-based) default path instead of this one. */
+ * name-based) default path instead of this one.
+ *
+ * `gateway-tools.yml` (see gateway-tools.ts) gets the same dir-correctness
+ * fix, but merged in unconditionally rather than gated on `tools` being
+ * unset — same reasoning loadSubagentAsTools' own unconditional merge into
+ * the top-level tools line has: gateway-registered tools are an
+ * operator/admin concern, distinct from hand-written `tools`, so setting
+ * `tools` explicitly shouldn't opt a subagent out of its own
+ * gateway-tools.yml the way it opts out of the tools/ folder default. */
 async function resolveSubagentConfig(config: AgentConfig, dir: string): Promise<AgentConfig> {
   const resolved = { ...config }
 
-  if (resolved.tools === undefined) {
-    resolved.tools = await loadToolsFromDir(join(dir, 'tools'))
-  }
+  const baseTools = resolved.tools === undefined ? await loadToolsFromDir(join(dir, 'tools')) : resolved.tools
+  resolved.tools = [...baseTools, ...(await loadGatewayToolsFromDir(dir))]
 
   if (resolved.rules === undefined) {
     const rulesPath = join(dir, 'actauth.yml')
@@ -284,7 +292,7 @@ async function resolveSubagentConfig(config: AgentConfig, dir: string): Promise<
  * called again, one level down. A folder can't be its own ancestor, so
  * this can't cycle the way a hand-wired agentAsTool(getEntry(...)) call
  * elsewhere could. */
-async function loadSubagentTools(config: AgentConfig): Promise<ToolDefinition[]> {
+export async function loadSubagentAsTools(config: AgentConfig): Promise<ToolDefinition[]> {
   const subagentsDir = join(agentsRootDir, config.name, 'subagents')
   if (!existsSync(subagentsDir)) return []
 
@@ -325,10 +333,15 @@ export async function runAgent(
   // (including `[]`) is used as-is; omitted entirely defaults to
   // importing agents/<name>/tools/index.{ts,js} — see loadDefaultTools's
   // own doc comment for the full reasoning and the cases that can't use it.
-  // agents/<name>/subagents/* is merged in on top either way — see
-  // loadSubagentTools's own doc comment for why that one isn't gated by
+  // agents/<name>/subagents/* and agents/<name>/gateway-tools.yml (see
+  // gateway-tools.ts) are both merged in on top either way — see
+  // loadSubagentAsTools's own doc comment for why neither is gated by
   // whether `tools` was explicit.
-  const tools = [...(config.tools ?? (await loadDefaultTools(config))), ...(await loadSubagentTools(config))]
+  const tools = [
+    ...(config.tools ?? (await loadDefaultTools(config))),
+    ...(await loadSubagentAsTools(config)),
+    ...(await loadGatewayToolsFromDir(join(agentsRootDir, config.name))),
+  ]
 
   // Omitted entirely (undefined): default to this agent's own
   // agents/<name>/skills — the folder-form convention every agent in

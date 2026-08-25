@@ -160,8 +160,8 @@ export const playgroundHtml: string = `<!doctype html>
 <body>
 <nav class="topnav">
   <a href="/agents">Agents</a>
-  <a href="/playground" class="active">Playground</a>
   <a href="/agents/config">Config</a>
+  <a href="/playground" class="active">Playground</a>
 </nav>
 <header>
   <h1>LoopEngine Playground</h1>

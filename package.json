@@ -40,6 +40,8 @@
     "dist/discover-agents.d.ts",
     "dist/agent-as-tool.js",
     "dist/agent-as-tool.d.ts",
+    "dist/gateway-tools.js",
+    "dist/gateway-tools.d.ts",
     "LICENSE"
   ],
   "scripts": {
