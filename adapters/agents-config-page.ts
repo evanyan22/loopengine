@@ -146,18 +146,20 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     align-items: baseline;
     gap: 8px;
   }
-  .remove-tool-btn {
+  .delete-btn {
     flex-shrink: 0;
-    width: 18px;
-    height: 18px;
-    line-height: 1;
-    padding: 0;
-    border-radius: 50%;
-    font-size: 13px;
+    font-size: 12px;
     color: light-dark(#991b1b, #f87171);
+    background: light-dark(#fee2e2, #3a1f1f);
     border-color: light-dark(#f3b4b4, #6b3232);
   }
-  .remove-tool-btn:hover { background: light-dark(#fee2e2, #4a1f1f); }
+  .delete-btn:hover { background: light-dark(#fecaca, #4a1f1f); }
+  /* Explicit rather than relying on inherited font-size: .edit-rule-btn
+     sits inside a 12px table, but .edit-skill-btn sits in .source-head
+     (no font-size of its own, so it'd otherwise inherit the page's
+     larger default) — without this the two Edit buttons render at
+     visibly different sizes despite being the same component. */
+  .edit-rule-btn, .edit-skill-btn { font-size: 12px; }
   /* Flex items default to min-width: auto, which means a long,
      unbreakable token (a slug like GITHUB_LIST_REPOSITORIES_FOR_THE_
      AUTHENTICATED_USER has no spaces for the browser to wrap at) simply
@@ -177,6 +179,52 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   form.add-source label { font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
   form.add-source input, form.add-source select, form.add-source textarea { width: 100%; }
   form.add-source textarea { font-family: ui-monospace, monospace; min-height: 60px; }
+  /* Overrides form.add-source's shared max-width/textarea defaults for
+     the skill editor specifically — id selectors beat the class-level
+     rules above without needing to touch what every other add-source
+     form (gateway tools, actauth rules) looks like. A skill's
+     description/body are real prose/markdown, not the short one-liners
+     the shared 480px/60px defaults were sized for. */
+  #skillForm { max-width: 720px; }
+  #skillDescInput { font-family: inherit; min-height: 48px; resize: vertical; }
+  #skillBodyInput { min-height: 280px; resize: vertical; }
+  /* Same "field label" look form.add-source label gets, reproduced on a
+     <div> instead of a <label> — a <label> wrapping the Write/Preview
+     toggle buttons would make clicking them also fire the label's own
+     default click-forwarding behavior, aimed at whatever form control
+     the label wraps first (the textarea), which isn't what a toggle
+     button click should do. */
+  .body-field { font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+  .body-field-head { display: flex; align-items: center; justify-content: space-between; }
+  .md-toggle { display: flex; gap: 4px; }
+  .md-toggle-btn { padding: 2px 8px; font-size: 11px; background: transparent; }
+  .md-toggle-btn.active { background: light-dark(#e8e8ea, #333338); font-weight: 600; }
+  .markdown-body {
+    border: 1px solid light-dark(#ccc, #444);
+    border-radius: 6px;
+    padding: 10px 14px;
+    min-height: 280px;
+    max-height: 480px;
+    overflow-y: auto;
+  }
+  .markdown-body h1, .markdown-body h2 {
+    border-bottom: 1px solid light-dark(#eee, #333338);
+    padding-bottom: 4px;
+  }
+  .markdown-body pre {
+    background: light-dark(#f6f8fa, #26262b);
+    padding: 10px 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+  }
+  .markdown-body code {
+    background: light-dark(#eee, #2a2a2e);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+  }
+  .markdown-body pre code { background: none; padding: 0; }
   .tool-picker-list {
     max-height: 240px;
     overflow-y: auto;
@@ -237,11 +285,14 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   // every agent switch so a stale agent's sources are never shown under
   // a new one, and re-fetched the next time that tab is opened.
   var gatewayLoadedFor = null;
+  // Same idea, for the Actauth tab's own separately-fetched GET
+  // .../actauth (see renderActauthTabPlaceholder's own doc comment).
+  var actauthLoadedFor = null;
   // The full /agents/:name/config response the currently-open agent was
-  // last rendered from — kept around so refreshActauthDependentPanels
-  // below can re-fetch and re-render just Overview/Actauth (both read
-  // cfg.permissions) after adding or removing a gateway tool, without
-  // touching the Tools tab's own already-current state.
+  // last rendered from — kept around so refreshActauthDependentPanels/
+  // refreshSkillsDependentPanels below can re-fetch and re-render just
+  // the panels that read cfg (Overview, Skills) after a change, without
+  // touching the Tools/Actauth tabs' own already-current state.
   var currentCfg = null;
 
   function decisionClass(decision) {
@@ -258,6 +309,129 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     return '<span class="badge ' + (label === 'custom' ? 'badge-custom' : 'badge-default') + '">' + escapeHtml(label) + '</span>';
   }
 
+  // A small, deliberately non-CommonMark markdown-to-HTML renderer for
+  // the skill Body field's Preview toggle (see wireSkillsHandlers) — this
+  // page stays a self-contained string, no build step, no CDN (same
+  // reasoning as devUiCss's own header comment), so pulling in a real
+  // markdown library isn't an option without breaking that. Covers what
+  // an actual SKILL.md body realistically uses (headings, bold/italic,
+  // inline code, fenced code blocks, links, lists, rules, paragraphs) —
+  // good enough for "does this read the way it will on GitHub", not a
+  // spec-complete parser. Escapes first, so no markdown source can inject
+  // raw HTML into the preview.
+  function renderMarkdownPreview(md) {
+    var lines = escapeHtml(md).split('\\n');
+    var html = '';
+    var inCode = false;
+    var codeBuffer = '';
+    var listType = null;
+    var paragraph = [];
+
+    // This whole page is one outer TS template literal AND its output is
+    // itself served as JS source text a browser then parses again — two
+    // layers of "escape sequences get processed", not one. The unicode
+    // escape used for the backtick patterns below survives both layers fine, since
+    // it's a real, recognized escape at both of them. A star/bracket/
+    // paren/s/d/dot escape (\*, \[, \s, \d, \.) is *not* a recognized
+    // escape at either layer, so each layer that touches it silently
+    // drops the backslash and keeps just the character — confirmed by
+    // extracting and executing the actually-served page during
+    // development, where every regex built the "obvious" way here ended
+    // up with its escapes stripped entirely, sometimes still parsing
+    // (silently wrong) and sometimes throwing ("nothing to repeat").
+    // Building these particular patterns from a runtime backslash
+    // character instead sidesteps the whole problem: there is no
+    // backslash-followed-by-letter sequence anywhere in this source for
+    // either layer to misinterpret.
+    var bs = String.fromCharCode(92);
+    var inlineCodePattern = new RegExp('\\u0060([^\\u0060]+)\\u0060', 'g');
+    var fencePattern = new RegExp('^\\u0060\\u0060\\u0060');
+    var boldPattern = new RegExp(bs + '*' + bs + '*([^*]+)' + bs + '*' + bs + '*', 'g');
+    var italicPattern = new RegExp(bs + '*([^*]+)' + bs + '*', 'g');
+    var linkPattern = new RegExp(bs + '[([^' + bs + ']]+)' + bs + ']' + bs + '(([^)]+)' + bs + ')', 'g');
+    var headingPattern = new RegExp('^(#{1,6})' + bs + 's+(.*)$');
+    var hrPattern = new RegExp('^(---|' + bs + '*' + bs + '*' + bs + '*)' + bs + 's*$');
+    var ulPattern = new RegExp('^[-*]' + bs + 's+(.*)$');
+    var olPattern = new RegExp('^' + bs + 'd+' + bs + '.' + bs + 's+(.*)$');
+    function inlineFormat(text) {
+      return text
+        .replace(inlineCodePattern, '<code>$1</code>')
+        .replace(boldPattern, '<strong>$1</strong>')
+        .replace(italicPattern, '<em>$1</em>')
+        .replace(linkPattern, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    }
+    function flushParagraph() {
+      if (paragraph.length) {
+        html += '<p>' + inlineFormat(paragraph.join(' ')) + '</p>';
+        paragraph = [];
+      }
+    }
+    function closeList() {
+      if (listType) {
+        html += '</' + listType + '>';
+        listType = null;
+      }
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (fencePattern.test(line)) {
+        if (!inCode) {
+          flushParagraph();
+          closeList();
+          inCode = true;
+          codeBuffer = '';
+        } else {
+          html += '<pre><code>' + codeBuffer + '</code></pre>';
+          inCode = false;
+        }
+        continue;
+      }
+      if (inCode) {
+        codeBuffer += line + '\\n';
+        continue;
+      }
+
+      var heading = line.match(headingPattern);
+      if (heading) {
+        flushParagraph();
+        closeList();
+        var level = heading[1].length;
+        html += '<h' + level + '>' + inlineFormat(heading[2]) + '</h' + level + '>';
+        continue;
+      }
+      if (hrPattern.test(line)) {
+        flushParagraph();
+        closeList();
+        html += '<hr>';
+        continue;
+      }
+      var ul = line.match(ulPattern);
+      var ol = line.match(olPattern);
+      if (ul || ol) {
+        flushParagraph();
+        var wantType = ul ? 'ul' : 'ol';
+        if (listType !== wantType) {
+          closeList();
+          html += '<' + wantType + '>';
+          listType = wantType;
+        }
+        html += '<li>' + inlineFormat((ul || ol)[1]) + '</li>';
+        continue;
+      }
+      closeList();
+
+      if (line.trim() === '') {
+        flushParagraph();
+        continue;
+      }
+      paragraph.push(line.trim());
+    }
+    flushParagraph();
+    closeList();
+    return html || '<p class="hint">Nothing to preview yet.</p>';
+  }
+
   // ---- Overview tab ----
 
   function renderTools(tools) {
@@ -268,6 +442,34 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '<td>' + (t.safe ? 'yes' : 'no') + '</td></tr>';
     }).join('');
     return '<table><thead><tr><th>Name</th><th>Description</th><th>Parallel-safe</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  // Overview's own tools table, unlike the Tools tab's three separately-
+  // headed sections (Local tools / Gateway Tools / Agent as Tools), is
+  // one flat list (cfg.tools) — without a Type column there's no way to
+  // tell, at a glance, where a given tool actually comes from. Built
+  // from cfg.localTools/cfg.gatewayTools/cfg.agentAsTools directly
+  // (same three arrays the Tools tab renders) rather than cfg.tools, so
+  // each row can be tagged with which one it came from — same order as
+  // the Tools tab's own sections, for consistency.
+  function renderToolsWithType(cfg) {
+    var rows = [];
+    function addRows(tools, type) {
+      for (var i = 0; i < tools.length; i++) {
+        var t = tools[i];
+        rows.push(
+          '<tr><td><code>' + escapeHtml(t.name) + '</code></td>' +
+            '<td>' + escapeHtml(t.description) + '</td>' +
+            '<td>' + escapeHtml(type) + '</td>' +
+            '<td>' + (t.safe ? 'yes' : 'no') + '</td></tr>',
+        );
+      }
+    }
+    addRows(cfg.localTools, 'Local');
+    addRows(cfg.gatewayTools, 'Gateway');
+    addRows(cfg.agentAsTools, 'Agent as Tool');
+    if (!rows.length) return '<p class="muted">No tools.</p>';
+    return '<table><thead><tr><th>Name</th><th>Description</th><th>Type</th><th>Parallel-safe</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>';
   }
 
   function renderSkills(skills) {
@@ -291,8 +493,8 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     return '<section><h3>System prompt</h3><pre>' + escapeHtml(cfg.systemPrompt) + '</pre></section>' +
       '<section><h3>Model</h3>' + modelHtml + '</section>' +
       '<section><h3>Skills (' + cfg.skills.length + ')</h3>' + renderSkills(cfg.skills) + '</section>' +
-      '<section><h3>Tools (' + cfg.tools.length + ')</h3>' + renderTools(cfg.tools) + '</section>' +
-      '<section><h3>Actauth</h3>' + renderRules(cfg.permissions) + '</section>' +
+      '<section><h3>Tools (' + cfg.tools.length + ')</h3>' + renderToolsWithType(cfg) + '</section>' +
+      '<section><h3>ActAuth</h3>' + renderRules(cfg.permissions) + '</section>' +
       '<section><h3>Hooks</h3><dl class="kv">' +
         '<dt>sessionIdFor</dt><dd>' + badge(cfg.sessionIdFor.indexOf('custom') === 0 ? 'custom' : 'default') + ' <span class="muted">' + escapeHtml(cfg.sessionIdFor) + '</span></dd>' +
         '<dt>tenantFor</dt><dd>' + badge(cfg.tenantFor.indexOf('custom') === 0 ? 'custom' : 'default') + ' <span class="muted">' + escapeHtml(cfg.tenantFor) + '</span></dd>' +
@@ -307,7 +509,16 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '</dl></section>';
   }
 
-  // ---- Actauth tab ----
+  // ---- Overview's own Actauth section: read-only, from cfg.permissions
+  // (already resolved by run-agent.ts's own loadRules — 3-segment
+  // scopePattern, "when" conditions included). The dedicated Actauth tab
+  // below is a *different* view: editable, and reading/writing the raw
+  // 2-segment scope actauth.yml itself has, via a separately-fetched
+  // GET /agents/:name/actauth — see renderActauthTabPlaceholder. Keeping
+  // these two independent avoids a scope-format mismatch: round-tripping
+  // cfg.permissions' own expanded 3-segment scopePattern back through an
+  // edit would permanently "expand" a hand-authored 2-segment rule the
+  // moment anyone touched it. ----
 
   function renderRules(permissions) {
     var header = '<dl class="kv">' +
@@ -326,18 +537,411 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     return header + '<table style="margin-top:10px"><thead><tr><th>Scope</th><th>Tool</th><th>Decision</th><th>When</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
 
-  function renderActauthHtml(cfg) {
-    return '<section>' + renderRules(cfg.permissions) + '</section>';
+  // ---- Actauth tab: editable — add/edit/delete rules and set
+  // default_decision via actauth-admin.ts, working directly against the
+  // file's own raw scope strings (see the comment above). Lazily loaded
+  // the same way Gateway Tools is (see loadActauthTab/actauthLoadedFor):
+  // not because reading it is expensive here (it's a plain file read,
+  // unlike describeGatewayTools' live reconnects), just to avoid a
+  // redundant fetch on every agent switch for a tab that isn't always
+  // opened. ----
+
+  function renderActauthTabPlaceholder() {
+    return '<section id="actauthSection"><div id="actauthContent"><p class="hint">Loading&hellip;</p></div></section>';
   }
 
-  // ---- Skills tab ----
+  function renderActauthRuleRow(r) {
+    var actionsHtml = r.name
+      ? '<button type="button" class="edit-rule-btn" data-name="' + escapeHtml(r.name) + '">Edit</button> ' +
+        '<button type="button" class="delete-btn delete-rule-btn" data-name="' + escapeHtml(r.name) + '" title="Remove this rule" aria-label="Remove this rule">Delete</button>'
+      // A rule with no "name" in the YAML has nothing this tab's
+      // update/removeActauthRule (both keyed by name) can address — left
+      // visible, but not editable here.
+      : '<span class="hint">unnamed — edit actauth.yml directly</span>';
+    return '<tr>' +
+      '<td><code>' + escapeHtml(r.name || '') + '</code></td>' +
+      '<td><code>' + escapeHtml(r.scope) + '</code></td>' +
+      '<td><code>' + escapeHtml(r.tool) + '</code></td>' +
+      '<td class="' + decisionClass(r.decision) + '">' + escapeHtml(r.decision) + '</td>' +
+      '<td>' + actionsHtml + '</td>' +
+      '</tr>';
+  }
 
-  function renderSkillsHtml(cfg) {
+  function renderActauthConfigHtml(cfg) {
+    var rulesHtml = cfg.rules.length
+      ? '<table><thead><tr><th>Name</th><th>Scope</th><th>Tool</th><th>Decision</th><th></th></tr></thead><tbody>' +
+        cfg.rules.map(renderActauthRuleRow).join('') + '</tbody></table>'
+      : '<p class="hint">No explicit rules — every tool call falls through to the default decision.</p>';
+
+    return '<section><h3>Default decision</h3>' +
+        '<form class="add-source" id="defaultDecisionForm" style="max-width:220px">' +
+          '<label>Applies when no rule matches' +
+            '<select name="defaultDecision" id="defaultDecisionSelect">' +
+              '<option value="allow"' + (cfg.defaultDecision === 'allow' ? ' selected' : '') + '>allow</option>' +
+              '<option value="ask"' + (cfg.defaultDecision === 'ask' ? ' selected' : '') + '>ask</option>' +
+              '<option value="deny"' + (cfg.defaultDecision === 'deny' ? ' selected' : '') + '>deny</option>' +
+            '</select>' +
+          '</label>' +
+          '<button type="submit">Save</button>' +
+          '<div id="defaultDecisionError" class="error"></div>' +
+        '</form></section>' +
+      '<section><h3>Rules (' + cfg.rules.length + ')</h3>' + rulesHtml + '</section>' +
+      '<section><h3 id="ruleFormHeading">Add a rule</h3>' +
+        '<form class="add-source" id="ruleForm">' +
+          '<label>Name' +
+            '<input name="name" id="ruleNameInput" required placeholder="my-rule-name">' +
+          '</label>' +
+          '<label>Scope <span class="hint">(tenant/environment — e.g. "default/production" or "*/*"; the agent segment is appended automatically)</span>' +
+            '<input name="scope" id="ruleScopeInput" required placeholder="default/production">' +
+          '</label>' +
+          '<label>Tool' +
+            '<input name="tool" id="ruleToolInput" required placeholder="write_file">' +
+          '</label>' +
+          '<label>Decision' +
+            '<select name="decision" id="ruleDecisionInput">' +
+              '<option value="allow">allow</option>' +
+              '<option value="ask" selected>ask</option>' +
+              '<option value="deny">deny</option>' +
+            '</select>' +
+          '</label>' +
+          '<button type="submit" id="ruleSubmitBtn">Add</button>' +
+          '<button type="button" id="ruleCancelBtn" style="display:none">Cancel</button>' +
+          '<div id="ruleFormError" class="error"></div>' +
+        '</form></section>';
+  }
+
+  function actauthContentEl() {
+    return detail.querySelector('#actauthContent');
+  }
+
+  function wireActauthHandlers(name, cfg) {
+    var content = actauthContentEl();
+    if (!content) return;
+    var editingRuleName = null;
+
+    function ruleByName(ruleName) {
+      for (var i = 0; i < cfg.rules.length; i++) {
+        if (cfg.rules[i].name === ruleName) return cfg.rules[i];
+      }
+      return null;
+    }
+
+    function resetRuleForm() {
+      var form = content.querySelector('#ruleForm');
+      form.reset();
+      content.querySelector('#ruleNameInput').disabled = false;
+      content.querySelector('#ruleFormHeading').textContent = 'Add a rule';
+      content.querySelector('#ruleSubmitBtn').textContent = 'Add';
+      content.querySelector('#ruleCancelBtn').style.display = 'none';
+      content.querySelector('#ruleFormError').textContent = '';
+      editingRuleName = null;
+    }
+
+    var deleteButtons = content.querySelectorAll('.delete-rule-btn');
+    for (var i = 0; i < deleteButtons.length; i++) {
+      deleteButtons[i].addEventListener('click', function (ev) {
+        var btn = ev.currentTarget;
+        var ruleName = btn.getAttribute('data-name');
+        if (!confirm('Remove rule "' + ruleName + '"?')) return;
+        btn.disabled = true;
+        fetch('/agents/' + encodeURIComponent(name) + '/actauth/rules/' + encodeURIComponent(ruleName), { method: 'DELETE' })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (result) {
+            if (!result.ok) throw new Error(result.body.error || 'request failed');
+            applyActauthConfig(name, result.body);
+            refreshOverviewPanel(name);
+          })
+          .catch(function (err) {
+            alert('Could not remove: ' + err.message);
+            btn.disabled = false;
+          });
+      });
+    }
+
+    var editButtons = content.querySelectorAll('.edit-rule-btn');
+    for (var i = 0; i < editButtons.length; i++) {
+      editButtons[i].addEventListener('click', function (ev) {
+        var ruleName = ev.currentTarget.getAttribute('data-name');
+        var rule = ruleByName(ruleName);
+        if (!rule) return;
+        content.querySelector('#ruleNameInput').value = rule.name;
+        content.querySelector('#ruleNameInput').disabled = true;
+        content.querySelector('#ruleScopeInput').value = rule.scope;
+        content.querySelector('#ruleToolInput').value = rule.tool;
+        content.querySelector('#ruleDecisionInput').value = rule.decision;
+        content.querySelector('#ruleFormHeading').textContent = 'Edit rule "' + rule.name + '"';
+        content.querySelector('#ruleSubmitBtn').textContent = 'Save';
+        content.querySelector('#ruleCancelBtn').style.display = '';
+        content.querySelector('#ruleFormError').textContent = '';
+        editingRuleName = rule.name;
+        content.querySelector('#ruleForm').scrollIntoView({ block: 'nearest' });
+      });
+    }
+
+    content.querySelector('#ruleCancelBtn').addEventListener('click', resetRuleForm);
+
+    var ruleForm = content.querySelector('#ruleForm');
+    ruleForm.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var errorEl = content.querySelector('#ruleFormError');
+      errorEl.textContent = '';
+      var data = new FormData(ruleForm);
+      var scope = data.get('scope');
+      var tool = data.get('tool');
+      var decision = data.get('decision');
+      var submitBtn = content.querySelector('#ruleSubmitBtn');
+      submitBtn.disabled = true;
+
+      var request = editingRuleName
+        ? fetch('/agents/' + encodeURIComponent(name) + '/actauth/rules/' + encodeURIComponent(editingRuleName), {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ scope: scope, tool: tool, decision: decision }),
+          })
+        : fetch('/agents/' + encodeURIComponent(name) + '/actauth/rules', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: data.get('name'), scope: scope, tool: tool, decision: decision }),
+          });
+
+      request
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+        .then(function (result) {
+          if (!result.ok) throw new Error(result.body.error || 'request failed');
+          applyActauthConfig(name, result.body);
+          refreshOverviewPanel(name);
+        })
+        .catch(function (err) {
+          errorEl.textContent = err.message;
+          submitBtn.disabled = false;
+        });
+    });
+
+    var defaultForm = content.querySelector('#defaultDecisionForm');
+    defaultForm.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var errorEl = content.querySelector('#defaultDecisionError');
+      errorEl.textContent = '';
+      var decision = content.querySelector('#defaultDecisionSelect').value;
+      fetch('/agents/' + encodeURIComponent(name) + '/actauth/default-decision', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ decision: decision }),
+      })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+        .then(function (result) {
+          if (!result.ok) throw new Error(result.body.error || 'request failed');
+          applyActauthConfig(name, result.body);
+          refreshOverviewPanel(name);
+        })
+        .catch(function (err) {
+          errorEl.textContent = err.message;
+        });
+    });
+  }
+
+  function applyActauthConfig(name, cfg) {
+    var content = actauthContentEl();
+    if (!content) return;
+    content.innerHTML = renderActauthConfigHtml(cfg);
+    wireActauthHandlers(name, cfg);
+    actauthLoadedFor = name;
+  }
+
+  function loadActauthTab(name) {
+    var content = actauthContentEl();
+    if (!content) return;
+    content.innerHTML = '<p class="hint">Loading&hellip;</p>';
+    fetch('/agents/' + encodeURIComponent(name) + '/actauth')
+      .then(function (r) { return r.json(); })
+      .then(function (cfg) {
+        if (currentName !== name) return;
+        applyActauthConfig(name, cfg);
+      })
+      .catch(function (err) {
+        if (currentName !== name) return;
+        content.innerHTML = '<p class="error">Could not load actauth rules: ' + escapeHtml(err.message) + '</p>';
+      });
+  }
+
+  // ---- Skills tab: editable — add/edit/delete SKILL.md files via
+  // skills-admin.ts, restricted (see that file's own doc comment) to
+  // flat, non-nested skill ids. Unlike the Tools tab's Gateway Tools
+  // section, this doesn't need its own lazy-loaded endpoint — cfg.skills
+  // (SkillGarden's own index: name + description, no body) is already
+  // free from the same /config fetch that opened the agent; only Edit
+  // needs a further per-skill GET, to pull the body that index doesn't
+  // carry. ----
+
+  function renderSkillCard(s) {
+    return '<div class="source">' +
+      '<div class="source-head">' +
+        '<h4>' + escapeHtml(s.name) + '</h4>' +
+        '<span>' +
+          '<button type="button" class="edit-skill-btn" data-id="' + escapeHtml(s.name) + '">Edit</button> ' +
+          '<button type="button" class="delete-btn delete-skill-btn" data-id="' + escapeHtml(s.name) + '" title="Delete this skill" aria-label="Delete this skill">Delete</button>' +
+        '</span>' +
+      '</div>' +
+      '<p class="hint">' + escapeHtml(s.description) + '</p>' +
+      '</div>';
+  }
+
+  function renderSkillsTabHtml(cfg) {
+    var listHtml = cfg.skills.length ? cfg.skills.map(renderSkillCard).join('') : '<p class="hint">No skills yet.</p>';
     return '<section><h3>Skills dirs</h3><dl class="kv">' +
         '<dt>skillsDirs</dt><dd>' + escapeHtml(cfg.skillsDirs.join(', ') || '(none)') + '</dd>' +
         '<dt>skillIndexBudgetTokens</dt><dd>' + escapeHtml(cfg.skillIndexBudgetTokens) + '</dd>' +
         '</dl></section>' +
-      '<section><h3>Discovered skills (' + cfg.skills.length + ')</h3>' + renderSkills(cfg.skills) + '</section>';
+      '<section><h3>Skills (' + cfg.skills.length + ')</h3><div id="skillList">' + listHtml + '</div></section>' +
+      '<section><h3 id="skillFormHeading">Add a skill</h3>' +
+        '<form class="add-source" id="skillForm">' +
+          '<label>Id <span class="hint">(lowercase, hyphen-separated — becomes the SKILL.md folder name; nested skills aren\\'t editable here)</span>' +
+            '<input name="id" id="skillIdInput" required pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="summarize-files">' +
+          '</label>' +
+          '<label>Description <span class="hint">(what should make the agent reach for this? newlines are collapsed to spaces on save)</span>' +
+            '<textarea name="description" id="skillDescInput" required></textarea>' +
+          '</label>' +
+          '<div class="body-field">' +
+            '<div class="body-field-head">' +
+              '<span>Body <span class="hint">(markdown)</span></span>' +
+              '<span class="md-toggle">' +
+                '<button type="button" class="md-toggle-btn active" id="skillBodyWriteBtn">Write</button>' +
+                '<button type="button" class="md-toggle-btn" id="skillBodyPreviewBtn">Preview</button>' +
+              '</span>' +
+            '</div>' +
+            '<textarea name="body" id="skillBodyInput" required></textarea>' +
+            '<div class="markdown-body" id="skillBodyPreview" style="display:none"></div>' +
+          '</div>' +
+          '<button type="submit" id="skillSubmitBtn">Add</button>' +
+          '<button type="button" id="skillCancelBtn" style="display:none">Cancel</button>' +
+          '<div id="skillFormError" class="error"></div>' +
+        '</form></section>';
+  }
+
+  function skillsPanelEl() {
+    return detail.querySelector('[data-tab-panel="skills"]');
+  }
+
+  function wireSkillsHandlers(name) {
+    var panel = skillsPanelEl();
+    if (!panel) return;
+    var editingSkillId = null;
+
+    // Write/Preview toggle for the Body field — same idea as GitHub's own
+    // issue/PR editor: the textarea and the rendered preview show/hide
+    // each other, the textarea's value is the only source of truth (the
+    // preview is just a render of it on demand, not a second place edits
+    // could get made), so switching back to Write can never lose anything
+    // typed before switching to Preview.
+    var bodyTextarea = panel.querySelector('#skillBodyInput');
+    var bodyPreview = panel.querySelector('#skillBodyPreview');
+    var bodyWriteBtn = panel.querySelector('#skillBodyWriteBtn');
+    var bodyPreviewBtn = panel.querySelector('#skillBodyPreviewBtn');
+
+    function showBodyWrite() {
+      bodyTextarea.style.display = '';
+      bodyPreview.style.display = 'none';
+      bodyWriteBtn.classList.add('active');
+      bodyPreviewBtn.classList.remove('active');
+    }
+    function showBodyPreview() {
+      bodyPreview.innerHTML = renderMarkdownPreview(bodyTextarea.value);
+      bodyTextarea.style.display = 'none';
+      bodyPreview.style.display = 'block';
+      bodyPreviewBtn.classList.add('active');
+      bodyWriteBtn.classList.remove('active');
+    }
+    bodyWriteBtn.addEventListener('click', showBodyWrite);
+    bodyPreviewBtn.addEventListener('click', showBodyPreview);
+
+    function resetSkillForm() {
+      var form = panel.querySelector('#skillForm');
+      form.reset();
+      panel.querySelector('#skillIdInput').disabled = false;
+      panel.querySelector('#skillFormHeading').textContent = 'Add a skill';
+      panel.querySelector('#skillSubmitBtn').textContent = 'Add';
+      panel.querySelector('#skillCancelBtn').style.display = 'none';
+      panel.querySelector('#skillFormError').textContent = '';
+      editingSkillId = null;
+      showBodyWrite();
+    }
+
+    var deleteButtons = panel.querySelectorAll('.delete-skill-btn');
+    for (var i = 0; i < deleteButtons.length; i++) {
+      deleteButtons[i].addEventListener('click', function (ev) {
+        var btn = ev.currentTarget;
+        var id = btn.getAttribute('data-id');
+        if (!confirm('Delete skill "' + id + '"? This removes its SKILL.md.')) return;
+        btn.disabled = true;
+        fetch('/agents/' + encodeURIComponent(name) + '/skills/' + encodeURIComponent(id), { method: 'DELETE' })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (result) {
+            if (!result.ok) throw new Error(result.body.error || 'request failed');
+            refreshSkillsDependentPanels(name);
+          })
+          .catch(function (err) {
+            alert('Could not delete: ' + err.message);
+            btn.disabled = false;
+          });
+      });
+    }
+
+    var editButtons = panel.querySelectorAll('.edit-skill-btn');
+    for (var i = 0; i < editButtons.length; i++) {
+      editButtons[i].addEventListener('click', function (ev) {
+        var id = ev.currentTarget.getAttribute('data-id');
+        var errorEl = panel.querySelector('#skillFormError');
+        errorEl.textContent = '';
+        fetch('/agents/' + encodeURIComponent(name) + '/skills/' + encodeURIComponent(id))
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (result) {
+            if (!result.ok) throw new Error(result.body.error || 'request failed');
+            panel.querySelector('#skillIdInput').value = result.body.id;
+            panel.querySelector('#skillIdInput').disabled = true;
+            panel.querySelector('#skillDescInput').value = result.body.description;
+            panel.querySelector('#skillBodyInput').value = result.body.body;
+            panel.querySelector('#skillFormHeading').textContent = 'Edit skill "' + result.body.id + '"';
+            panel.querySelector('#skillSubmitBtn').textContent = 'Save';
+            panel.querySelector('#skillCancelBtn').style.display = '';
+            editingSkillId = result.body.id;
+            showBodyWrite();
+            panel.querySelector('#skillForm').scrollIntoView({ block: 'nearest' });
+          })
+          .catch(function (err) {
+            errorEl.textContent = 'Could not load skill: ' + err.message;
+          });
+      });
+    }
+
+    panel.querySelector('#skillCancelBtn').addEventListener('click', resetSkillForm);
+
+    var form = panel.querySelector('#skillForm');
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var errorEl = panel.querySelector('#skillFormError');
+      errorEl.textContent = '';
+      var data = new FormData(form);
+      // writeSkill (both routes go through the same PUT) creates-or-
+      // replaces — so "Add" with an id that already exists just
+      // overwrites it, same as editing it directly would.
+      var id = editingSkillId || data.get('id');
+      var submitBtn = panel.querySelector('#skillSubmitBtn');
+      submitBtn.disabled = true;
+      fetch('/agents/' + encodeURIComponent(name) + '/skills/' + encodeURIComponent(id), {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ description: data.get('description'), body: data.get('body') }),
+      })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+        .then(function (result) {
+          if (!result.ok) throw new Error(result.body.error || 'request failed');
+          refreshSkillsDependentPanels(name);
+        })
+        .catch(function (err) {
+          errorEl.textContent = err.message;
+          submitBtn.disabled = false;
+        });
+    });
   }
 
   // ---- Tools tab: three sections, one per where a tool actually comes
@@ -353,10 +957,10 @@ export const agentsConfigPageHtml: string = `<!doctype html>
 
   function renderToolsTabHtml(cfg) {
     return '<section><h3>Local tools (' + cfg.localTools.length + ')</h3>' + renderTools(cfg.localTools) + '</section>' +
-      '<section><h3>Agent as Tools (' + cfg.agentAsTools.length + ')</h3>' + renderTools(cfg.agentAsTools) + '</section>' +
       '<section id="gatewayToolsSection"><h3>Gateway Tools</h3>' +
         '<div id="gatewayToolsContent"><p class="hint">Loading&hellip;</p></div>' +
-      '</section>';
+      '</section>' +
+      '<section><h3>Agent as Tools (' + cfg.agentAsTools.length + ')</h3>' + renderTools(cfg.agentAsTools) + '</section>';
   }
 
   // Removing a source used to be one "Remove" button per source, at the
@@ -375,7 +979,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
             ? '<code>' + escapeHtml(tool.name) + '</code> &mdash; ' + escapeHtml(tool.description)
             : '<code>' + escapeHtml(s.entry.name + '_' + slug) + '</code>';
           return '<li><span class="tool-picker-label">' + label + '</span>' +
-            ' <button type="button" class="remove-tool-btn" data-source="' + escapeHtml(s.entry.name) + '" data-slug="' + escapeHtml(slug) + '" title="Remove this tool" aria-label="Remove this tool">&times;</button>' +
+            ' <button type="button" class="delete-btn" data-source="' + escapeHtml(s.entry.name) + '" data-slug="' + escapeHtml(slug) + '" title="Remove this tool" aria-label="Remove this tool">Delete</button>' +
             '</li>';
         }).join('') + '</ul>';
 
@@ -392,15 +996,15 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   function renderGatewayHtml(sources) {
     var listHtml = sources.length
       ? sources.map(renderGatewaySource).join('')
-      : '<p class="hint">No tool sources registered yet.</p>';
+      : '<p class="hint">No gateway tools registered yet.</p>';
 
     // App + tool picker instead of freeform slug entry — pulled from
     // GET /composio/connections and GET /composio/tools?toolkit=X (see
     // wireGatewayHandlers below), so adding a source means checking boxes
     // for what's already connected and available, not needing to already
     // know a toolkit's exact slug strings by heart.
-    return '<section><h3>Registered sources</h3><div id="sourceList">' + listHtml + '</div></section>' +
-      '<section><h3>Add a tool source</h3>' +
+    return '<section><div id="sourceList">' + listHtml + '</div></section>' +
+      '<section><h3>Add a gateway tool</h3>' +
       '<form class="add-source" id="addForm">' +
         '<label>Provider' +
           '<select name="provider"><option value="composio">Composio</option></select>' +
@@ -429,7 +1033,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
 
   function wireGatewayHandlers(name) {
     var content = gatewayContentEl();
-    var removeToolButtons = content.querySelectorAll('.remove-tool-btn');
+    var removeToolButtons = content.querySelectorAll('.delete-btn');
     for (var i = 0; i < removeToolButtons.length; i++) {
       removeToolButtons[i].addEventListener('click', function (ev) {
         var btn = ev.currentTarget;
@@ -634,31 +1238,66 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     if (tab === 'tools' && gatewayLoadedFor !== currentName) {
       loadGatewayTab(currentName);
     }
+    if (tab === 'actauth' && actauthLoadedFor !== currentName) {
+      loadActauthTab(currentName);
+    }
   }
 
-  // Adding or removing a gateway tool changes actauth.yml (a decision
-  // seeds/drops a rule for it — see gateway-tools.ts's addGatewayTool/
-  // removeGatewayToolSlug) but Overview's own Actauth section and the
-  // dedicated Actauth tab were both rendered once, from whatever cfg
-  // /agents/:name/config returned when the agent was first opened —
-  // without this, a rule added or removed from the Tools tab wouldn't
-  // show up there until the agent was re-selected or the page reloaded.
-  function refreshActauthDependentPanels(name) {
+  // Refreshes just Overview's own summary — used after anything that
+  // changes tools/skills/permissions but already has its own tab
+  // reflecting the change directly from the response (applyGatewaySources,
+  // applyActauthConfig, refreshSkillsDependentPanels's own Skills half),
+  // so only Overview is left needing a re-fetch.
+  function refreshOverviewPanel(name) {
     fetch('/agents/' + encodeURIComponent(name) + '/config')
       .then(function (r) { return r.json(); })
       .then(function (cfg) {
         if (currentName !== name) return;
         currentCfg = cfg;
         var overviewPanel = detail.querySelector('[data-tab-panel="overview"]');
-        var actauthPanel = detail.querySelector('[data-tab-panel="actauth"]');
         if (overviewPanel) overviewPanel.innerHTML = renderOverviewHtml(cfg);
-        if (actauthPanel) actauthPanel.innerHTML = renderActauthHtml(cfg);
       })
       .catch(function () {
-        // Best-effort — the Tools tab itself already reflects the
-        // change either way, this is only about keeping the other two
-        // panels in sync with it.
+        // Best-effort — the tab that triggered this already reflects the
+        // change either way, this is only about keeping Overview in sync.
       });
+  }
+
+  // Adding or removing a gateway tool changes actauth.yml (a decision
+  // seeds/drops a rule for it — see gateway-tools.ts's addGatewayTool/
+  // removeGatewayToolSlug) but Overview's own Actauth section and the
+  // dedicated Actauth tab were both rendered once, from whatever cfg
+  // /agents/:name/config (and, for the Actauth tab, GET .../actauth)
+  // returned when the agent/tab was first opened — without this, a rule
+  // added or removed from the Tools tab wouldn't show up there until the
+  // agent was re-selected or the page reloaded. Only re-loads the
+  // Actauth tab if it's actually been opened already (actauthLoadedFor)
+  // — otherwise it'll load fresh, gateway-tool-seeded rules included,
+  // the first time it is.
+  function refreshActauthDependentPanels(name) {
+    refreshOverviewPanel(name);
+    if (actauthLoadedFor === name) loadActauthTab(name);
+  }
+
+  // Skills tab isn't lazily loaded like Gateway Tools/Actauth (see its
+  // own header comment — it's already free from cfg, no live connection
+  // needed) — so refreshing it after an add/edit/delete just means
+  // re-rendering both it and Overview from a fresh /config fetch.
+  function refreshSkillsDependentPanels(name) {
+    fetch('/agents/' + encodeURIComponent(name) + '/config')
+      .then(function (r) { return r.json(); })
+      .then(function (cfg) {
+        if (currentName !== name) return;
+        currentCfg = cfg;
+        var overviewPanel = detail.querySelector('[data-tab-panel="overview"]');
+        var skillsPanel = skillsPanelEl();
+        if (overviewPanel) overviewPanel.innerHTML = renderOverviewHtml(cfg);
+        if (skillsPanel) {
+          skillsPanel.innerHTML = renderSkillsTabHtml(cfg);
+          wireSkillsHandlers(name);
+        }
+      })
+      .catch(function () {});
   }
 
   function renderDetail(cfg) {
@@ -670,17 +1309,19 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '<button class="tab" data-tab="overview">Overview</button>' +
         '<button class="tab" data-tab="skills">Skills</button>' +
         '<button class="tab" data-tab="tools">Tools</button>' +
-        '<button class="tab" data-tab="actauth">Actauth</button>' +
+        '<button class="tab" data-tab="actauth">ActAuth</button>' +
       '</div>' +
       '<div class="tab-panel" data-tab-panel="overview">' + renderOverviewHtml(cfg) + '</div>' +
-      '<div class="tab-panel" data-tab-panel="skills">' + renderSkillsHtml(cfg) + '</div>' +
+      '<div class="tab-panel" data-tab-panel="skills">' + renderSkillsTabHtml(cfg) + '</div>' +
       '<div class="tab-panel" data-tab-panel="tools">' + renderToolsTabHtml(cfg) + '</div>' +
-      '<div class="tab-panel" data-tab-panel="actauth">' + renderActauthHtml(cfg) + '</div>';
+      '<div class="tab-panel" data-tab-panel="actauth">' + renderActauthTabPlaceholder() + '</div>';
 
     var buttons = detail.querySelectorAll('.tabs button');
     for (var i = 0; i < buttons.length; i++) {
       buttons[i].addEventListener('click', function (ev) { switchTab(ev.currentTarget.dataset.tab); });
     }
+
+    wireSkillsHandlers(cfg.name);
 
     empty.style.display = 'none';
     detail.style.display = 'block';
@@ -690,6 +1331,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   function selectAgent(name) {
     currentName = name;
     gatewayLoadedFor = null;
+    actauthLoadedFor = null;
     var items = agentList.querySelectorAll('li');
     for (var i = 0; i < items.length; i++) {
       items[i].classList.toggle('active', items[i].dataset.name === name);

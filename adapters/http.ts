@@ -47,6 +47,16 @@ import {
   GatewayToolNotFoundError,
   type GatewayToolEntry,
 } from '#gateway-tools.js'
+import { readSkill, writeSkill, deleteSkill, SkillInvalidIdError, SkillNotFoundError } from '#skills-admin.js'
+import {
+  readActauthConfig,
+  addActauthRule,
+  updateActauthRule,
+  removeActauthRule,
+  setDefaultDecision,
+  ActauthRuleExistsError,
+  ActauthRuleNotFoundError,
+} from '#actauth-admin.js'
 import type { Decision } from 'actauth'
 
 const sessions = createSessionStore()
@@ -365,6 +375,151 @@ async function handleComposioTools(res: ServerResponse, toolkit: string | undefi
   }
 }
 
+// Backs the Skills tab's edit form (GET .../skills/:skillId to populate
+// it, PUT to save, DELETE to remove) — see skills-admin.ts's own doc
+// comment for why this only reaches flat (non-nested) skills.
+function handleSkillGet(res: ServerResponse, agentName: string, skillId: string): void {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  try {
+    const skill = readSkill(agentName, skillId)
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(skill))
+  } catch (err) {
+    const status = err instanceof SkillNotFoundError ? 404 : err instanceof SkillInvalidIdError ? 400 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+  }
+}
+
+async function handleSkillPut(req: IncomingMessage, res: ServerResponse, agentName: string, skillId: string): Promise<void> {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  const body = await readJsonBody(req)
+  if (typeof body.description !== 'string' || !body.description) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'description is required' }))
+    return
+  }
+  if (typeof body.body !== 'string' || !body.body) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'body is required' }))
+    return
+  }
+  try {
+    writeSkill(agentName, skillId, { description: body.description, body: body.body })
+  } catch (err) {
+    const status = err instanceof SkillInvalidIdError ? 400 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))
+}
+
+function handleSkillDelete(res: ServerResponse, agentName: string, skillId: string): void {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  try {
+    deleteSkill(agentName, skillId)
+  } catch (err) {
+    const status = err instanceof SkillNotFoundError ? 404 : err instanceof SkillInvalidIdError ? 400 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))
+}
+
+// Backs the Actauth tab's rule editor — parses a rule body shared by both
+// the add (POST) and update (PUT, minus `name`) routes below.
+function parseActauthRuleBody(body: Record<string, unknown>, requireName: boolean): { ok: true; value: { name: string; scope: string; tool: string; decision: Decision } } | { ok: false; error: string } {
+  if (requireName && (typeof body.name !== 'string' || !body.name)) return { ok: false, error: 'name is required' }
+  if (typeof body.scope !== 'string' || !body.scope) return { ok: false, error: 'scope is required' }
+  if (typeof body.tool !== 'string' || !body.tool) return { ok: false, error: 'tool is required' }
+  if (!isDecision(body.decision)) return { ok: false, error: "decision must be 'allow', 'ask', or 'deny'" }
+  return { ok: true, value: { name: typeof body.name === 'string' ? body.name : '', scope: body.scope, tool: body.tool, decision: body.decision } }
+}
+
+function handleActauthGet(res: ServerResponse, agentName: string): void {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(readActauthConfig(agentName)))
+}
+
+async function handleActauthRulePost(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  const body = await readJsonBody(req)
+  const parsed = parseActauthRuleBody(body, true)
+  if (!parsed.ok) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsed.error }))
+    return
+  }
+  try {
+    addActauthRule(agentName, parsed.value)
+  } catch (err) {
+    const status = err instanceof ActauthRuleExistsError ? 409 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(readActauthConfig(agentName)))
+}
+
+async function handleActauthRulePut(req: IncomingMessage, res: ServerResponse, agentName: string, ruleName: string): Promise<void> {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  const body = await readJsonBody(req)
+  const parsed = parseActauthRuleBody(body, false)
+  if (!parsed.ok) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsed.error }))
+    return
+  }
+  try {
+    updateActauthRule(agentName, ruleName, parsed.value)
+  } catch (err) {
+    const status = err instanceof ActauthRuleNotFoundError ? 404 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(readActauthConfig(agentName)))
+}
+
+function handleActauthRuleDelete(res: ServerResponse, agentName: string, ruleName: string): void {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  try {
+    removeActauthRule(agentName, ruleName)
+  } catch (err) {
+    const status = err instanceof ActauthRuleNotFoundError ? 404 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(readActauthConfig(agentName)))
+}
+
+async function handleActauthDefaultDecisionPut(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  const body = await readJsonBody(req)
+  if (!isDecision(body.decision)) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: "decision must be 'allow', 'ask', or 'deny'" }))
+    return
+  }
+  setDefaultDecision(agentName, body.decision)
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(readActauthConfig(agentName)))
+}
+
 // GET /agents content-negotiates on this: a browser navigating there sends
 // an Accept header that prefers text/html, so it gets agentsListPageHtml
 // below; fetch()'s own default Accept (`*/*`, the same default every
@@ -548,6 +703,54 @@ const server = createServer(async (req, res) => {
     }
     if (gatewayToolsMatch && req.method === 'POST') {
       await handleToolSourcesPost(req, res, decodeURIComponent(gatewayToolsMatch[1]))
+      return
+    }
+
+    // Backs the Skills tab's edit form — see skills-admin.ts for why
+    // :skillId is restricted to a flat (non-nested) id.
+    const skillMatch = pathname.match(/^\/agents\/([^/]+)\/skills\/([^/]+)$/)
+    if (skillMatch && req.method === 'GET') {
+      handleSkillGet(res, decodeURIComponent(skillMatch[1]), decodeURIComponent(skillMatch[2]))
+      return
+    }
+    if (skillMatch && req.method === 'PUT') {
+      await handleSkillPut(req, res, decodeURIComponent(skillMatch[1]), decodeURIComponent(skillMatch[2]))
+      return
+    }
+    if (skillMatch && req.method === 'DELETE') {
+      handleSkillDelete(res, decodeURIComponent(skillMatch[1]), decodeURIComponent(skillMatch[2]))
+      return
+    }
+
+    // Backs the Actauth tab's rule editor and default_decision control.
+    // The default-decision route is checked before the :ruleName routes
+    // right below since 'default-decision' would otherwise itself match
+    // as a rule name.
+    const actauthDefaultDecisionMatch = req.method === 'PUT' && pathname.match(/^\/agents\/([^/]+)\/actauth\/default-decision$/)
+    if (actauthDefaultDecisionMatch) {
+      await handleActauthDefaultDecisionPut(req, res, decodeURIComponent(actauthDefaultDecisionMatch[1]))
+      return
+    }
+
+    const actauthRuleMatch = pathname.match(/^\/agents\/([^/]+)\/actauth\/rules\/([^/]+)$/)
+    if (actauthRuleMatch && req.method === 'PUT') {
+      await handleActauthRulePut(req, res, decodeURIComponent(actauthRuleMatch[1]), decodeURIComponent(actauthRuleMatch[2]))
+      return
+    }
+    if (actauthRuleMatch && req.method === 'DELETE') {
+      handleActauthRuleDelete(res, decodeURIComponent(actauthRuleMatch[1]), decodeURIComponent(actauthRuleMatch[2]))
+      return
+    }
+
+    const actauthRulesMatch = pathname.match(/^\/agents\/([^/]+)\/actauth\/rules$/)
+    if (actauthRulesMatch && req.method === 'POST') {
+      await handleActauthRulePost(req, res, decodeURIComponent(actauthRulesMatch[1]))
+      return
+    }
+
+    const actauthMatch = req.method === 'GET' && pathname.match(/^\/agents\/([^/]+)\/actauth$/)
+    if (actauthMatch) {
+      handleActauthGet(res, decodeURIComponent(actauthMatch[1]))
       return
     }
 

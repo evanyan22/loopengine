@@ -134,7 +134,7 @@ export const playgroundHtml: string = `<!doctype html>
   .event-reflow { border-left-color: #ef4444; }
   .event-skillgarden { border-left-color: #10b981; }
   .event-loop { border-left-color: #6b7280; }
-  footer {
+  .composer {
     border-top: 1px solid light-dark(#ddd, #333);
     padding: 10px 12px;
     display: flex;
@@ -142,7 +142,7 @@ export const playgroundHtml: string = `<!doctype html>
     gap: 8px;
   }
   .send-row { display: flex; gap: 8px; }
-  #messageInput { flex: 1; resize: none; height: 40px; }
+  #messageInput { flex: 1; resize: vertical; height: 90px; }
   #messageInput:disabled, #sendButton:disabled { cursor: not-allowed; }
   details summary { cursor: pointer; font-size: 12px; color: light-dark(#666, #999); }
   .advanced-hint { margin: 6px 0 0; font-size: 11px; }
@@ -175,32 +175,32 @@ export const playgroundHtml: string = `<!doctype html>
   <section class="pane">
     <h2>Chat</h2>
     <div class="pane-body" id="chatPane"></div>
+    <div class="composer">
+      <details>
+        <summary>Advanced</summary>
+        <p class="advanced-hint muted">For agents whose sessionIdFor/tenantFor need something beyond a plain sessionId — e.g. customer-service reads customerEmail from the body.</p>
+        <div class="advanced-fields">
+          <div>
+            <label for="extraHeadersInput">Extra headers (one "key: value" per line)</label>
+            <textarea id="extraHeadersInput" placeholder="x-api-key: acme-trusted-key"></textarea>
+          </div>
+          <div>
+            <label for="extraBodyInput">Extra body fields (JSON)</label>
+            <textarea id="extraBodyInput" placeholder='{"customerEmail": "a@example.com"}'></textarea>
+          </div>
+        </div>
+      </details>
+      <div class="send-row">
+        <textarea id="messageInput" placeholder="Message&hellip; (Enter to send, Shift+Enter for a new line)"></textarea>
+        <button id="sendButton" type="button">Send</button>
+      </div>
+    </div>
   </section>
   <section class="pane">
     <h2>Loop events</h2>
     <div class="pane-body" id="timelinePane"></div>
   </section>
 </main>
-<footer>
-  <details>
-    <summary>Advanced</summary>
-    <p class="advanced-hint muted">For agents whose sessionIdFor/tenantFor need something beyond a plain sessionId — e.g. customer-service reads customerEmail from the body.</p>
-    <div class="advanced-fields">
-      <div>
-        <label for="extraHeadersInput">Extra headers (one "key: value" per line)</label>
-        <textarea id="extraHeadersInput" placeholder="x-api-key: acme-trusted-key"></textarea>
-      </div>
-      <div>
-        <label for="extraBodyInput">Extra body fields (JSON)</label>
-        <textarea id="extraBodyInput" placeholder='{"customerEmail": "a@example.com"}'></textarea>
-      </div>
-    </div>
-  </details>
-  <div class="send-row">
-    <textarea id="messageInput" placeholder="Message&hellip; (Enter to send, Shift+Enter for a new line)"></textarea>
-    <button id="sendButton" type="button">Send</button>
-  </div>
-</footer>
 <script>
 (function () {
   var agentSelect = document.getElementById('agentSelect');

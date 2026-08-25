@@ -29,11 +29,3 @@ rules:
     scope: default/production
     tool: github_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER
     decision: allow
-  - name: composio-sentry_SENTRY_ADD_REMOVE_USER_EMAIL_BY_ID-web-added
-    scope: "*/*"
-    tool: sentry_SENTRY_ADD_REMOVE_USER_EMAIL_BY_ID
-    decision: allow
-  - name: composio-clickup_CLICKUP_CREATE_CHAT_MESSAGE-web-added
-    scope: "*/*"
-    tool: clickup_CLICKUP_CREATE_CHAT_MESSAGE
-    decision: allow
