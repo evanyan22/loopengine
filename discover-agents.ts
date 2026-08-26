@@ -43,8 +43,16 @@ function isRawAgentModule(mod: unknown): mod is RawAgentModule {
  * called, and reused after that, the same "don't crash the whole server
  * over one agent's missing API key, don't rebuild per call" reasoning
  * agents/customer-service/index.ts's own hand-written createModelCall
- * used before this existed. */
-async function synthesizeCreateModelCall(model: AgentModelConfig): Promise<() => ModelCall> {
+ * used before this existed.
+ *
+ * Exported so a caller updating an *already-registered* agent's model
+ * (see agent-file-admin.ts's editAgentFile, applied live via
+ * agent-registry.ts's updateAgent) can rebuild just this one closure
+ * without re-importing the whole module — Node's ESM loader caches an
+ * already-imported module forever, so there's no supported way to
+ * re-import a changed agent file's own createModelCall directly; this is
+ * the one piece of it that's meaningfully regenerable on its own. */
+export async function synthesizeCreateModelCall(model: AgentModelConfig): Promise<() => ModelCall> {
   let cached: ModelCall | undefined
   if (model.provider === 'anthropic') {
     const { createAnthropicModelCall } = await import('./model-calls/anthropic-model-call.js')

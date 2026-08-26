@@ -7,6 +7,8 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { discoverAgents, type AgentModule } from './discover-agents.js'
+import type { AgentConfig } from '#agent-config.js'
+import type { ModelCall } from '#run-agent.js'
 
 export type RegistryEntry = AgentModule
 
@@ -56,4 +58,28 @@ export function registerAgent(agentModule: RegistryEntry): void {
     throw new Error(`Duplicate agent name '${name}' — an agent with this name is already registered.`)
   }
   entries.set(name, agentModule)
+}
+
+/** Applies a partial update to an already-registered agent — how an edit
+ * made through the admin UI (see adapters/http.ts's handleEditAgent,
+ * which calls this after agent-file-admin.ts's editAgentFile writes the
+ * change to agents/<name>/index.ts) takes effect in *this* running
+ * process immediately, the same "no restart needed" principle
+ * gateway-tools.yml/actauth.yml/SKILL.md edits already have. Mutates the
+ * same AgentConfig object every existing getEntry() caller already holds
+ * a reference to — via Object.assign, not a full replacement — so
+ * nothing needs to re-fetch it to see the change, and any field left out
+ * of `patch.config` (tools, rules, skillsDirs, ...) stays exactly as it
+ * was. `patch.createModelCall`, if given, replaces the cached one
+ * wholesale — see discover-agents.ts's own synthesizeCreateModelCall,
+ * the thing that actually builds a fresh one from a changed model.
+ * Throws if `name` isn't already registered — this updates an existing
+ * entry, it's not a back door around registerAgent's own creation path. */
+export function updateAgent(name: string, patch: { config?: Partial<AgentConfig>; createModelCall?: () => ModelCall }): void {
+  const entry = entries.get(name)
+  if (!entry) {
+    throw new Error(`No registered agent named '${name}' to update.`)
+  }
+  if (patch.config) Object.assign(entry.config, patch.config)
+  if (patch.createModelCall) entry.createModelCall = patch.createModelCall
 }
