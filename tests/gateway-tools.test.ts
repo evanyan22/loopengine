@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   addGatewayTool,
   describeGatewayTools,
+  isReadOnlyToolName,
   listComposioConnections,
   listComposioTools,
   loadGatewayToolsFromDir,
@@ -178,6 +179,48 @@ describe('readGatewayTools / addGatewayTool / removeGatewayTool', () => {
     const raw = parseYaml(readFileSync(join(AGENT_DIR, 'actauth.yml'), 'utf8'))
     expect(raw.rules.map((r: { tool: string }) => r.tool).sort()).toEqual(['gh_A', 'some_tool'])
   })
+
+  it("addGatewayTool with decision 'auto' allows read-only slugs and explicitly asks for mutating ones", () => {
+    addGatewayTool(
+      AGENT_NAME,
+      entry({ name: 'gh', slugs: ['GITHUB_LIST_REPOS', 'GITHUB_CREATE_ISSUE', 'GITHUB_DELETE_REPO'] }),
+      'auto',
+    )
+
+    const raw = parseYaml(readFileSync(join(AGENT_DIR, 'actauth.yml'), 'utf8'))
+    const rulesByTool = Object.fromEntries(raw.rules.map((r: { tool: string; decision: string }) => [r.tool, r.decision]))
+    expect(rulesByTool).toEqual({
+      gh_GITHUB_LIST_REPOS: 'allow',
+      gh_GITHUB_CREATE_ISSUE: 'ask',
+      gh_GITHUB_DELETE_REPO: 'ask',
+    })
+  })
+
+  it("addGatewayTool with decision 'auto' against an all-mutating batch still seeds explicit 'ask' rules", () => {
+    addGatewayTool(AGENT_NAME, entry({ name: 'gh', slugs: ['GITHUB_CREATE_ISSUE', 'GITHUB_DELETE_REPO'] }), 'auto')
+
+    const raw = parseYaml(readFileSync(join(AGENT_DIR, 'actauth.yml'), 'utf8'))
+    const rulesByTool = Object.fromEntries(raw.rules.map((r: { tool: string; decision: string }) => [r.tool, r.decision]))
+    expect(rulesByTool).toEqual({ gh_GITHUB_CREATE_ISSUE: 'ask', gh_GITHUB_DELETE_REPO: 'ask' })
+  })
+})
+
+describe('isReadOnlyToolName', () => {
+  it('recognizes common read-only verbs regardless of position in the tool name', () => {
+    expect(isReadOnlyToolName('github_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER')).toBe(true)
+    expect(isReadOnlyToolName('GITHUB_GET_ISSUE')).toBe(true)
+    expect(isReadOnlyToolName('slack_SLACK_SEARCH_MESSAGES')).toBe(true)
+  })
+
+  it('recognizes common mutating verbs', () => {
+    expect(isReadOnlyToolName('github_GITHUB_CREATE_ISSUE')).toBe(false)
+    expect(isReadOnlyToolName('GITHUB_ADD_LABELS_TO_AN_ISSUE')).toBe(false)
+    expect(isReadOnlyToolName('sentry_SENTRY_ADD_REMOVE_USER_EMAIL_BY_ID')).toBe(false)
+  })
+
+  it('defaults to not-read-only (the safer failure mode) for an unrecognized verb', () => {
+    expect(isReadOnlyToolName('some_toolkit_TOTALLY_UNKNOWN_ACTION_NAME')).toBe(false)
+  })
 })
 
 describe('loadGatewayToolsFromDir', () => {
@@ -228,13 +271,28 @@ describe('loadGatewayToolsFromDir', () => {
 })
 
 describe('describeGatewayTools', () => {
-  it('reports status ok with resolved tools for a working source', async () => {
+  it('reports status ok with resolved tools for a working source, description from the toolkit catalog', async () => {
     addGatewayTool(AGENT_NAME, entry({ name: 'gh', slugs: ['GITHUB_LIST_REPOS'] }))
 
     const [status] = await describeGatewayTools(AGENT_NAME)
 
     expect(status?.status).toBe('ok')
-    expect(status?.tools).toEqual([{ name: 'gh_GITHUB_LIST_REPOS', description: 'github list repos' }])
+    // Not mcpplug's own humanize(slug) fallback ('github list repos') —
+    // the real catalog description from the fake CLI's own 'tools list
+    // github' response (see connectEntry's withRealComposioDescriptions).
+    expect(status?.tools).toEqual([{ name: 'gh_GITHUB_LIST_REPOS', description: 'List the authenticated user’s repositories.' }])
+  })
+
+  it('falls back to the humanize()-based description when the toolkit catalog lookup fails', async () => {
+    // 'nope' has no 'tools list nope' branch in the fake CLI fixture —
+    // it just returns [] (see fake-composio-cli.mjs) — so the catalog
+    // map ends up with nothing for this slug and the original,
+    // humanize()-based description survives untouched.
+    addGatewayTool(AGENT_NAME, entry({ name: 'x', slugs: ['NOPE_SOME_ACTION'] }))
+
+    const [status] = await describeGatewayTools(AGENT_NAME)
+
+    expect(status?.tools).toEqual([{ name: 'x_NOPE_SOME_ACTION', description: 'nope some action' }])
   })
 
   it('reports status error for a broken source without failing the whole call', async () => {

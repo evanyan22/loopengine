@@ -47,6 +47,7 @@ import {
   GatewayToolExistsError,
   GatewayToolNotFoundError,
   type GatewayToolEntry,
+  type GatewayToolDecision,
 } from '#gateway-tools.js'
 import { readSkill, writeSkill, deleteSkill, SkillInvalidIdError, SkillNotFoundError } from '#skills-admin.js'
 import {
@@ -278,6 +279,15 @@ function isDecision(value: unknown): value is Decision {
   return value === 'allow' || value === 'ask' || value === 'deny'
 }
 
+// Only the gateway-tools add route accepts 'auto' — actauth rules
+// themselves (handleActauthRulePost/Put, handleActauthDefaultDecisionPut)
+// still require a real Decision, since 'auto' only makes sense as "figure
+// out a decision per tool for this batch," not as a value a single rule
+// or default_decision could itself hold.
+function isGatewayToolDecision(value: unknown): value is GatewayToolDecision {
+  return isDecision(value) || value === 'auto'
+}
+
 async function handleToolSourcesGet(res: ServerResponse, agentName: string): Promise<void> {
   if (!getEntry(agentName)) {
     res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
@@ -298,7 +308,7 @@ async function handleToolSourcesPost(req: IncomingMessage, res: ServerResponse, 
     res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsed.error }))
     return
   }
-  const decision = isDecision(body.decision) ? body.decision : undefined
+  const decision = isGatewayToolDecision(body.decision) ? body.decision : undefined
   try {
     addGatewayTool(agentName, parsed.value, decision)
   } catch (err) {

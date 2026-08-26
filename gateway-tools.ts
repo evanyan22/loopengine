@@ -91,6 +91,108 @@ function writeGatewayToolsFile(dir: string, sources: GatewayToolEntry[]): void {
 export class GatewayToolExistsError extends Error {}
 export class GatewayToolNotFoundError extends Error {}
 
+// A toolkit's own action-naming convention, not this repo's — Composio
+// slugs are consistently VERB_REST (LIST_REPOS, CREATE_ISSUE, ...), just
+// not consistently *which* verb, so this is a heuristic, not a spec.
+// Scans every underscore-separated token (not just the first) since the
+// verb isn't always right after the toolkit prefix — GITHUB_LIST_REPOS
+// and github_GITHUB_LIST_REPOS (the ${entry.name}_${slug} form
+// appendActauthRules actually calls this with) both still hit LIST.
+const READ_ONLY_VERBS = new Set([
+  'LIST',
+  'GET',
+  'FETCH',
+  'FIND',
+  'SEARCH',
+  'READ',
+  'RETRIEVE',
+  'VIEW',
+  'CHECK',
+  'SHOW',
+  'DESCRIBE',
+  'QUERY',
+  'COUNT',
+  'EXPORT',
+])
+const MUTATING_VERBS = new Set([
+  'CREATE',
+  'ADD',
+  'UPDATE',
+  'EDIT',
+  'MODIFY',
+  'DELETE',
+  'REMOVE',
+  'SEND',
+  'POST',
+  'WRITE',
+  'SET',
+  'PUT',
+  'PATCH',
+  'PUBLISH',
+  'UPLOAD',
+  'INVITE',
+  'ASSIGN',
+  'MERGE',
+  'CLOSE',
+  'CANCEL',
+  'ARCHIVE',
+  'RESTORE',
+  'ENABLE',
+  'DISABLE',
+  'GRANT',
+  'REVOKE',
+  'EXECUTE',
+  'RUN',
+  'TRIGGER',
+  'START',
+  'STOP',
+  'PAY',
+  'CHARGE',
+  'REFUND',
+  'TRANSFER',
+  'IMPORT',
+  'MOVE',
+  'COPY',
+  'DUPLICATE',
+  'CLONE',
+  'RESET',
+  'REPLACE',
+  'ATTACH',
+  'DETACH',
+  'LOCK',
+  'UNLOCK',
+  'BLOCK',
+  'UNBLOCK',
+  'BAN',
+])
+
+/** Whether a gateway tool's name reads as read-only (safe to
+ * auto-allow) rather than mutating (should stay at actauth's own
+ * default, typically 'ask' or 'deny', until a human explicitly grants
+ * it) — see addGatewayTool's 'auto' decision mode, which is what
+ * actually calls this. The first token that matches either list wins,
+ * scanned in order; a name with no recognized verb at all (an
+ * inconsistently-named action, or a toolkit this list hasn't seen yet)
+ * defaults to *not* read-only — an unclassifiable tool staying at
+ * actauth's default is the safe failure mode, the reverse would silently
+ * auto-allow something this heuristic simply doesn't understand. Exported
+ * for testing and because adapters/http.ts's picker UI may want to show
+ * the same classification before a tool is even added. */
+export function isReadOnlyToolName(toolName: string): boolean {
+  const tokens = toolName.toUpperCase().split('_')
+  for (const token of tokens) {
+    if (READ_ONLY_VERBS.has(token)) return true
+    if (MUTATING_VERBS.has(token)) return false
+  }
+  return false
+}
+
+/** 'auto' resolves per-tool via isReadOnlyToolName instead of one fixed
+ * decision for a whole batch — see addGatewayTool's own doc comment for
+ * why a single decision can't safely cover "select all" against a
+ * toolkit with dozens of actions of very different risk. */
+export type GatewayToolDecision = Decision | 'auto'
+
 /** Seeds one exact-match actauth rule per tool this source produces —
  * ActAuth's own `tool` matching is exact-string, not glob (only `scope`
  * supports wildcards), so "allow everything gh_* produces" isn't
@@ -101,25 +203,39 @@ export class GatewayToolNotFoundError extends Error {}
  * does. Creates agents/<name>/actauth.yml (default_decision: deny) if it
  * doesn't exist yet, same fallback loadRules' own default gets.
  *
+ * `decision: 'auto'` seeds an explicit 'allow' rule for tools
+ * isReadOnlyToolName reads as safe, and an explicit 'ask' rule for
+ * everything else — never no rule at all. Relying on "no rule falls
+ * through to actauth's own default_decision" was the first cut of this,
+ * but that ties a mutating tool's actual governing decision to whatever
+ * default_decision happens to be *at the time someone reads it*: change
+ * default_decision later (say from 'ask' to 'allow' for an unrelated
+ * reason) and every mutating tool added this way silently becomes
+ * allowed too, with nothing in actauth.yml showing that ever happened.
+ * An explicit 'ask' rule can't drift like that. This is what the
+ * picker's own "select all" uses instead of forcing one decision onto a
+ * batch that might mix GITHUB_LIST_REPOS with GITHUB_DELETE_REPO.
+ *
  * Edits via `yaml`'s Document API (parse → mutate the CST → toString),
  * not parse-into-a-plain-object → re-stringify — the latter silently
  * drops every comment in the file, which for a real, hand-maintained
  * actauth.yml (see agents/customer-service/actauth.yml's own extensive
  * rule-by-rule reasoning) would mean adding one gateway tool wipes out
  * documentation an operator wrote for entirely unrelated rules. */
-function appendActauthRules(dir: string, toolNames: string[], decision: Decision, provider: string): void {
+function appendActauthRules(dir: string, toolNames: string[], decision: GatewayToolDecision, provider: string): void {
   const path = join(dir, 'actauth.yml')
   const doc = existsSync(path) ? parseDocument(readFileSync(path, 'utf8')) : parseDocument('default_decision: deny\nrules: []\n')
   if (doc.get('rules') == null) doc.set('rules', [])
 
   const rules = doc.get('rules') as unknown as { add: (item: unknown) => void }
   for (const tool of toolNames) {
+    const resolved = decision === 'auto' ? (isReadOnlyToolName(tool) ? 'allow' : 'ask') : decision
     // Prefixed with the *provider* (e.g. 'composio'), not the source's
     // own local `name` (e.g. 'github') — `tool` already embeds the
     // source name (`${entry.name}_${slug}`), so repeating it in the
     // rule name too would be redundant; the provider is the one piece
     // of context `tool` doesn't already carry.
-    rules.add(doc.createNode({ name: `${provider}-${tool}-web-added`, scope: '*/*', tool, decision }))
+    rules.add(doc.createNode({ name: `${provider}-${tool}-web-added`, scope: '*/*', tool, decision: resolved }))
   }
 
   mkdirSync(dir, { recursive: true })
@@ -174,8 +290,9 @@ function toolNamesFor(entry: GatewayToolEntry): string[] {
  * Omit `decision` to leave every new tool at actauth's own
  * defaultDecision (typically 'deny'), the same "new tools are opt-in,
  * not silently allowed" convention every other tool in this repo
- * follows. */
-export function addGatewayTool(agentName: string, entry: GatewayToolEntry, decision?: Decision): void {
+ * follows. `decision: 'auto'` — see appendActauthRules — resolves per
+ * tool instead of applying one decision to the whole batch. */
+export function addGatewayTool(agentName: string, entry: GatewayToolEntry, decision?: GatewayToolDecision): void {
   const dir = agentDir(agentName)
   const sources = readGatewayToolsFromDir(dir)
   const existingIndex = sources.findIndex((s) => s.name === entry.name)
@@ -260,6 +377,52 @@ async function connectEntry(entry: GatewayToolEntry): Promise<ToolDefinition[]> 
   throw new Error(`Unknown gateway tool provider '${(entry as GatewayToolEntry).provider}'.`)
 }
 
+/** mcpplug's own connectComposioSource fills each ToolDefinition's
+ * description with a mechanically humanized slug (e.g. "abort repository
+ * migration") — the only thing it has to work with is `composio execute
+ * <slug> --get-schema`, which has no top-level description field, only
+ * per-input ones. Composio's own catalog (`composio tools list
+ * <toolkit>`) has a genuinely useful one instead (e.g. "Tool to abort a
+ * repository migration that is queued or in progress. Use when you need
+ * to cancel an ongoing migration operation.") — worth fetching for
+ * describeGatewayTools specifically (see its own "always current worth
+ * more than cheap" doc comment), an occasional, deliberate admin action.
+ * Deliberately *not* applied inside connectEntry itself, even though
+ * that would also improve what the model actually sees at runtime —
+ * connectEntry is loadGatewayToolsFromDir's hot path, and that function's
+ * own doc comment already explicitly rejects paying any extra
+ * reconnect/network cost there beyond what's unavoidable; confirmed live
+ * that adding one more CLI call per distinct toolkit on every cache-miss
+ * measurably slowed it down enough to blow real test timeouts.
+ *
+ * Toolkit is derived from each slug's own TOOLKIT_ACTION naming
+ * convention, not from `entry.name` — that's just a local namespace
+ * label an operator can set to anything (see ComposioGatewayToolEntry's
+ * own doc comment), so it can't be trusted to name a real toolkit.
+ * Best-effort per toolkit: a lookup failing (unusual slug shape, a
+ * toolkit no longer connected) just leaves those tools at their
+ * humanize() fallback rather than failing the whole call — same
+ * fail-open reasoning loadGatewayToolsFromDir's own doc comment already
+ * uses for a broken source. */
+async function withRealComposioDescriptions(tools: ToolDefinition[], slugs: string[], cliCommand?: string): Promise<ToolDefinition[]> {
+  const toolkits = Array.from(new Set(slugs.map((slug) => slug.split('_')[0].toLowerCase())))
+  const descriptions = new Map<string, string>()
+  await Promise.all(
+    toolkits.map(async (toolkit) => {
+      try {
+        const catalog = await listComposioTools(toolkit, cliCommand)
+        for (const t of catalog) descriptions.set(t.slug, t.description)
+      } catch {
+        // Best-effort — see this function's own doc comment.
+      }
+    }),
+  )
+  return tools.map((tool, i) => {
+    const real = descriptions.get(slugs[i])
+    return real ? { ...tool, description: real } : tool
+  })
+}
+
 export interface GatewayToolStatus {
   entry: GatewayToolEntry
   status: 'ok' | 'error'
@@ -283,7 +446,10 @@ export async function describeGatewayTools(agentName: string): Promise<GatewayTo
   return Promise.all(
     entries.map(async (entry): Promise<GatewayToolStatus> => {
       try {
-        const tools = await connectEntry(entry)
+        const rawTools = await connectEntry(entry)
+        // See withRealComposioDescriptions' own doc comment for why this
+        // enrichment happens here, not inside connectEntry itself.
+        const tools = entry.provider === 'composio' ? await withRealComposioDescriptions(rawTools, entry.slugs, entry.cliCommand) : rawTools
         return { entry, status: 'ok', tools: tools.map((t) => ({ name: t.name, description: t.description })) }
       } catch (err) {
         return { entry, status: 'error', tools: [], error: err instanceof Error ? err.message : String(err) }
@@ -418,9 +584,17 @@ interface RawComposioTool {
  * app — the picker's second step, once a toolkit is chosen from
  * listComposioConnections. Every action a toolkit exposes, not just ones
  * already registered as a gateway tool source — the picker's whole point
- * is showing what's *available* to add. */
+ * is showing what's *available* to add. `--limit 1000` (the CLI's own
+ * max) is explicit rather than left to the CLI's own default: without
+ * it, `composio tools list github` silently caps at 30 results — out of
+ * GitHub's real ~900, and alphabetically sorted, so a picker session
+ * would only ever see a narrow, unrepresentative slice (every result
+ * starting with "A" — ABORT/ACCEPT/ADD/API/APPROVE/ASSIGN — almost all
+ * mutating verbs), not "every tool this toolkit has" the doc comment
+ * above already promises. Confirmed live against the real CLI: no
+ * --limit gave 30, --limit 1000 gave 893. */
 export async function listComposioTools(toolkit: string, cliCommand = 'composio'): Promise<ComposioToolInfo[]> {
-  const raw = (await runComposioCli(cliCommand, ['tools', 'list', toolkit])) as RawComposioTool[]
+  const raw = (await runComposioCli(cliCommand, ['tools', 'list', toolkit, '--limit', '1000'])) as RawComposioTool[]
   return raw.map((t) => ({ slug: t.slug, name: t.name, description: t.description }))
 }
 

@@ -246,6 +246,13 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     font-size: 12px;
   }
   .markdown-body pre code { background: none; padding: 0; }
+  .tool-picker-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+  }
+  .tool-picker-controls button { font-size: 11px; padding: 3px 8px; }
   .tool-picker-list {
     max-height: 240px;
     overflow-y: auto;
@@ -1044,10 +1051,20 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '</label>' +
         '<label>Tools' +
           '<input type="text" id="toolFilter" placeholder="Filter by name or slug&hellip;">' +
+          '<div class="tool-picker-controls">' +
+            '<button type="button" id="selectAllToolsBtn" disabled>Select all</button>' +
+            '<span class="hint" id="selectedCount"></span>' +
+          '</div>' +
           '<div class="tool-picker-list" id="toolPickerList"><p class="hint">Pick an app above first.</p></div>' +
         '</label>' +
         '<label>Grant permission <span class="hint">(optional — leave blank to leave every new tool at actauth\\'s own default, typically deny)</span>' +
-          '<select name="decision"><option value="">(leave unset)</option><option value="allow">allow</option><option value="ask">ask</option><option value="deny">deny</option></select>' +
+          '<select name="decision">' +
+            '<option value="">(leave unset)</option>' +
+            '<option value="auto" selected>auto — allow read-only tools, ask for the rest</option>' +
+            '<option value="allow">allow</option>' +
+            '<option value="ask">ask</option>' +
+            '<option value="deny">deny</option>' +
+          '</select>' +
         '</label>' +
         '<button type="submit" id="addSubmitBtn" disabled>Add</button>' +
         '<div id="addError" class="error"></div>' +
@@ -1093,6 +1110,8 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     var nameInput = form.querySelector('input[name="name"]');
     var toolFilter = content.querySelector('#toolFilter');
     var toolPickerList = content.querySelector('#toolPickerList');
+    var selectAllBtn = content.querySelector('#selectAllToolsBtn');
+    var selectedCountEl = content.querySelector('#selectedCount');
     var submitBtn = content.querySelector('#addSubmitBtn');
     var currentTools = [];
     // Tracks whichever toolkit slug the Name field was last auto-filled
@@ -1100,6 +1119,12 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     // but the moment a person types their own value in, it stops
     // clobbering that on the next app switch.
     var nameAutoFilledAs = '';
+
+    function updateSelectedCount() {
+      var boxes = toolPickerList.querySelectorAll('input[name="slugs"]');
+      var checked = toolPickerList.querySelectorAll('input[name="slugs"]:checked').length;
+      selectedCountEl.textContent = checked ? checked + ' of ' + boxes.length + ' selected' : '';
+    }
 
     function renderToolPicker(tools, filterText) {
       var q = (filterText || '').toLowerCase();
@@ -1110,6 +1135,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
           });
       if (!filtered.length) {
         toolPickerList.innerHTML = '<p class="hint">No matching tools.</p>';
+        updateSelectedCount();
         return;
       }
       toolPickerList.innerHTML = filtered.map(function (t) {
@@ -1119,11 +1145,30 @@ export const agentsConfigPageHtml: string = `<!doctype html>
           '<input type="checkbox" name="slugs" value="' + escapeHtml(t.slug) + '">' +
           '</label>';
       }).join('');
+      var boxes = toolPickerList.querySelectorAll('input[name="slugs"]');
+      for (var i = 0; i < boxes.length; i++) {
+        boxes[i].addEventListener('change', updateSelectedCount);
+      }
+      updateSelectedCount();
     }
+
+    // Acts only on the currently-filtered/visible tools, not every tool
+    // the toolkit has — filtering to "issue" and hitting Select all is
+    // meant to select the issue-related tools shown, not silently pull
+    // in everything else the toolkit offers too. Toggles: if everything
+    // visible is already checked, this unchecks it instead.
+    selectAllBtn.addEventListener('click', function () {
+      var boxes = toolPickerList.querySelectorAll('input[name="slugs"]');
+      if (!boxes.length) return;
+      var allChecked = Array.prototype.every.call(boxes, function (b) { return b.checked; });
+      for (var i = 0; i < boxes.length; i++) boxes[i].checked = !allChecked;
+      updateSelectedCount();
+    });
 
     function loadToolsForToolkit(toolkit) {
       toolPickerList.innerHTML = '<p class="hint">Loading tools&hellip;</p>';
       submitBtn.disabled = true;
+      selectAllBtn.disabled = true;
       fetch('/composio/tools?toolkit=' + encodeURIComponent(toolkit))
         .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
         .then(function (result) {
@@ -1131,6 +1176,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
           currentTools = result.body.tools || [];
           renderToolPicker(currentTools, toolFilter.value);
           submitBtn.disabled = false;
+          selectAllBtn.disabled = false;
         })
         .catch(function (err) {
           toolPickerList.innerHTML = '<p class="error">Could not load tools: ' + escapeHtml(err.message) + '</p>';
@@ -1163,6 +1209,8 @@ export const agentsConfigPageHtml: string = `<!doctype html>
       if (!toolkit) {
         toolPickerList.innerHTML = '<p class="hint">Pick an app above first.</p>';
         submitBtn.disabled = true;
+        selectAllBtn.disabled = true;
+        selectedCountEl.textContent = '';
         return;
       }
       if (!nameInput.value || nameInput.value === nameAutoFilledAs) {
