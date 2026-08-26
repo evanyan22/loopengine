@@ -38,6 +38,7 @@ import { globalConfigPageHtml } from './global-config-page.js'
 import {
   addGatewayTool,
   agentDir,
+  disconnectComposioAccount,
   describeGatewayTools,
   listComposioConnections,
   listComposioTools,
@@ -387,6 +388,23 @@ async function handleComposioTools(res: ServerResponse, toolkit: string | undefi
   }
 }
 
+// Backs the Gateways panel's own Disconnect control — see
+// disconnectComposioAccount's own doc comment for why there's no
+// Connect counterpart (composio login has no non-interactive path that
+// actually matches a credential an operator has on hand). Returns the
+// freshly-resolved gateways list on success, same "apply the response
+// directly instead of a second GET" pattern the gateway-tools routes
+// already use.
+async function handleComposioDisconnect(res: ServerResponse): Promise<void> {
+  try {
+    await disconnectComposioAccount()
+  } catch (err) {
+    res.writeHead(502, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(await describeGateways()))
+}
+
 // Backs the Skills tab's edit form (GET .../skills/:skillId to populate
 // it, PUT to save, DELETE to remove) — see skills-admin.ts's own doc
 // comment for why this only reaches flat (non-nested) skills.
@@ -662,6 +680,10 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === 'GET' && pathname === '/config/gateways') {
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(await describeGateways()))
+      return
+    }
+    if (req.method === 'POST' && pathname === '/config/gateways/composio/disconnect') {
+      await handleComposioDisconnect(res)
       return
     }
 

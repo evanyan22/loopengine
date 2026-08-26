@@ -624,3 +624,21 @@ export async function getComposioAuthStatus(cliCommand = 'composio'): Promise<Co
     return { connected: false }
   }
 }
+
+/** `composio logout` — already non-interactive on its own (see its own
+ * --help), unlike login. Machine-wide: this deauthenticates the CLI for
+ * every agent's gateway tools on this machine, not just the browser tab
+ * that clicked Disconnect — same as running it in a terminal yourself.
+ *
+ * There's no connectComposioAccount counterpart: `composio login`'s only
+ * non-interactive path is `--user-api-key`, which turned out not to be
+ * what an operator actually has on hand — the key Composio's own
+ * dashboard hands out for MCP client auth (sent via an x-consumer-api-key
+ * header) isn't the same credential, and 401s against this flag.
+ * Composio's own documented path is plain, interactive `composio login`
+ * (opens a browser) after installing the CLI — not something a web
+ * request can drive, so the Gateways panel shows that as instructions
+ * instead of a form; see its own comment in adapters/global-config-page.ts. */
+export async function disconnectComposioAccount(cliCommand = 'composio'): Promise<void> {
+  await execFileAsync(cliCommand, ['logout'])
+}

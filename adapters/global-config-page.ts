@@ -90,6 +90,27 @@ export const globalConfigPageHtml: string = `<!doctype html>
   .source-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .source-head h4 { margin: 0; font-size: 14px; font-family: ui-monospace, monospace; }
   .hint { font-size: 11px; color: light-dark(#666, #999); }
+  pre {
+    background: light-dark(#fff, #26262b);
+    border: 1px solid light-dark(#ddd, #3a3a3e);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 6px 0;
+  }
+  /* Same palette as agents-config-page.ts's own .delete-btn — kept in
+     sync by hand since each admin page owns its own <style> block (no
+     shared component CSS beyond devUiCss's base tokens), not because
+     this pink-for-destructive convention is meant to drift between them. */
+  .delete-btn {
+    font-size: 12px;
+    color: light-dark(#991b1b, #f87171);
+    background: light-dark(#fee2e2, #3a1f1f);
+    border-color: light-dark(#f3b4b4, #6b3232);
+  }
+  .delete-btn:hover { background: light-dark(#fecaca, #4a1f1f); }
 </style>
 </head>
 <body>
@@ -179,10 +200,20 @@ export const globalConfigPageHtml: string = `<!doctype html>
       statusHtml = '<span class="hint">not yet supported</span>';
     } else if (g.connected) {
       statusHtml = badge(true, 'connected', 'not connected');
-      bodyHtml = '<p class="hint">' + escapeHtml(g.email || '') + (g.org ? ' &middot; ' + escapeHtml(g.org) : '') + '</p>';
+      bodyHtml = '<p class="hint">' + escapeHtml(g.email || '') + (g.org ? ' &middot; ' + escapeHtml(g.org) : '') + '</p>' +
+        '<button type="button" class="delete-btn disconnect-btn" data-provider="' + escapeHtml(g.provider) + '">Disconnect</button>';
     } else {
+      // No Connect button/form here — composio login's only
+      // non-interactive path (--user-api-key) doesn't accept the kind of
+      // key an operator actually has on hand (Composio hands out a
+      // separate x-consumer-api-key credential for MCP clients, which
+      // 401s against this flag); composio login itself opens a real
+      // browser, which a web request can't drive. These are the same
+      // two commands Composio's own docs give for getting started.
       statusHtml = badge(false, 'connected', 'not connected');
-      bodyHtml = '<p class="hint">Run "composio login" on the machine running this server, then reload this page. Run "composio logout" to disconnect.</p>';
+      bodyHtml = '<pre><code>curl -fsSL https://composio.dev/install | sh</code></pre>' +
+        '<pre><code>composio login</code></pre>' +
+        '<p class="hint">Run both on the machine running this server, then reload this page.</p>';
     }
     return '<div class="source' + (g.supported ? '' : ' unsupported') + '">' +
       '<div class="source-head">' +
@@ -193,13 +224,47 @@ export const globalConfigPageHtml: string = `<!doctype html>
       '</div>';
   }
 
+  function applyGateways(gateways) {
+    var content = document.getElementById('gatewaysContent');
+    content.innerHTML = (gateways || []).map(renderGatewayCard).join('');
+    wireGatewayCards(content);
+    loadedSections.gateways = true;
+  }
+
+  // Disconnect is a machine-wide CLI-session action (see
+  // disconnectComposioAccount's own doc comment in gateway-tools.ts) —
+  // it gets a confirm() for that reason, same as this admin UI's other
+  // consequential-but-not-undoable actions (removing a skill, a rule, a
+  // gateway tool). No Connect counterpart to wire — see renderGatewayCard's
+  // own comment for why that's instructions, not a form.
+  function wireGatewayCards(content) {
+    var disconnectButtons = content.querySelectorAll('.disconnect-btn');
+    for (var j = 0; j < disconnectButtons.length; j++) {
+      disconnectButtons[j].addEventListener('click', function (ev) {
+        var btn = ev.currentTarget;
+        var provider = btn.getAttribute('data-provider');
+        if (!confirm('Disconnect ' + provider + '? This logs out the CLI on this machine for every agent’s gateway tools, not just this browser tab.')) return;
+        btn.disabled = true;
+        fetch('/config/gateways/' + encodeURIComponent(provider) + '/disconnect', { method: 'POST' })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (result) {
+            if (!result.ok) throw new Error(result.body.error || 'request failed');
+            applyGateways(result.body.gateways || []);
+          })
+          .catch(function (err) {
+            alert('Could not disconnect: ' + err.message);
+            btn.disabled = false;
+          });
+      });
+    }
+  }
+
   function loadGateways() {
     var content = document.getElementById('gatewaysContent');
     fetch('/config/gateways')
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        content.innerHTML = (data.gateways || []).map(renderGatewayCard).join('');
-        loadedSections.gateways = true;
+        applyGateways(data.gateways || []);
       })
       .catch(function (err) {
         content.innerHTML = '<p class="error">Could not load gateways: ' + escapeHtml(err.message) + '</p>';
