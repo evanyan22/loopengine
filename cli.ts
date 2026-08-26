@@ -19,14 +19,48 @@ const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
 export class AgentNameError extends Error {}
 export class AgentExistsError extends Error {}
 export class AgentNotFoundError extends Error {}
+export class AgentModelError extends Error {}
 
-export function agentIndexTemplate(name: string): string {
+type Provider = 'anthropic' | 'openai' | 'deepseek'
+
+const MODEL_ENV_VAR: Record<Provider, string> = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
+}
+
+export interface AgentTemplateOptions {
+  systemPrompt?: string
+  model?: { provider: Provider; model?: string }
+}
+
+// Escapes a value for safe interpolation into a single-quoted TS string
+// literal in generated code — an operator-supplied systemPrompt (from
+// the admin UI's Create new agent form, say) containing a literal quote
+// or backslash would otherwise produce invalid, or silently different,
+// generated TypeScript.
+function tsStringLiteral(value: string): string {
+  return "'" + value.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'"
+}
+
+/** Generates agents/<name>/index.ts's real content. `options` is
+ * entirely optional and defaults to exactly what this template always
+ * wrote before it existed ('You are ...', anthropic/claude-sonnet-5) —
+ * `loopengine add-agent <name>` (which never passes it) produces
+ * byte-identical output to before this existed. openai/deepseek have no
+ * default model (only anthropic's is optional — see AgentModelConfig's
+ * own doc comment), so scaffoldAgent validates a model name was given
+ * for those rather than this function silently writing a wrong one. */
+export function agentIndexTemplate(name: string, options: AgentTemplateOptions = {}): string {
+  const systemPrompt = options.systemPrompt?.trim() || 'You are ...'
+  const provider = options.model?.provider ?? 'anthropic'
+  const modelName = options.model?.model?.trim() || (provider === 'anthropic' ? 'claude-sonnet-5' : '')
   return `import type { AgentConfig } from 'loopengine'
 
 export const config: AgentConfig = {
   name: '${name}',
-  systemPrompt: 'You are ...',
-  model: { provider: 'anthropic', model: 'claude-sonnet-5' }, // reads ANTHROPIC_API_KEY
+  systemPrompt: ${tsStringLiteral(systemPrompt)},
+  model: { provider: '${provider}', model: ${tsStringLiteral(modelName)} }, // reads ${MODEL_ENV_VAR[provider]}
 }
 `
 }
@@ -52,10 +86,16 @@ export const config: AgentConfig = {
 /** Writes agents/<name>/index.ts under baseDir and returns its path.
  * Only that one file — tools, rules, and skillsDirs are left to their
  * smart defaults (see AgentConfig's own doc comments), the same as the
- * README's own "simplest possible agent" example. */
-export async function scaffoldAgent(baseDir: string, name: string): Promise<string> {
+ * README's own "simplest possible agent" example. `options` (systemPrompt,
+ * model) is entirely optional — see agentIndexTemplate's own doc comment
+ * for the defaults used when omitted. */
+export async function scaffoldAgent(baseDir: string, name: string, options: AgentTemplateOptions = {}): Promise<string> {
   if (!NAME_PATTERN.test(name)) {
     throw new AgentNameError(`Agent name must be lowercase, alphanumeric, hyphen-separated (e.g. "weather-agent") — got "${name}"`)
+  }
+  const provider = options.model?.provider ?? 'anthropic'
+  if (provider !== 'anthropic' && !options.model?.model?.trim()) {
+    throw new AgentModelError(`A model name is required for provider '${provider}' — only anthropic has a default (claude-sonnet-5).`)
   }
 
   const dir = path.join(baseDir, 'agents', name)
@@ -66,7 +106,7 @@ export async function scaffoldAgent(baseDir: string, name: string): Promise<stri
   }
 
   await mkdir(dir, { recursive: true })
-  await writeFile(indexPath, agentIndexTemplate(name))
+  await writeFile(indexPath, agentIndexTemplate(name, options))
   return indexPath
 }
 
@@ -277,9 +317,25 @@ async function main(): Promise<void> {
   // read fresh off disk every call regardless (no restart needed for
   // those even under plain `serve`) — this is for the TS source itself:
   // a new tool file, an edited AgentConfig, ...
+  //
+  // --include 'agents/*/index.ts' is deliberately narrow, not a blanket
+  // 'agents/**' — tsx watch on its own only tracks the actual ES module
+  // graph, so a *new* agents/<name>/index.ts (e.g. from the admin UI's
+  // "Create new agent," or from `loopengine add-agent`) wouldn't
+  // otherwise trigger a restart at all: agent-registry.ts discovers
+  // agents once via a top-level `readdirSync` (see discover-agents.ts),
+  // not an import, so tsx's watcher has no static edge to that new file
+  // until this flag adds one. A wider 'agents/**' would also match
+  // gateway-tools.yml/actauth.yml/skills/*.md — restarting the whole
+  // server (dropping in-flight sessions) on every admin-UI edit to
+  // those, which is exactly the "no restart needed" behavior this repo
+  // went out of its way to build for them elsewhere. Confirmed live
+  // (both directions) before landing this: editing gateway-tools.yml
+  // under this exact glob triggers no restart; adding a new
+  // agents/<name>/index.ts does.
   if (command === 'dev') {
     if (!(await requireAdapterFile('adapters/http.ts'))) return
-    process.exitCode = await runTsx(['watch', '--env-file-if-exists=.env', 'adapters/http.ts', ...rest])
+    process.exitCode = await runTsx(['watch', '--include', 'agents/*/index.ts', '--env-file-if-exists=.env', 'adapters/http.ts', ...rest])
     return
   }
 

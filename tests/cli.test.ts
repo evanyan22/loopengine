@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { AgentExistsError, AgentNameError, AgentNotFoundError, scaffoldAgent, scaffoldSubagent } from '../cli.js'
+import { AgentExistsError, AgentModelError, AgentNameError, AgentNotFoundError, scaffoldAgent, scaffoldSubagent } from '../cli.js'
 
 const cliSourcePath = join(dirname(fileURLToPath(import.meta.url)), '..', 'cli.ts')
 
@@ -43,6 +43,43 @@ describe('scaffoldAgent', () => {
 
     await expect(scaffoldAgent(dir, 'WeatherAgent')).rejects.toThrow(AgentNameError)
     await expect(scaffoldAgent(dir, 'weather_agent')).rejects.toThrow(AgentNameError)
+  })
+
+  it('accepts an optional systemPrompt and model, writing them into the generated file', async () => {
+    const dir = tmpDir()
+
+    const indexPath = await scaffoldAgent(dir, 'tax-helper', {
+      systemPrompt: 'You help with taxes.',
+      model: { provider: 'openai', model: 'gpt-4o' },
+    })
+
+    const contents = readFileSync(indexPath, 'utf8')
+    expect(contents).toContain("systemPrompt: 'You help with taxes.'")
+    expect(contents).toContain("model: { provider: 'openai', model: 'gpt-4o' }")
+    expect(contents).toContain('// reads OPENAI_API_KEY')
+  })
+
+  it('escapes a systemPrompt containing a quote or backslash into valid generated TS', async () => {
+    const dir = tmpDir()
+
+    const indexPath = await scaffoldAgent(dir, 'quirky-agent', { systemPrompt: "It's a \\test with \"quotes\" too" })
+
+    const contents = readFileSync(indexPath, 'utf8')
+    expect(contents).toContain(String.raw`systemPrompt: 'It\'s a \\test with "quotes" too'`)
+  })
+
+  it('rejects openai/deepseek with no model name — only anthropic has a default', async () => {
+    const dir = tmpDir()
+
+    await expect(scaffoldAgent(dir, 'no-model-agent', { model: { provider: 'deepseek' } })).rejects.toThrow(AgentModelError)
+  })
+
+  it('anthropic with no model name still defaults to claude-sonnet-5', async () => {
+    const dir = tmpDir()
+
+    const indexPath = await scaffoldAgent(dir, 'default-model-agent', { model: { provider: 'anthropic' } })
+
+    expect(readFileSync(indexPath, 'utf8')).toContain("model: { provider: 'anthropic', model: 'claude-sonnet-5' }")
   })
 })
 

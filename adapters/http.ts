@@ -26,7 +26,8 @@
 // file's call — see AgentConfig.sessionIdFor and defaultSessionIdFor below.
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { getEntry, listAgents, type RegistryEntry } from '../agent-registry.js'
+import { getEntry, listAgents, projectDir, registerAgent, type RegistryEntry } from '../agent-registry.js'
+import { loadAgentModule } from '#discover-agents.js'
 import { createSessionStore } from '../session-store.js'
 import { runAgent, loadRules, loadDefaultTools, loadSubagentAsTools } from '#run-agent.js'
 import type { AgentConfig } from '#agent-config.js'
@@ -61,6 +62,7 @@ import {
   ActauthRuleNotFoundError,
 } from '#actauth-admin.js'
 import { describeModelProviders, describeGateways } from '#global-config.js'
+import { scaffoldAgent, AgentNameError, AgentExistsError, AgentModelError, type AgentTemplateOptions } from '#cli.js'
 import type { Decision } from 'actauth'
 
 const sessions = createSessionStore()
@@ -405,6 +407,89 @@ async function handleComposioDisconnect(res: ServerResponse): Promise<void> {
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(await describeGateways()))
 }
 
+// Backs the agents list page's "Create new agent" button — reuses
+// cli.ts's own scaffoldAgent rather than re-implementing the
+// agents/<name>/index.ts template here, so a web-created agent is
+// byte-for-byte the same stub `loopengine add-agent` would generate.
+// scaffoldAgent runs against agent-registry.ts's own projectDir(), not
+// process.cwd() — they're usually the same directory, but only
+// projectDir() is guaranteed to match where this registry's own
+// discoverAgents call actually resolved agents/ against (see its own
+// doc comment), which is what matters here.
+//
+// Unlike agent-registry.ts's own discoverAgents (a one-shot directory
+// scan at process startup — see that module's header comment), this
+// loads and registers the new agent into *this* running process
+// immediately: loadAgentModule imports just the one new file (the same
+// primitive discoverAgents itself uses per-entry), and registerAgent
+// adds it to the live registry, in place. No restart needed — this is
+// the one legitimate case for it: a module that was never imported
+// before has nothing to invalidate or go stale, unlike hot-reloading an
+// *existing* agent's already-imported code would (Node's ESM loader
+// caches a given module forever; there's no supported way to safely
+// re-import a changed one without a real restart). If loading/
+// registering the fresh file fails for some reason (a bug in the
+// generated template, an extremely unlikely name race), the file is
+// still there on disk — reported as `registered: false` rather than
+// treated as the whole request failing, since scaffolding did succeed;
+// a restart (or `loopengine dev`'s own auto-restart on new
+// agents/*/index.ts files — see cli.ts's own comment there) would still
+// pick it up the normal way.
+// systemPrompt/model are both optional in the request body — see
+// AgentTemplateOptions' own doc comment (via agentIndexTemplate) for the
+// defaults scaffoldAgent falls back to when either is omitted.
+function parseAgentTemplateOptions(body: Record<string, unknown>): { ok: true; value: AgentTemplateOptions } | { ok: false; error: string } {
+  const options: AgentTemplateOptions = {}
+  if (typeof body.systemPrompt === 'string' && body.systemPrompt.trim()) {
+    options.systemPrompt = body.systemPrompt
+  }
+  if (body.model !== undefined && body.model !== null) {
+    if (typeof body.model !== 'object') {
+      return { ok: false, error: 'model must be an object' }
+    }
+    const provider = (body.model as Record<string, unknown>).provider
+    if (provider !== 'anthropic' && provider !== 'openai' && provider !== 'deepseek') {
+      return { ok: false, error: `unsupported model provider '${String(provider)}'` }
+    }
+    const modelName = (body.model as Record<string, unknown>).model
+    options.model = { provider, model: typeof modelName === 'string' ? modelName : undefined }
+  }
+  return { ok: true, value: options }
+}
+
+async function handleCreateAgent(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readJsonBody(req)
+  if (typeof body.name !== 'string' || !body.name) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'name is required' }))
+    return
+  }
+  const parsedOptions = parseAgentTemplateOptions(body)
+  if (!parsedOptions.ok) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsedOptions.error }))
+    return
+  }
+
+  let indexPath: string
+  try {
+    indexPath = await scaffoldAgent(projectDir(), body.name, parsedOptions.value)
+  } catch (err) {
+    const status = err instanceof AgentNameError || err instanceof AgentModelError ? 400 : err instanceof AgentExistsError ? 409 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+
+  try {
+    registerAgent(await loadAgentModule(indexPath, indexPath))
+  } catch (err) {
+    res
+      .writeHead(200, { 'content-type': 'application/json' })
+      .end(JSON.stringify({ path: indexPath, registered: false, error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ path: indexPath, registered: true }))
+}
+
 // Backs the Skills tab's edit form (GET .../skills/:skillId to populate
 // it, PUT to save, DELETE to remove) — see skills-admin.ts's own doc
 // comment for why this only reaches flat (non-nested) skills.
@@ -661,6 +746,10 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' }).end(
         JSON.stringify({ agents: listAgents().map((name) => ({ name, systemPrompt: getEntry(name)!.config.systemPrompt })) }),
       )
+      return
+    }
+    if (req.method === 'POST' && pathname === '/agents') {
+      await handleCreateAgent(req, res)
       return
     }
 

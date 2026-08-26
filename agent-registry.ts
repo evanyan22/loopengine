@@ -10,7 +10,8 @@ import { discoverAgents, type AgentModule } from './discover-agents.js'
 
 export type RegistryEntry = AgentModule
 
-const agentsDir = join(dirname(fileURLToPath(import.meta.url)), 'agents')
+const projectRoot = dirname(fileURLToPath(import.meta.url))
+const agentsDir = join(projectRoot, 'agents')
 
 // Top-level await: ESM guarantees an importer's own evaluation (adapters/
 // http.ts, adapters/cli.ts) waits for this module's top-level await to
@@ -25,4 +26,34 @@ export function listAgents(): string[] {
 /** undefined for an unknown agent name. */
 export function getEntry(name: string): RegistryEntry | undefined {
   return entries.get(name)
+}
+
+/** Where this registry's own discoverAgents call resolved agents/
+ * against — exported so a caller creating a *new* agent module (see
+ * adapters/http.ts's handleCreateAgent, which passes this straight
+ * through as scaffoldAgent's own `baseDir`) writes it to the exact same
+ * place this registry would find it on a future restart, rather than
+ * re-deriving a base dir independently (e.g. from process.cwd(), which
+ * isn't guaranteed to match if the process is launched from elsewhere)
+ * and risking the two drifting apart. */
+export function projectDir(): string {
+  return projectRoot
+}
+
+/** Adds one already-loaded agent module to the live registry in place —
+ * how a newly created agent (see adapters/http.ts's handleCreateAgent,
+ * which calls this right after scaffoldAgent + loadAgentModule) becomes
+ * runnable in *this* process immediately, with no restart — unlike
+ * discoverAgents' own directory scan, which only ever runs once, at this
+ * module's own import time (see the top-level await above). Throws on a
+ * name collision with an already-registered agent, same as
+ * discoverAgents itself does for a collision found during its initial
+ * scan — a duplicate AgentConfig.name is a bug either way, not something
+ * to silently overwrite. */
+export function registerAgent(agentModule: RegistryEntry): void {
+  const name = agentModule.config.name
+  if (entries.has(name)) {
+    throw new Error(`Duplicate agent name '${name}' — an agent with this name is already registered.`)
+  }
+  entries.set(name, agentModule)
 }
