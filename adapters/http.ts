@@ -26,10 +26,11 @@
 // file's call — see AgentConfig.sessionIdFor and defaultSessionIdFor below.
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { getEntry, listAgents, projectDir, registerAgent, type RegistryEntry } from '../agent-registry.js'
-import { loadAgentModule } from '#discover-agents.js'
+import { getEntry, listAgents, projectDir, registerAgent, updateAgent, type RegistryEntry } from '../agent-registry.js'
+import { loadAgentModule, synthesizeCreateModelCall } from '#discover-agents.js'
+import { editAgentFile, AgentEditNotSupportedError, AgentFileNotFoundError, type AgentEditResult } from '#agent-file-admin.js'
 import { createSessionStore } from '../session-store.js'
-import { runAgent, loadRules, loadDefaultTools, loadSubagentAsTools } from '#run-agent.js'
+import { runAgent, loadRules, loadDefaultTools, loadSubagentAsTools, systemTools, systemSkillsDir } from '#run-agent.js'
 import type { AgentConfig } from '#agent-config.js'
 import { SkillGarden } from 'skillgarden'
 import { playgroundHtml } from './playground.js'
@@ -231,9 +232,16 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
   // exactly what the next real request would actually see available, not
   // a second guess (same reasoning this function's own header comment
   // already gives for tools/permissions).
+  // Kept separate from systemSkillsDir (mirrors localTools/systemTools
+  // above) — system-skills/composio-large-outputs is real infrastructure
+  // every agent gets (see run-agent.ts), not something an operator
+  // configured for *this* agent, so the config page's own Skills tab
+  // deliberately doesn't mix it into skills/skillsDirs below.
   const skillsDirs = config.skillsDirs ?? [`agents/${config.name}/skills`]
-  const skillGarden = skillsDirs.length ? new SkillGarden({ dirs: skillsDirs, indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 }) : null
-  const skillIndex = skillGarden?.buildIndex().included ?? []
+  const skillGarden = new SkillGarden({ dirs: skillsDirs, indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 })
+  const skillIndex = skillGarden.buildIndex().included
+  const systemSkillGarden = new SkillGarden({ dirs: [systemSkillsDir], indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 })
+  const systemSkillIndex = systemSkillGarden.buildIndex().included
 
   return {
     name: config.name,
@@ -246,7 +254,9 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
     skillIndexBudgetTokens: config.skillIndexBudgetTokens ?? 200,
     skillsDirs: skillsDirs,
     skills: skillIndex.map((s) => ({ name: s.name, description: s.description })),
+    systemSkills: systemSkillIndex.map((s) => ({ name: s.name, description: s.description })),
     tools: tools.map(describeTool),
+    systemTools: systemTools.map(describeTool),
     localTools: localTools.map(describeTool),
     agentAsTools: agentAsTools.map(describeTool),
     gatewayTools: gatewayTools.map(describeTool),
@@ -488,6 +498,55 @@ async function handleCreateAgent(req: IncomingMessage, res: ServerResponse): Pro
   }
 
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ path: indexPath, registered: true }))
+}
+
+// Backs the Overview tab's System prompt / Model edit forms — either
+// field can be sent independently (see parseAgentTemplateOptions), the
+// other stays untouched both on disk and live. Persists via
+// agent-file-admin.ts's editAgentFile (see its own doc comment for why
+// this is a surgical AST edit, not a full file regeneration), then
+// applies the exact same resolved values to *this* running process via
+// agent-registry.ts's updateAgent — a model change also needs a fresh
+// createModelCall (see synthesizeCreateModelCall's own doc comment for
+// why that's regenerable on its own, unlike the rest of an already-
+// imported module). No restart needed, same as every other admin edit
+// in this app.
+async function handleEditAgent(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  const body = await readJsonBody(req)
+  const parsedOptions = parseAgentTemplateOptions(body)
+  if (!parsedOptions.ok) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsedOptions.error }))
+    return
+  }
+  if (parsedOptions.value.systemPrompt === undefined && parsedOptions.value.model === undefined) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'systemPrompt or model is required' }))
+    return
+  }
+
+  let result: AgentEditResult
+  try {
+    result = editAgentFile(agentName, parsedOptions.value)
+  } catch (err) {
+    const status =
+      err instanceof AgentEditNotSupportedError || err instanceof AgentModelError ? 400 : err instanceof AgentFileNotFoundError ? 404 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+
+  const configPatch: Partial<AgentConfig> = {}
+  if (result.systemPrompt !== undefined) configPatch.systemPrompt = result.systemPrompt
+  let createModelCall: RegistryEntry['createModelCall'] | undefined
+  if (result.model) {
+    configPatch.model = result.model
+    createModelCall = await synthesizeCreateModelCall(result.model)
+  }
+  updateAgent(agentName, { config: configPatch, createModelCall })
+
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(await describeAgent(getEntry(agentName)!)))
 }
 
 // Backs the Skills tab's edit form (GET .../skills/:skillId to populate
@@ -750,6 +809,11 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === 'POST' && pathname === '/agents') {
       await handleCreateAgent(req, res)
+      return
+    }
+    const editAgentMatch = req.method === 'PUT' && pathname.match(/^\/agents\/([^/]+)$/)
+    if (editAgentMatch) {
+      await handleEditAgent(req, res, decodeURIComponent(editAgentMatch[1]))
       return
     }
 

@@ -42,6 +42,9 @@
     "dist/agent-as-tool.d.ts",
     "dist/gateway-tools.js",
     "dist/gateway-tools.d.ts",
+    "dist/system-tools.js",
+    "dist/system-tools.d.ts",
+    "system-skills",
     "LICENSE"
   ],
   "scripts": {

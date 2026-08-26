@@ -75,16 +75,18 @@ describe('subagent auto-loading (agents/<name>/subagents/*)', () => {
     const modelCall: ModelCall = vi.fn(async () => textResponse('done'))
     await runAgent(baseConfig({ tools: [] }), modelCall, 'hi')
 
+    // Plus the always-on system tool/skill (read_file, Skill) — see
+    // run-agent.ts's systemTools/systemSkillsDir.
     const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
-    expect(toolsSentToModel.map((t: { name: string }) => t.name)).toEqual(['billing-agent-merge'])
+    expect(toolsSentToModel.map((t: { name: string }) => t.name)).toEqual(['read_file', 'billing-agent-merge', 'Skill'])
   })
 
-  it('does not add any tools when the agent has no subagents/ folder at all', async () => {
+  it('does not add any agent-specific tools when the agent has no subagents/ folder at all', async () => {
     const modelCall: ModelCall = vi.fn(async () => textResponse('no tools here'))
     await runAgent(baseConfig({ name: 'subagent-fixture-parent-with-no-folder' }), modelCall, 'hi')
 
     const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
-    expect(toolsSentToModel).toEqual([])
+    expect(toolsSentToModel.map((t: { name: string }) => t.name)).toEqual(['read_file', 'Skill'])
   })
 
   it('calling the subagent tool runs the wrapped agent to completion and feeds its final text back as the tool result', async () => {
@@ -261,9 +263,9 @@ export function createModelCall() {
     await runAgent(baseConfig(), modelCall, 'hi')
 
     const secondCallMessages = (modelCall as ReturnType<typeof vi.fn>).mock.calls[1][0] as Message[]
-    // Empty, not "flat_secret_tool" — proves the subagent's tools default
-    // resolved against its own nested (empty) folder, not the flat
-    // same-named top-level one.
-    expect(firstToolResult(secondCallMessages)?.content).toBe('"tools seen: "')
+    // Just the always-on system tool/skill, not "flat_secret_tool" —
+    // proves the subagent's tools default resolved against its own
+    // nested (empty) folder, not the flat same-named top-level one.
+    expect(firstToolResult(secondCallMessages)?.content).toBe('"tools seen: Skill,read_file"')
   })
 })

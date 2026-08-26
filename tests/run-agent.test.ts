@@ -274,16 +274,19 @@ describe('runAgent', () => {
     )
   })
 
-  it('does not declare a Skill tool when the agent has no skillsDirs and no default folder to fall back to', async () => {
+  it('still declares a Skill tool with no agent skillsDirs, because the system skill is always present', async () => {
     const modelCall: ModelCall = vi.fn(async () => textResponse('no skills here'))
 
     // baseConfig's name ('test-agent') has no agents/test-agent/skills
     // folder in this repo — the default resolves to a path that doesn't
-    // exist, which SkillGarden treats as "no skills," not an error.
+    // exist, which SkillGarden treats as "no skills," not an error. But
+    // system-skills/composio-large-outputs is unconditionally merged in
+    // (see run-agent.ts's systemSkillsDir), so the Skill tool is declared
+    // regardless.
     await runAgent(baseConfig(), modelCall, 'hi')
 
     const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
-    expect(toolsSentToModel.some((t: { name: string }) => t.name === 'Skill')).toBe(false)
+    expect(toolsSentToModel.some((t: { name: string }) => t.name === 'Skill')).toBe(true)
   })
 
   it('defaults skillsDirs to agents/<name>/skills when omitted entirely', async () => {
@@ -421,37 +424,51 @@ describe('runAgent', () => {
     const modelCall: ModelCall = vi.fn(async () => textResponse('no tool called'))
 
     // No tools override — 'customer-service' matches this repo's real
-    // agents/customer-service/tools/index.ts, which exports 4 tools.
-    // skillsDirs: [] isolates this from customer-service's own real
-    // skills folder also defaulting in and adding an unrelated Skill tool.
+    // agents/customer-service/tools/index.ts, which exports 4 tools, and
+    // its own real gateway-tools.yml adds a 5th. skillsDirs: [] isolates
+    // this from customer-service's own real skills folder, though the
+    // always-on system skill still adds a Skill tool regardless (see
+    // run-agent.ts's systemSkillsDir) — same "not opt-out-able" as the
+    // system read_file tool below.
     await runAgent(baseConfig({ name: 'customer-service', rules: [], skillsDirs: [] }), modelCall, 'hi')
 
     const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
     expect(toolsSentToModel.map((t: { name: string }) => t.name).sort()).toEqual([
+      'Skill',
       'get_shipment_details',
+      'github_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER',
       'issue_refund',
       'lookup_order',
+      'read_file',
       'send_email',
     ])
   })
 
-  it('defaults to no tools (not a crash) when the agent has no tools/index folder at all', async () => {
+  it('defaults to just the system tools (not a crash) when the agent has no tools/index folder at all', async () => {
     const modelCall: ModelCall = vi.fn(async () => textResponse('no tools here'))
 
-    // 'test-agent' has no agents/test-agent/tools/ in this repo.
+    // 'test-agent' has no agents/test-agent/tools/ in this repo. Skill is
+    // still declared because the system skill is always present.
     await runAgent(baseConfig({ tools: undefined }), modelCall, 'hi')
 
     const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
-    expect(toolsSentToModel).toEqual([])
+    expect(toolsSentToModel.map((t: { name: string }) => t.name)).toEqual(['read_file', 'Skill'])
   })
 
-  it('an explicit empty tools array opts out of the default, even when a real tools folder exists', async () => {
+  it('an explicit empty tools array opts out of the agent default, but not of the system or gateway tools', async () => {
     const modelCall: ModelCall = vi.fn(async () => textResponse('no tool called'))
 
+    // customer-service's own real agents/customer-service/gateway-tools.yml
+    // (see gateway-tools.ts) merges in regardless of tools: [], same as it
+    // always has — unrelated to system tools, just along for the ride here.
     await runAgent(baseConfig({ name: 'customer-service', tools: [], rules: [], skillsDirs: [] }), modelCall, 'hi')
 
     const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
-    expect(toolsSentToModel).toEqual([])
+    expect(toolsSentToModel.map((t: { name: string }) => t.name)).toEqual([
+      'read_file',
+      'github_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER',
+      'Skill',
+    ])
   })
 
   it('passes args through to the invoked skill for $ARGUMENTS/$1/$2 substitution', async () => {
@@ -727,5 +744,48 @@ describe('runAgent maxTurns', () => {
 
     expect(result.stopReason).toBeUndefined()
     expect(result.text).toBe('done')
+  })
+})
+
+describe('runAgent system tools/skills', () => {
+  it('makes the system read_file tool available even when the agent defines no tools of its own', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('done'))
+
+    await runAgent(baseConfig(), modelCall, 'hi')
+
+    const toolsPassed = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
+    expect(toolsPassed.map((t: { name: string }) => t.name)).toContain('read_file')
+  })
+
+  it("lets the agent's own same-named tool override the system default", async () => {
+    const modelCall: ModelCall = vi.fn(async () => {
+      return toolUseResponse({ id: 't1', name: 'read_file', input: { path: '/anything' } })
+    })
+    const customReadFile: ToolDefinition = {
+      name: 'read_file',
+      description: 'custom override',
+      input_schema: { type: 'object', properties: { path: { type: 'string' } } },
+      execute: async () => 'custom result',
+    }
+    const config = baseConfig({
+      tools: [customReadFile],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'read_file', decision: 'allow' }],
+      maxTurns: 1,
+    })
+
+    const result = await runAgent(config, modelCall, 'read something outside temp')
+
+    const results = toolResults(result.history)
+    expect(results).toEqual([{ type: 'tool_result', tool_use_id: 't1', content: '"custom result"', is_error: false }])
+  })
+
+  it('includes the system composio-large-outputs skill even when the agent explicitly opts out of its own skills dir', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('done'))
+    const config = baseConfig({ skillsDirs: [] })
+
+    await runAgent(config, modelCall, 'hi')
+
+    const systemPrompt = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][1]
+    expect(systemPrompt).toContain('composio-large-outputs')
   })
 })

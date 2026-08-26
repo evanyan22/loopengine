@@ -16,6 +16,8 @@ import type { AgentConfig, ToolDefinition, ToolSchema } from '#agent-config.js'
 import { loadAgentModule } from './discover-agents.js'
 import { agentAsTool } from './agent-as-tool.js'
 import { loadGatewayToolsFromDir } from './gateway-tools.js'
+import { systemTools } from './system-tools.js'
+export { systemTools } from './system-tools.js'
 
 // Resolved relative to *this file's own location* (via import.meta.url),
 // not process.cwd() — the same reasoning agent-registry.ts's own
@@ -29,6 +31,25 @@ import { loadGatewayToolsFromDir } from './gateway-tools.js'
 // is real code that only exists compiled, at a different relative
 // location, once dist/ is what's actually running.
 const agentsRootDir = join(dirname(fileURLToPath(import.meta.url)), 'agents')
+
+// Same "next to this file, not process.cwd()" resolution as
+// agentsRootDir above — system-skills/ ships alongside this module (see
+// package.json's own "files" list), so this is what makes it resolvable
+// from dist/run-agent.js the same way it is from source.
+export const systemSkillsDir = join(dirname(fileURLToPath(import.meta.url)), 'system-skills')
+
+// Tools every agent gets (see systemTools' own doc comment) are merged
+// in *first*, not last — combined with keeping each name's *last*
+// occurrence (a plain Map naturally does this: re-setting an existing
+// key overwrites its value without moving it), that means an agent's
+// own tool of the same name (config.tools, a subagent, a gateway source)
+// always wins over the system default, never the reverse. Also used to
+// dedupe the *array itself*, not just resolution at call time — without
+// this, a name collision would still show up twice in toolSchemas,
+// confusing (or rejected outright by) a real model API.
+export function dedupeToolsByName(list: ToolDefinition[]): ToolDefinition[] {
+  return [...new Map(list.map((t) => [t.name, t])).values()]
+}
 
 export interface ModelContentBlock {
   type: string
@@ -337,23 +358,31 @@ export async function runAgent(
   // gateway-tools.ts) are both merged in on top either way — see
   // loadSubagentAsTools's own doc comment for why neither is gated by
   // whether `tools` was explicit.
-  const tools = [
+  // systemTools go first and are deduped by name (dedupeToolsByName keeps
+  // each name's *last* occurrence) — so config.tools/subagents/gateway
+  // tools always win over a same-named system default, never the
+  // reverse, even though systemTools is merged in unconditionally
+  // (unlike the others below, it's not gated on `tools` being omitted).
+  const tools = dedupeToolsByName([
+    ...systemTools,
     ...(config.tools ?? (await loadDefaultTools(config))),
     ...(await loadSubagentAsTools(config)),
     ...(await loadGatewayToolsFromDir(join(agentsRootDir, config.name))),
-  ]
+  ])
 
   // Omitted entirely (undefined): default to this agent's own
   // agents/<name>/skills — the folder-form convention every agent in
   // this repo already follows (see agent-config.ts's skillsDirs doc
-  // comment). An explicit `[]` is a real opt-out, not "unset," and skips
-  // the default — SkillGarden's own missing-directory handling
-  // (discoverSkillFiles walks best-effort, no throw) is what makes
-  // pointing this at a folder that doesn't exist (a flat-file agent with
-  // no skills at all) harmless: an empty index, not an error.
+  // comment). An explicit `[]` is a real opt-out of the agent's *own*
+  // skills dir, but systemSkillsDir is still always included below —
+  // same "not opt-out-able the normal way" as systemTools above.
+  // SkillGarden's own missing-directory handling (discoverSkillFiles
+  // walks best-effort, no throw) is what makes pointing this at a folder
+  // that doesn't exist (a flat-file agent with no skills at all)
+  // harmless: an empty index, not an error.
   const skillsDirs = config.skillsDirs ?? [`agents/${config.name}/skills`]
-  const skillGarden = skillsDirs.length ? new SkillGarden({ dirs: skillsDirs, indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 }) : null
-  const skillIndex = skillGarden?.buildIndex().included ?? []
+  const skillGarden = new SkillGarden({ dirs: [...skillsDirs, systemSkillsDir], indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 })
+  const skillIndex = skillGarden.buildIndex().included
 
   // Also the tail-preservation window recover() below relies on — kept as
   // one named constant so the two can never drift out of sync.

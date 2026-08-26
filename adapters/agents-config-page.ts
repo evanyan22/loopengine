@@ -181,6 +181,11 @@ export const agentsConfigPageHtml: string = `<!doctype html>
      larger default) — without this the two Edit buttons render at
      visibly different sizes despite being the same component. */
   .edit-rule-btn, .edit-skill-btn { font-size: 12px; }
+  /* Sits inside a section h3, which is uppercase/letter-spaced for its
+     own heading text — without resetting both here, the button's own
+     label ("Edit") would inherit that and render as "EDIT" with the
+     heading's wide letter-spacing, not a normal-looking button. */
+  .edit-btn { font-size: 11px; text-transform: none; letter-spacing: normal; margin-left: 6px; }
   /* Flex items default to min-width: auto, which means a long,
      unbreakable token (a slug like GITHUB_LIST_REPOSITORIES_FOR_THE_
      AUTHENTICATED_USER has no spaces for the browser to wrap at) simply
@@ -485,7 +490,12 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   // from cfg.localTools/cfg.gatewayTools/cfg.agentAsTools directly
   // (same three arrays the Tools tab renders) rather than cfg.tools, so
   // each row can be tagged with which one it came from — same order as
-  // the Tools tab's own sections, for consistency.
+  // the Tools tab's own sections, for consistency. Deliberately excludes
+  // cfg.systemTools/cfg.systemSkills — infrastructure every agent gets
+  // automatically (see run-agent.ts's systemTools/systemSkillsDir), not
+  // something an operator configured, so this page hides them rather
+  // than clutter the per-agent view with tools/skills that aren't
+  // actually specific to this agent.
   function renderToolsWithType(cfg) {
     var rows = [];
     function addRows(tools, type) {
@@ -516,16 +526,51 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   }
 
   function renderOverviewHtml(cfg) {
-    var modelHtml = typeof cfg.model === 'string'
-      ? '<p class="muted">' + escapeHtml(cfg.model) + '</p>'
-      : '<dl class="kv">' +
-        '<dt>Provider</dt><dd>' + escapeHtml(cfg.model.provider) + '</dd>' +
-        '<dt>Model</dt><dd>' + escapeHtml(cfg.model.model || '(provider default)') + '</dd>' +
-        '<dt>Max tokens</dt><dd>' + escapeHtml(cfg.model.maxTokens != null ? cfg.model.maxTokens : '(default)') + '</dd>' +
-        '</dl>';
+    var systemPromptSection =
+      '<h3>System prompt <button type="button" class="edit-btn" id="editSystemPromptBtn">Edit</button></h3>' +
+      '<pre id="systemPromptDisplay">' + escapeHtml(cfg.systemPrompt) + '</pre>' +
+      '<form class="add-source" id="systemPromptForm" style="display:none">' +
+        '<textarea name="systemPrompt">' + escapeHtml(cfg.systemPrompt) + '</textarea>' +
+        '<button type="submit">Save</button>' +
+        '<button type="button" id="cancelSystemPromptBtn">Cancel</button>' +
+        '<div class="error" id="systemPromptError"></div>' +
+      '</form>';
 
-    return '<section><h3>System prompt</h3><pre>' + escapeHtml(cfg.systemPrompt) + '</pre></section>' +
-      '<section><h3>Model</h3>' + modelHtml + '</section>' +
+    // Only editable when cfg.model is the resolved {provider, model,
+    // maxTokens} object — a custom createModelCall (the string case) has
+    // no config.model at all for agent-file-admin.ts's editAgentFile to
+    // find and edit; see its own doc comment for why it refuses rather
+    // than guessing at that case.
+    var modelSection;
+    if (typeof cfg.model === 'string') {
+      modelSection = '<h3>Model</h3><p class="muted">' + escapeHtml(cfg.model) + '</p>';
+    } else {
+      modelSection =
+        '<h3>Model <button type="button" class="edit-btn" id="editModelBtn">Edit</button></h3>' +
+        '<dl class="kv" id="modelDisplay">' +
+          '<dt>Provider</dt><dd>' + escapeHtml(cfg.model.provider) + '</dd>' +
+          '<dt>Model</dt><dd>' + escapeHtml(cfg.model.model || '(provider default)') + '</dd>' +
+          '<dt>Max tokens</dt><dd>' + escapeHtml(cfg.model.maxTokens != null ? cfg.model.maxTokens : '(default)') + '</dd>' +
+        '</dl>' +
+        '<form class="add-source" id="modelForm" style="display:none">' +
+          '<label>Provider' +
+            '<select name="provider">' +
+              ['anthropic', 'openai', 'deepseek'].map(function (p) {
+                return '<option value="' + p + '"' + (p === cfg.model.provider ? ' selected' : '') + '>' + p + '</option>';
+              }).join('') +
+            '</select>' +
+          '</label>' +
+          '<label>Model name <span class="hint">(required for openai/deepseek; defaults to claude-sonnet-5 for anthropic)</span>' +
+            '<input type="text" name="modelName" value="' + escapeHtml(cfg.model.model || '') + '">' +
+          '</label>' +
+          '<button type="submit">Save</button>' +
+          '<button type="button" id="cancelModelBtn">Cancel</button>' +
+          '<div class="error" id="modelError"></div>' +
+        '</form>';
+    }
+
+    return '<section>' + systemPromptSection + '</section>' +
+      '<section>' + modelSection + '</section>' +
       '<section><h3>Skills (' + cfg.skills.length + ')</h3>' + renderSkills(cfg.skills) + '</section>' +
       '<section><h3>Tools (' + cfg.tools.length + ')</h3>' + renderToolsWithType(cfg) + '</section>' +
       '<section><h3>ActAuth</h3>' + renderRules(cfg.permissions) + '</section>' +
@@ -541,6 +586,109 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '<dt>skillIndexBudgetTokens</dt><dd>' + escapeHtml(cfg.skillIndexBudgetTokens) + '</dd>' +
         '<dt>skillsDirs</dt><dd>' + escapeHtml(cfg.skillsDirs.join(', ') || '(none)') + '</dd>' +
         '</dl></section>';
+  }
+
+  // Wires the System prompt / Model Edit buttons rendered by
+  // renderOverviewHtml above — called every time that HTML gets (re)set
+  // (renderDetail, refreshOverviewPanel, refreshSkillsDependentPanels),
+  // same pattern every other tab's own wireXHandlers already follows.
+  // PUT /agents/:name persists via agent-file-admin.ts's editAgentFile
+  // (see its own doc comment for why some agents' index.ts files can't
+  // be safely edited this way at all — no editModelBtn is rendered for
+  // those in the first place) and applies the change live; the response
+  // is the freshly-resolved config, so this re-renders the whole
+  // Overview panel from it directly instead of a second GET.
+  function wireOverviewHandlers(name) {
+    var overviewPanel = detail.querySelector('[data-tab-panel="overview"]');
+    if (!overviewPanel) return;
+
+    var editSystemPromptBtn = overviewPanel.querySelector('#editSystemPromptBtn');
+    if (editSystemPromptBtn) {
+      var systemPromptDisplay = overviewPanel.querySelector('#systemPromptDisplay');
+      var systemPromptForm = overviewPanel.querySelector('#systemPromptForm');
+      var systemPromptError = overviewPanel.querySelector('#systemPromptError');
+
+      editSystemPromptBtn.addEventListener('click', function () {
+        systemPromptDisplay.style.display = 'none';
+        editSystemPromptBtn.style.display = 'none';
+        systemPromptForm.style.display = '';
+        systemPromptForm.querySelector('textarea').focus();
+      });
+      overviewPanel.querySelector('#cancelSystemPromptBtn').addEventListener('click', function () {
+        systemPromptForm.style.display = 'none';
+        systemPromptDisplay.style.display = '';
+        editSystemPromptBtn.style.display = '';
+        systemPromptError.textContent = '';
+      });
+      systemPromptForm.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        systemPromptError.textContent = '';
+        var value = systemPromptForm.querySelector('textarea[name="systemPrompt"]').value;
+        var submitBtn = systemPromptForm.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        fetch('/agents/' + encodeURIComponent(name), {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ systemPrompt: value }),
+        })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (result) {
+            if (!result.ok) throw new Error(result.body.error || 'request failed');
+            currentCfg = result.body;
+            overviewPanel.innerHTML = renderOverviewHtml(result.body);
+            wireOverviewHandlers(name);
+          })
+          .catch(function (err) {
+            systemPromptError.textContent = err.message;
+            submitBtn.disabled = false;
+          });
+      });
+    }
+
+    var editModelBtn = overviewPanel.querySelector('#editModelBtn');
+    if (editModelBtn) {
+      var modelDisplay = overviewPanel.querySelector('#modelDisplay');
+      var modelForm = overviewPanel.querySelector('#modelForm');
+      var modelError = overviewPanel.querySelector('#modelError');
+
+      editModelBtn.addEventListener('click', function () {
+        modelDisplay.style.display = 'none';
+        editModelBtn.style.display = 'none';
+        modelForm.style.display = '';
+      });
+      overviewPanel.querySelector('#cancelModelBtn').addEventListener('click', function () {
+        modelForm.style.display = 'none';
+        modelDisplay.style.display = '';
+        editModelBtn.style.display = '';
+        modelError.textContent = '';
+      });
+      modelForm.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        modelError.textContent = '';
+        var data = new FormData(modelForm);
+        var submitBtn = modelForm.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        var body = { model: { provider: data.get('provider') } };
+        var modelName = data.get('modelName');
+        if (modelName && modelName.trim()) body.model.model = modelName;
+        fetch('/agents/' + encodeURIComponent(name), {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (result) {
+            if (!result.ok) throw new Error(result.body.error || 'request failed');
+            currentCfg = result.body;
+            overviewPanel.innerHTML = renderOverviewHtml(result.body);
+            wireOverviewHandlers(name);
+          })
+          .catch(function (err) {
+            modelError.textContent = err.message;
+            submitBtn.disabled = false;
+          });
+      });
+    }
   }
 
   // ---- Overview's own Actauth section: read-only, from cfg.permissions
@@ -1330,7 +1478,10 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         if (currentName !== name) return;
         currentCfg = cfg;
         var overviewPanel = detail.querySelector('[data-tab-panel="overview"]');
-        if (overviewPanel) overviewPanel.innerHTML = renderOverviewHtml(cfg);
+        if (overviewPanel) {
+          overviewPanel.innerHTML = renderOverviewHtml(cfg);
+          wireOverviewHandlers(name);
+        }
       })
       .catch(function () {
         // Best-effort — the tab that triggered this already reflects the
@@ -1366,7 +1517,10 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         currentCfg = cfg;
         var overviewPanel = detail.querySelector('[data-tab-panel="overview"]');
         var skillsPanel = skillsPanelEl();
-        if (overviewPanel) overviewPanel.innerHTML = renderOverviewHtml(cfg);
+        if (overviewPanel) {
+          overviewPanel.innerHTML = renderOverviewHtml(cfg);
+          wireOverviewHandlers(name);
+        }
         if (skillsPanel) {
           skillsPanel.innerHTML = renderSkillsTabHtml(cfg);
           wireSkillsHandlers(name);
@@ -1397,6 +1551,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     }
 
     wireSkillsHandlers(cfg.name);
+    wireOverviewHandlers(cfg.name);
 
     empty.style.display = 'none';
     detail.style.display = 'block';

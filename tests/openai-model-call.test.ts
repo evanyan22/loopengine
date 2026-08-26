@@ -90,9 +90,17 @@ describe('createOpenAIModelCall', () => {
     // must arrive at OpenAI as its own top-level role: 'tool' message,
     // linked back by tool_call_id — the structural mismatch this file's
     // toMessageParams exists to bridge.
+    // The system prompt gets an "Available skills" section appended
+    // because system-skills/composio-large-outputs is always merged in
+    // (see run-agent.ts's systemSkillsDir) — unrelated to this test, but
+    // unavoidable without skillsDirs: [], which still wouldn't hide it.
     expect(requests[1]).toMatchObject({
       messages: [
-        { role: 'system', content: 'You are a test agent.' },
+        {
+          role: 'system',
+          content:
+            "You are a test agent.\n\nAvailable skills:\n- composio-large-outputs: How to retrieve a gateway tool's real output when its result says storedInFile is true instead of returning the data inline.",
+        },
         { role: 'user', content: 'is order A-1001 delivered?' },
         {
           role: 'assistant',
