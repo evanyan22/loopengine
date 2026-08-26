@@ -136,6 +136,28 @@ describe('main() run/serve/dev', () => {
     expect(output).toContain('ran: --agent weather-agent --session s1 hello there')
   })
 
+  it('run --input "<message>" translates into adapters/cli.ts’s own trailing-positional message convention', () => {
+    const dir = tmpDir()
+    mkdirSync(join(dir, 'adapters'), { recursive: true })
+    writeFileSync(join(dir, 'adapters', 'cli.ts'), 'console.log("ran:", process.argv.slice(2).join(" "))')
+
+    const { status, output } = runCli(['run', 'weather-agent', '--session', 's1', '--input', 'hello there'], dir)
+
+    expect(status).toBe(0)
+    expect(output).toContain('ran: --agent weather-agent --session s1 hello there')
+  })
+
+  it('run --input fails with a clear error when given no value', () => {
+    const dir = tmpDir()
+    mkdirSync(join(dir, 'adapters'), { recursive: true })
+    writeFileSync(join(dir, 'adapters', 'cli.ts'), 'console.log("should not run")')
+
+    const { status, output } = runCli(['run', 'weather-agent', '--input'], dir)
+
+    expect(status).toBe(1)
+    expect(output).toContain('--input requires a value.')
+  })
+
   it('serve fails with a clear error when the project has no adapters/http.ts', () => {
     const { status, output } = runCli(['serve'], tmpDir())
     expect(status).toBe(1)

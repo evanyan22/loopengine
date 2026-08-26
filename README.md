@@ -37,7 +37,7 @@ npx create-loopengine@latest my-agents
 cd my-agents
 npm install
 cp .env.example .env   # fill in ANTHROPIC_API_KEY
-npm run dev             # HTTP server on :8787
+npm run dev             # HTTP server on :8787 — same as `npx loopengine dev`
 ```
 
 This scaffolds a standalone project — its own repo, with `loopengine` as
@@ -337,6 +337,37 @@ starting an anonymous session). Without it, the caller just supplies a
 `sessionId`, or gets one generated for them.
 
 ## Running an agent
+
+`adapters/cli.ts` and `adapters/http.ts` are files your own scaffolded
+project owns (see "Quick start" above), not something hidden inside the
+`loopengine` package — run them directly with `tsx`, or through shorter
+`loopengine` commands that just call the same files for you:
+
+```bash
+npx loopengine run customer-service --session s1 "order A-1001 arrived broken"
+npx loopengine run customer-service --session s1 --input "order A-1001 arrived broken"
+npx loopengine serve   # HTTP server on :8787
+npx loopengine dev     # same server, restarts on file changes (tsx watch)
+```
+
+`--session <id>` is just an arbitrary string you pick — `s1` above isn't
+special, it's only a label. Omit it entirely for a fresh, one-off
+conversation each call; reuse the same value on a later call to continue
+that exact conversation (the id is printed to stderr if you omit it, so
+you can capture it for next time). `--input "<message>"` is an
+alternative to the trailing positional message, for scripts that build
+the argument list programmatically and would rather not depend on the
+message always being the last argument.
+
+`run`/`serve`/`dev` are thin wrappers, not a separate implementation —
+each shells out to your project's own `adapters/cli.ts` or
+`adapters/http.ts` via `npx tsx` (so it's always *your* copy that runs,
+edits included, resolved from your project's own `node_modules`), and
+fails with a clear message pointing at `create-loopengine` if that file
+doesn't exist yet. `.env` is loaded automatically for all three,
+equivalent to passing `--env-file-if-exists=.env` to `tsx` yourself.
+
+The same thing, spelled out without the wrapper:
 
 **CLI:**
 

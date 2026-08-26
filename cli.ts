@@ -223,16 +223,39 @@ async function main(): Promise<void> {
   // adapters/cli.ts's own contract (see its own header comment), not a
   // REPL. `rest` after `<agent>` is forwarded through as-is (--session,
   // the message, and any future flag that file grows), so this wrapper
-  // never needs to change in step with adapters/cli.ts's own arg parsing.
+  // never needs to change in step with adapters/cli.ts's own arg parsing
+  // — except --input, which is this wrapper's own convenience flag, not
+  // adapters/cli.ts's: that file only understands --agent/--session plus
+  // one trailing positional message (see its own parseArgs, which joins
+  // every non-flag arg back into one string), so --input's value is
+  // translated into that positional form before forwarding, rather than
+  // taught to adapters/cli.ts itself. Exists for callers building the
+  // arg list programmatically, where getting a trailing positional's
+  // exact position right (after --session, after --agent, ...) is easy
+  // to get wrong; an explicit flag has no position to get wrong.
   if (command === 'run') {
     const [agent, ...forward] = rest
     if (!agent) {
       console.error('Usage: loopengine run <agent> [--session <id>] "<message>"')
+      console.error('       loopengine run <agent> [--session <id>] --input "<message>"')
       process.exitCode = 1
       return
     }
     if (!(await requireAdapterFile('adapters/cli.ts'))) return
-    process.exitCode = await runTsx(['--env-file-if-exists=.env', 'adapters/cli.ts', '--agent', agent, ...forward])
+
+    let finalArgs = forward
+    const inputIndex = forward.indexOf('--input')
+    if (inputIndex !== -1) {
+      const message = forward[inputIndex + 1]
+      if (message === undefined) {
+        console.error('--input requires a value.')
+        process.exitCode = 1
+        return
+      }
+      finalArgs = [...forward.slice(0, inputIndex), ...forward.slice(inputIndex + 2), message]
+    }
+
+    process.exitCode = await runTsx(['--env-file-if-exists=.env', 'adapters/cli.ts', '--agent', agent, ...finalArgs])
     return
   }
 
