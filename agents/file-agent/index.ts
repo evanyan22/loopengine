@@ -17,6 +17,7 @@ import type { ModelCall } from '#run-agent.js'
 export const config: AgentConfig = {
   name: 'file-agent',
   systemPrompt: 'You summarize text files into other text files.',
+  model: { provider: 'deepseek', model: 'deepseek-v4-flash' },
   // No tools here — it defaults to importing agents/file-agent/tools/index.js
   // (see AgentConfig.tools's own doc comment), the same file this used to
   // import and assign directly as handWrittenTools. Composio's GitHub
@@ -46,52 +47,4 @@ export const config: AgentConfig = {
     call.name === 'read_file' ||
     call.name === 'list_dir' ||
     call.name === 'github_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER',
-}
-
-// SIMULATED — no ANTHROPIC_API_KEY is configured in this environment.
-// Swap this for a real anthropic.messages.create(...) call and runAgent
-// works unchanged; that's the point of factoring it out as a ModelCall.
-// A real model call is a pure function of the messages you pass it, so
-// it's safely reusable across sessions/requests — this canned one is
-// stateful (counts its own calls), so each session needs its own
-// instance. createModelCall() is that instance boundary: the CLI adapter
-// makes a fresh one per process, the HTTP adapter makes a fresh one per
-// request.
-export function createModelCall(): ModelCall {
-  let turn = 0
-  return async () => {
-    turn++
-    if (turn === 1) throw { status: 400, message: 'prompt is too long: exceeds maximum context length' }
-    if (turn === 2) return { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: 'Skill', input: { skill: 'summarize-files' } }] }
-    if (turn === 3) {
-      return {
-        stop_reason: 'tool_use',
-        content: [
-          { type: 'tool_use', id: 't2', name: 'read_file', input: { path: 'examples/file-agent/a.txt' } },
-          { type: 'tool_use', id: 't3', name: 'read_file', input: { path: 'examples/file-agent/b.txt' } },
-          { type: 'tool_use', id: 't4', name: 'list_dir', input: {} },
-        ],
-      }
-    }
-    if (turn === 4) {
-      return {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 't5',
-            name: 'write_file',
-            input: { path: 'examples/file-agent/summary.txt', content: 'Revenue grew 12% YoY and support volume dropped 8% after the new onboarding flow.' },
-          },
-        ],
-      }
-    }
-    if (turn === 5) {
-      return {
-        stop_reason: 'tool_use',
-        content: [{ type: 'tool_use', id: 't6', name: 'github_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER', input: { per_page: 5 } }],
-      }
-    }
-    return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done — wrote a one-paragraph summary to examples/file-agent/summary.txt.' }] }
-  }
 }
