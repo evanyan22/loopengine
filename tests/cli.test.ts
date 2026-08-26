@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, readFileSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -91,6 +91,72 @@ describe('scaffoldSubagent', () => {
     expect(indexPath).toBe(
       join(dir, 'agents', 'support-orchestrator', 'subagents', 'billing-agent', 'subagents', 'disputes-agent', 'index.ts'),
     )
+  })
+})
+
+// run/serve/dev delegate to the *project's* own adapters/cli.ts and
+// adapters/http.ts (create-loopengine's own scaffold — see cli.ts's own
+// header comment) via a real `npx tsx` subprocess, not something
+// importable/mockable directly — so these are exercised the same way as
+// the symlink test below, running the real cli.ts source against a real
+// tmp cwd. `dev` only gets its error-path tested here, not a full happy
+// path: it runs via `tsx watch`, which never exits on its own, so an
+// execFileSync-based happy-path test would just hang.
+describe('main() run/serve/dev', () => {
+  function runCli(args: string[], cwd: string): { status: number; output: string } {
+    try {
+      return { status: 0, output: execFileSync('npx', ['tsx', cliSourcePath, ...args], { encoding: 'utf8', cwd }) }
+    } catch (err) {
+      const e = err as { status: number; stdout: string; stderr: string }
+      return { status: e.status, output: e.stdout + e.stderr }
+    }
+  }
+
+  it('run without an agent name prints usage and fails, before ever looking for adapters/cli.ts', () => {
+    const { status, output } = runCli(['run'], tmpDir())
+    expect(status).toBe(1)
+    expect(output).toContain('Usage: loopengine run <agent>')
+  })
+
+  it('run fails with a clear error when the project has no adapters/cli.ts', () => {
+    const { status, output } = runCli(['run', 'weather-agent', 'hi'], tmpDir())
+    expect(status).toBe(1)
+    expect(output).toContain('adapters/cli.ts not found in this project.')
+    expect(output).toContain('create-loopengine')
+  })
+
+  it('run forwards --agent, --session, and the message through to the project’s own adapters/cli.ts', () => {
+    const dir = tmpDir()
+    mkdirSync(join(dir, 'adapters'), { recursive: true })
+    writeFileSync(join(dir, 'adapters', 'cli.ts'), 'console.log("ran:", process.argv.slice(2).join(" "))')
+
+    const { status, output } = runCli(['run', 'weather-agent', '--session', 's1', 'hello there'], dir)
+
+    expect(status).toBe(0)
+    expect(output).toContain('ran: --agent weather-agent --session s1 hello there')
+  })
+
+  it('serve fails with a clear error when the project has no adapters/http.ts', () => {
+    const { status, output } = runCli(['serve'], tmpDir())
+    expect(status).toBe(1)
+    expect(output).toContain('adapters/http.ts not found in this project.')
+  })
+
+  it('serve runs the project’s own adapters/http.ts', () => {
+    const dir = tmpDir()
+    mkdirSync(join(dir, 'adapters'), { recursive: true })
+    writeFileSync(join(dir, 'adapters', 'http.ts'), 'console.log("serving")')
+
+    const { status, output } = runCli(['serve'], dir)
+
+    expect(status).toBe(0)
+    expect(output).toContain('serving')
+  })
+
+  it('dev fails with a clear error when the project has no adapters/http.ts', () => {
+    const { status, output } = runCli(['dev'], tmpDir())
+    expect(status).toBe(1)
+    expect(output).toContain('adapters/http.ts not found in this project.')
   })
 })
 

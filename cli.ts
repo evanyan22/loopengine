@@ -1,12 +1,16 @@
 #!/usr/bin/env node
-// The `loopengine` bin — distinct from adapters/cli.ts, which runs an
-// agent, not scaffolds one. Generates the agents/<name>/index.ts
-// boilerplate the folder convention expects (see agent-config.ts's own
-// doc comments, or the README's "Define your first agent"), so using
-// that convention doesn't mean memorizing its shape and hand-writing it
-// every time.
+// The `loopengine` bin. add-agent/add-subagent generate the
+// agents/<name>/index.ts boilerplate the folder convention expects (see
+// agent-config.ts's own doc comments, or the README's "Define your first
+// agent"), so using that convention doesn't mean memorizing its shape
+// and hand-writing it every time. run/serve/dev are shorter muscle-
+// memory commands for what a scaffolded project's own adapters/cli.ts
+// and adapters/http.ts already do — see runTsx's own doc comment for why
+// these stay thin wrappers around those files rather than a built-in
+// runner/server this package hides inside itself.
 import { realpathSync } from 'node:fs'
 import { access, mkdir, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -127,6 +131,37 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
+/** Runs `tsx <args>` in the current project (process.cwd()) — via `npx`,
+ * not a bundled copy, so it resolves *that project's own*
+ * node_modules/.bin/tsx (the version create-loopengine's own template
+ * package.json pins), the same binary "npm run dev"/"npm run cli"
+ * already invoke there. Inherits stdio so a REPL-like session, streamed
+ * SSE-style logs, or Ctrl+C all behave exactly like running the tsx
+ * command by hand — this is that command, just shorter to type. Resolves
+ * with the child's own exit code (1 if the process couldn't even start)
+ * rather than throwing, so `loopengine run <agent>`'s own exit code
+ * mirrors adapters/cli.ts's, not this wrapper's. */
+function runTsx(args: string[]): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn('npx', ['tsx', ...args], { cwd: process.cwd(), stdio: 'inherit' })
+    child.on('exit', (code) => resolve(code ?? 1))
+    child.on('error', () => resolve(1))
+  })
+}
+
+/** run/serve/dev all delegate to a file the *project* owns (created by
+ * create-loopengine's own scaffold — see its template/adapters/), not
+ * one loopengine bundles — so a project that deleted or never had that
+ * file needs a clear, actionable error here, not tsx's own generic
+ * "cannot find module" a few layers down. */
+async function requireAdapterFile(relPath: string): Promise<boolean> {
+  if (await pathExists(path.join(process.cwd(), relPath))) return true
+  console.error(`${relPath} not found in this project.`)
+  console.error('Run "npx create-loopengine@latest" to scaffold one, or add your own at that path.')
+  process.exitCode = 1
+  return false
+}
+
 async function main(): Promise<void> {
   const [, , command, ...rest] = process.argv
 
@@ -184,8 +219,52 @@ async function main(): Promise<void> {
     return
   }
 
+  // One-shot: sends one message, prints the reply, exits — exactly
+  // adapters/cli.ts's own contract (see its own header comment), not a
+  // REPL. `rest` after `<agent>` is forwarded through as-is (--session,
+  // the message, and any future flag that file grows), so this wrapper
+  // never needs to change in step with adapters/cli.ts's own arg parsing.
+  if (command === 'run') {
+    const [agent, ...forward] = rest
+    if (!agent) {
+      console.error('Usage: loopengine run <agent> [--session <id>] "<message>"')
+      process.exitCode = 1
+      return
+    }
+    if (!(await requireAdapterFile('adapters/cli.ts'))) return
+    process.exitCode = await runTsx(['--env-file-if-exists=.env', 'adapters/cli.ts', '--agent', agent, ...forward])
+    return
+  }
+
+  // Serves every registered agent at once (adapters/http.ts has no
+  // notion of "just one agent") — same command the create-loopengine
+  // template's own "npm run dev" script already runs, see runTsx's own
+  // doc comment.
+  if (command === 'serve') {
+    if (!(await requireAdapterFile('adapters/http.ts'))) return
+    process.exitCode = await runTsx(['--env-file-if-exists=.env', 'adapters/http.ts', ...rest])
+    return
+  }
+
+  // Same server as `serve`, via `tsx watch` instead of plain `tsx` — tsx
+  // itself doesn't hot-reload by default (see playground.ts's own dev
+  // instructions in the README, which use plain tsx), so without this,
+  // editing an agent's tools/rules/skills mid-session would need a
+  // manual restart to take effect. gateway-tools.yml/actauth.yml already
+  // read fresh off disk every call regardless (no restart needed for
+  // those even under plain `serve`) — this is for the TS source itself:
+  // a new tool file, an edited AgentConfig, ...
+  if (command === 'dev') {
+    if (!(await requireAdapterFile('adapters/http.ts'))) return
+    process.exitCode = await runTsx(['watch', '--env-file-if-exists=.env', 'adapters/http.ts', ...rest])
+    return
+  }
+
   console.error('Usage: loopengine add-agent <name>')
   console.error('       loopengine add-subagent <parent> <name>')
+  console.error('       loopengine run <agent> [--session <id>] "<message>"')
+  console.error('       loopengine serve')
+  console.error('       loopengine dev')
   process.exitCode = 1
 }
 
