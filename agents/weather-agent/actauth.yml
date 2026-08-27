@@ -1,2 +1,184 @@
 default_decision: ask
-rules: []
+rules:
+  [
+    {
+        name: composio-firecrawl_FIRECRAWL_AGENT_CANCEL-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_AGENT_CANCEL,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_BATCH_SCRAPE-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_BATCH_SCRAPE,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_BATCH_SCRAPE_CANCEL-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_BATCH_SCRAPE_CANCEL,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_BATCH_SCRAPE_GET-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_BATCH_SCRAPE_GET,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_BATCH_SCRAPE_GET_ERRORS-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_BATCH_SCRAPE_GET_ERRORS,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_CRAWL-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_CRAWL,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_CRAWL_CANCEL-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_CRAWL_CANCEL,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_CRAWL_DELETE-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_CRAWL_DELETE,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_CRAWL_GET-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_CRAWL_GET,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_CRAWL_GET_ERRORS-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_CRAWL_GET_ERRORS,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_CRAWL_LIST_ACTIVE-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_CRAWL_LIST_ACTIVE,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_CRAWL_PARAMS_PREVIEW-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_CRAWL_PARAMS_PREVIEW,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_CRAWL_V2-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_CRAWL_V2,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_CREDIT_USAGE_GET-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_CREDIT_USAGE_GET,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_CREDIT_USAGE_GET_HISTORICAL-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_CREDIT_USAGE_GET_HISTORICAL,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_DEEP_RESEARCH-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_DEEP_RESEARCH,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_EXTRACT-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_EXTRACT,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_EXTRACT_GET-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_EXTRACT_GET,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_GET_AGENT_STATUS-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_GET_AGENT_STATUS,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_GET_DEEP_RESEARCH_STATUS-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_GET_DEEP_RESEARCH_STATUS,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_GET_THE_STATUS_OF_A_CRAWL_JOB-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_GET_THE_STATUS_OF_A_CRAWL_JOB,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_LLMS_TXT_GENERATE-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_LLMS_TXT_GENERATE,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_LLMS_TXT_GET-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_LLMS_TXT_GET,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_MAP_MULTIPLE_URLS_BASED_ON_OPTIONS-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_MAP_MULTIPLE_URLS_BASED_ON_OPTIONS,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_QUEUE_GET-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_QUEUE_GET,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_SCRAPE-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_SCRAPE,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_SEARCH-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_SEARCH,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_START_AGENT-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_START_AGENT,
+        decision: ask
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_TOKEN_USAGE_GET-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_TOKEN_USAGE_GET,
+        decision: allow
+      },
+    {
+        name: composio-firecrawl_FIRECRAWL_TOKEN_USAGE_GET_HISTORICAL-web-added,
+        scope: "*/*",
+        tool: firecrawl_FIRECRAWL_TOKEN_USAGE_GET_HISTORICAL,
+        decision: allow
+      }
+  ]

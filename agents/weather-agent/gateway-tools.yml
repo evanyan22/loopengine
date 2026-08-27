@@ -1,0 +1,2305 @@
+sources:
+  - provider: composio
+    name: firecrawl
+    slugs:
+      - FIRECRAWL_AGENT_CANCEL
+      - FIRECRAWL_BATCH_SCRAPE
+      - FIRECRAWL_BATCH_SCRAPE_CANCEL
+      - FIRECRAWL_BATCH_SCRAPE_GET
+      - FIRECRAWL_BATCH_SCRAPE_GET_ERRORS
+      - FIRECRAWL_CRAWL
+      - FIRECRAWL_CRAWL_CANCEL
+      - FIRECRAWL_CRAWL_DELETE
+      - FIRECRAWL_CRAWL_GET
+      - FIRECRAWL_CRAWL_GET_ERRORS
+      - FIRECRAWL_CRAWL_LIST_ACTIVE
+      - FIRECRAWL_CRAWL_PARAMS_PREVIEW
+      - FIRECRAWL_CRAWL_V2
+      - FIRECRAWL_CREDIT_USAGE_GET
+      - FIRECRAWL_CREDIT_USAGE_GET_HISTORICAL
+      - FIRECRAWL_DEEP_RESEARCH
+      - FIRECRAWL_EXTRACT
+      - FIRECRAWL_EXTRACT_GET
+      - FIRECRAWL_GET_AGENT_STATUS
+      - FIRECRAWL_GET_DEEP_RESEARCH_STATUS
+      - FIRECRAWL_GET_THE_STATUS_OF_A_CRAWL_JOB
+      - FIRECRAWL_LLMS_TXT_GENERATE
+      - FIRECRAWL_LLMS_TXT_GET
+      - FIRECRAWL_MAP_MULTIPLE_URLS_BASED_ON_OPTIONS
+      - FIRECRAWL_QUEUE_GET
+      - FIRECRAWL_SCRAPE
+      - FIRECRAWL_SEARCH
+      - FIRECRAWL_START_AGENT
+      - FIRECRAWL_TOKEN_USAGE_GET
+      - FIRECRAWL_TOKEN_USAGE_GET_HISTORICAL
+    resolved:
+      FIRECRAWL_AGENT_CANCEL:
+        name: firecrawl_FIRECRAWL_AGENT_CANCEL
+        description: Tool to cancel an in-progress agent job by its ID. Use when you
+          need to terminate an active agent operation. The API returns a success
+          boolean upon cancellation.
+        input_schema:
+          type: object
+          title: AgentCancelRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - 019c5ac9-e074-71b1-b38b-9611898bd5d0
+              description: The unique identifier (UUID) of the agent job to cancel.
+          description: Request schema for canceling an agent job.
+      FIRECRAWL_BATCH_SCRAPE:
+        name: firecrawl_FIRECRAWL_BATCH_SCRAPE
+        description: Tool to scrape multiple URLs in batch with concurrent processing.
+          Use when you need to scrape multiple web pages efficiently with
+          customizable formats and content filtering.
+        input_schema:
+          type: object
+          title: BatchScrapeRequest
+          required:
+            - urls
+          properties:
+            urls:
+              type: array
+              items:
+                type: string
+              title: Urls
+              examples:
+                - - https://example.com
+                  - https://www.firecrawl.dev
+                - - https://docs.firecrawl.dev/api-reference/endpoint/batch-scrape
+              minItems: 1
+              description: The URLs to be scraped in batch. At least one URL is required.
+            proxy:
+              enum:
+                - basic
+                - stealth
+                - auto
+              type: string
+              title: ProxyEnm
+              examples:
+                - basic
+                - stealth
+                - auto
+              description: Proxy type to use for requests.
+            maxAge:
+              type: integer
+              title: Max Age
+              examples:
+                - 0
+                - 3600000
+                - 172800000
+              description: Cache validity period in milliseconds. Default is 2 days.
+            mobile:
+              type: boolean
+              title: Mobile
+              default: false
+              description: If true, emulate a mobile device when scraping. Defaults to false.
+            actions:
+              type: array
+              items:
+                type: object
+                title: Action
+                required:
+                  - type
+                properties:
+                  key:
+                    type: string
+                    title: Key
+                    examples:
+                      - Enter
+                      - Escape
+                      - Tab
+                    description: Key to press (e.g., 'Enter', 'Escape').
+                  text:
+                    type: string
+                    title: Text
+                    examples:
+                      - Hello world
+                      - user@example.com
+                    description: Text to be typed into an element.
+                  type:
+                    type: string
+                    title: Type
+                    examples:
+                      - click
+                      - write
+                      - wait
+                      - press
+                      - scroll
+                    description: "The type of browser action to perform on the page before scraping.
+                      Supported actions: 'wait', 'click', 'screenshot', 'write',
+                      'press', 'scroll'."
+                  selector:
+                    type: string
+                    title: Selector
+                    examples:
+                      - "#submit-button"
+                      - .product-title
+                    description: CSS selector for the HTML element targeted by the action.
+                  milliseconds:
+                    type: integer
+                    title: Milliseconds
+                    examples:
+                      - 500
+                      - 1000
+                      - 2000
+                    description: Duration in milliseconds for the action.
+                description: Action to perform on the page
+              title: Actions
+              description: Browser actions to perform on each page before scraping.
+            formats:
+              type: array
+              items:
+                enum:
+                  - markdown
+                  - html
+                  - rawHtml
+                  - links
+                  - screenshot
+                  - json
+                  - screenshot@fullPage
+                type: string
+                title: FormatsEnm
+              title: Formats
+              default:
+                - markdown
+              examples:
+                - - markdown
+                - - html
+                  - screenshot
+                - - json
+              description: Desired output formats for the scraped content. Defaults to
+                ['markdown'].
+            headers:
+              type: object
+              title: Headers
+              examples:
+                - User-Agent: CustomBot/1.0
+              description: Custom HTTP headers to send with each request.
+              additionalProperties:
+                type: string
+            timeout:
+              type: integer
+              title: Timeout
+              examples:
+                - 5000
+                - 30000
+                - 60000
+              description: Request timeout in milliseconds.
+            waitFor:
+              type: integer
+              title: Wait For
+              default: 0
+              examples:
+                - 0
+                - 1000
+                - 5000
+              description: Delay in milliseconds before content retrieval. Useful for pages
+                with dynamic content. Defaults to 0.
+            webhook:
+              type: object
+              title: WebhookConfig
+              required:
+                - url
+              properties:
+                url:
+                  type: string
+                  title: Url
+                  examples:
+                    - https://api.example.com/webhook/firecrawl
+                  description: Destination URL for webhook notifications.
+                events:
+                  type: array
+                  items:
+                    enum:
+                      - completed
+                      - page
+                      - failed
+                      - started
+                    type: string
+                    title: EventTypeEnm
+                  title: Events
+                  examples:
+                    - - completed
+                      - failed
+                    - - page
+                  description: Event types to trigger webhook notifications.
+                headers:
+                  type: object
+                  title: Headers
+                  examples:
+                    - Authorization: Bearer token123
+                  description: Custom headers to include in webhook requests.
+                  additionalProperties:
+                    type: string
+                metadata:
+                  type: object
+                  title: Metadata
+                  examples:
+                    - job_id: abc123
+                      user_id: user456
+                  description: Custom metadata to include in webhook payloads.
+                  additionalProperties: true
+              description: Webhook configuration for batch scrape notifications
+              additionalProperties: false
+            blockAds:
+              type: boolean
+              title: Block Ads
+              default: true
+              description: If true, block advertisements during scraping. Defaults to true.
+            location:
+              type: object
+              title: LocationRequest
+              properties:
+                country:
+                  type: string
+                  title: Country
+                  default: US
+                  examples:
+                    - US
+                    - AU
+                    - DE
+                    - JP
+                  description: ISO 3166-1 alpha-2 country code to make the request from.
+                languages:
+                  type: array
+                  items:
+                    type: string
+                  title: Languages
+                  examples:
+                    - - en-US
+                      - en
+                    - - fr-CA
+                      - fr
+                    - - de-DE
+                  description: List of preferred languages and locales for the request, in order
+                    of priority.
+              description: Location settings for the request
+              additionalProperties: false
+            excludeTags:
+              type: array
+              items:
+                type: string
+              title: Exclude Tags
+              examples:
+                - - script
+                  - style
+                - - nav
+                  - footer
+              description: HTML tags to specifically exclude from the output.
+            includeTags:
+              type: array
+              items:
+                type: string
+              title: Include Tags
+              examples:
+                - - h1
+                  - p
+                - - article
+                  - section
+              description: HTML tags to specifically include in the output.
+            storeInCache:
+              type: boolean
+              title: Store In Cache
+              default: true
+              description: If true, store scraped content in cache for future use. Defaults to
+                true.
+            maxConcurrency:
+              type: integer
+              title: Max Concurrency
+              examples:
+                - 5
+                - 10
+                - 20
+              description: Maximum number of concurrent scrape operations. Controls how many
+                URLs are scraped simultaneously.
+            onlyMainContent:
+              type: boolean
+              title: Only Main Content
+              default: true
+              description: If true, extract only the main content, excluding headers, footers,
+                navigation bars, and ads. Defaults to true.
+            ignoreInvalidURLs:
+              type: boolean
+              title: Ignore Invalid Ur Ls
+              default: true
+              description: If true, skip invalid URLs instead of failing the entire batch.
+                Defaults to true.
+            zeroDataRetention:
+              type: boolean
+              title: Zero Data Retention
+              default: false
+              description: If true, do not retain any scraped data. Defaults to false.
+            removeBase64Images:
+              type: boolean
+              title: Remove Base64 Images
+              default: true
+              description: If true, remove base64-encoded images from the scraped content.
+                Defaults to true.
+            skipTlsVerification:
+              type: boolean
+              title: Skip Tls Verification
+              default: true
+              description: If true, skip TLS certificate verification. Defaults to true.
+          description: >-
+            Request parameters for batch scraping multiple URLs. Allows scraping
+            multiple URLs
+
+            concurrently with customizable formats, content filtering, and
+            webhook notifications.
+      FIRECRAWL_BATCH_SCRAPE_CANCEL:
+        name: firecrawl_FIRECRAWL_BATCH_SCRAPE_CANCEL
+        description: Tool to cancel a running batch scrape job using its unique
+          identifier. Use when you need to terminate an in-progress batch scrape
+          operation.
+        input_schema:
+          type: object
+          title: BatchScrapeCancelRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - 019b0806-d1f6-703f-ac4d-b832dfb80275
+              description: The unique identifier (UUID) of the batch scrape job to cancel.
+          description: Request parameters for canceling a batch scrape job.
+      FIRECRAWL_BATCH_SCRAPE_GET:
+        name: firecrawl_FIRECRAWL_BATCH_SCRAPE_GET
+        description: Retrieves the current status and results of a batch scrape job
+          using the job ID. Use this to check batch scrape progress and retrieve
+          scraped data.
+        input_schema:
+          type: object
+          title: BatchScrapeGetRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - 019b0806-d718-767a-bbde-6e6d9f25d961
+              description: The ID of the batch scrape job. Must be a valid UUID format
+                obtained when the batch scrape was initiated.
+          description: Input for retrieving the status of a batch scrape job.
+      FIRECRAWL_BATCH_SCRAPE_GET_ERRORS:
+        name: firecrawl_FIRECRAWL_BATCH_SCRAPE_GET_ERRORS
+        description: Tool to retrieve error details from a batch scrape job, including
+          failed URLs and URLs blocked by robots.txt. Use when you need to debug
+          or understand why certain pages failed to scrape in a batch operation.
+        input_schema:
+          type: object
+          title: BatchScrapeGetErrorsRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - 019b0806-593a-728c-acca-a75e6c7c2db4
+              description: Unique identifier (UUID) of the batch scrape job.
+          description: Input for retrieving errors from a batch scrape job.
+      FIRECRAWL_CRAWL:
+        name: firecrawl_FIRECRAWL_CRAWL
+        description: Initiates a Firecrawl web crawl from a given URL, applying various
+          filtering and content extraction rules, and polls until the job is
+          complete; ensure the URL is accessible and any regex patterns for
+          paths are valid.
+        input_schema:
+          type: object
+          title: CrawlRequest
+          required:
+            - url
+          properties:
+            url:
+              type: string
+              title: Url
+              examples:
+                - https://firecrawl.dev/
+              description: The base URL to start crawling from. This is the initial entry
+                point for the web crawler.
+            delay:
+              type: integer
+              title: Delay
+              examples:
+                - 100
+                - 500
+                - 1000
+              description: Delay in milliseconds between requests to avoid overwhelming the
+                server
+            limit:
+              type: integer
+              title: Limit
+              default: 10
+              examples:
+                - 5
+                - 10
+                - 20
+              description: Maximum number of pages to crawl. The crawl will stop once this
+                limit is reached. Default is 10.
+            webhook:
+              type: string
+              title: Webhook
+              examples:
+                - https://api.example.com/webhook/firecrawl-status
+              description: An optional webhook URL to receive real-time updates on the crawl
+                job. Events include crawl start (`crawl.started`), page crawled
+                (`crawl.page`), and crawl completion (`crawl.completed` or
+                `crawl.failed`). The payload structure matches the `/scrape`
+                endpoint response.
+            maxDepth:
+              type: integer
+              title: Max Depth
+              examples:
+                - 0
+                - 1
+                - 2
+                - 3
+              description: Maximum depth of subpages to crawl relative to the entered URL (not
+                the base domain). A depth of 0 crawls only the entered URL, 1
+                crawls the entered URL plus pages one path segment deeper, 2
+                adds two segments deeper, etc. For example, if URL is
+                'https://example.com/docs/api/', maxDepth=1 crawls '/docs/api/'
+                and '/docs/api/something/'.
+            excludePaths:
+              type: array
+              items:
+                type: string
+              title: Exclude Paths
+              examples:
+                - blog/archive/.*
+                - private/.*
+                - user/\d+/profile/edit
+              description: A list of Regular Expression (regex) patterns for URL paths to
+                exclude from the crawl. URLs whose paths match any of these
+                patterns will be ignored. For example, `"blog/archive/.*"` would
+                exclude all paths under `/blog/archive/`.
+            includePaths:
+              type: array
+              items:
+                type: string
+              title: Include Paths
+              examples:
+                - products/featured/.*
+                - docs/api/v1/.*
+                - articles/\d{4}/\d{2}/.*
+              description: A list of Regular Expression (regex) patterns for URL paths to
+                include in the crawl. Only URLs whose paths match one of these
+                patterns will be processed. For example,
+                `"products/featured/.*"` would only include paths under
+                `/products/featured/`.
+            ignoreSitemap:
+              type: boolean
+              title: Ignore Sitemap
+              examples:
+                - true
+                - false
+              description: If true, the crawler will ignore any sitemap.xml found on the
+                website.
+            crawlEntireDomain:
+              type: boolean
+              title: Crawl Entire Domain
+              examples:
+                - true
+                - false
+              description: If true, allows the crawler to follow internal links to sibling or
+                parent URLs, not just child paths. This is the recommended
+                replacement for 'allowBackwardLinks'.
+            maxDiscoveryDepth:
+              type: integer
+              title: Max Discovery Depth
+              examples:
+                - 1
+                - 2
+                - 3
+                - 5
+              description: Maximum depth to crawl based on discovery order. The root site and
+                sitemapped pages have a discovery depth of 0. For example, if
+                you set it to 1 and set ignoreSitemap, you will only crawl the
+                entered URL and all URLs that are linked on that page.
+            allowBackwardLinks:
+              type: boolean
+              title: Allow Backward Links
+              examples:
+                - true
+                - false
+              description: "DEPRECATED: Use 'crawlEntireDomain' instead. If true, allows the
+                crawler to navigate to pages that were linked from pages already
+                visited (i.e., navigate 'backwards')."
+            allowExternalLinks:
+              type: boolean
+              title: Allow External Links
+              examples:
+                - true
+                - false
+              description: If true, allows the crawler to follow links that lead to external
+                websites (different domains).
+            scrapeOptionsProxy:
+              type: string
+              title: Scrape Options Proxy
+              examples:
+                - basic
+                - premium
+              description: Proxy configuration for requests
+            scrapeOptionsMaxAge:
+              type: integer
+              title: Scrape Options Max Age
+              examples:
+                - 0
+                - 3600
+                - 86400
+              description: Maximum age in seconds for cached content. If content is older than
+                this, it will be re-scraped
+            scrapeOptionsMobile:
+              type: boolean
+              title: Scrape Options Mobile
+              examples:
+                - true
+                - false
+              description: If true, emulate a mobile device when scraping
+            scrapeOptionsActions:
+              type: array
+              items:
+                type: object
+                title: Action
+                required:
+                  - type
+                properties:
+                  text:
+                    type: string
+                    title: Text
+                    description: Text to write or key to press
+                  type:
+                    enum:
+                      - wait
+                      - click
+                      - write
+                      - press
+                      - scroll
+                      - screenshot
+                    type: string
+                    title: Type
+                    description: Type of browser action to perform
+                  selector:
+                    type: string
+                    title: Selector
+                    description: CSS selector of the target element
+                  coordinate:
+                    type: array
+                    items:
+                      type: integer
+                    title: Coordinate
+                    description: Scroll coordinates as [x, y]
+                  milliseconds:
+                    type: integer
+                    title: Milliseconds
+                    description: Wait duration in milliseconds (for 'wait' action)
+              title: Scrape Options Actions
+              description: List of actions to perform on each page before scraping (e.g.,
+                clicking buttons, waiting)
+            scrapeOptionsFormats:
+              type: array
+              items:
+                enum:
+                  - markdown
+                  - html
+                  - rawHtml
+                  - links
+                  - screenshot
+                  - json
+                type: string
+                title: FormatsEnm
+              title: Scrape Options Formats
+              default:
+                - markdown
+              examples:
+                - markdown
+                - html
+                - rawHtml
+                - links
+                - screenshot
+                - json
+              description: 'Specifies the desired output formats for the scraped content from
+                each page. Default is `["markdown"]`. IMPORTANT: If "json"
+                format is included, scrapeOptionsJsonOptions must also be
+                provided.'
+            scrapeOptionsHeaders:
+              type: object
+              title: Scrape Options Headers
+              examples:
+                - Accept: text/html
+                  User-Agent: CustomBot/1.0
+              description: Custom HTTP headers to send with each request
+              additionalProperties:
+                type: string
+            scrapeOptionsTimeout:
+              type: integer
+              title: Scrape Options Timeout
+              examples:
+                - 5000
+                - 15000
+                - 30000
+                - 60000
+              description: Timeout in milliseconds for each page request. Default is 30000ms
+                (30 seconds)
+            scrapeOptionsWaitFor:
+              type: integer
+              title: Scrape Options Wait For
+              examples:
+                - 0
+                - 500
+                - 1000
+                - 2500
+              description: Additional milliseconds to wait after Firecrawl's smart wait,
+                before scraping the page. Useful for pages with dynamically
+                loaded content or heavy JavaScript. Use sparingly as Firecrawl
+                already waits intelligently.
+            ignoreQueryParameters:
+              type: boolean
+              title: Ignore Query Parameters
+              examples:
+                - true
+                - false
+              description: If true, ignore query parameters when determining if a URL has been
+                visited
+            scrapeOptionsBlockAds:
+              type: boolean
+              title: Scrape Options Block Ads
+              examples:
+                - true
+                - false
+              description: If true, block advertisements during scraping
+            scrapeOptionsLocation:
+              type: object
+              title: Location
+              properties:
+                country:
+                  type: string
+                  title: Country
+                  default: US
+                  description: Country code for geolocation
+                languages:
+                  type: array
+                  items:
+                    type: string
+                  title: Languages
+                  default:
+                    - en-US
+                  description: Language preferences
+              description: Geolocation settings for the scraper
+              additionalProperties: false
+            scrapeOptionsParsePDF:
+              type: boolean
+              title: Scrape Options Parse Pdf
+              examples:
+                - true
+                - false
+              description: If true, attempt to parse PDF files encountered during crawling
+            scrapeOptionsExcludeTags:
+              type: array
+              items:
+                type: string
+              title: Scrape Options Exclude Tags
+              examples:
+                - nav
+                - footer
+                - script
+                - style
+                - aside
+              description: A list of HTML tags to exclude from the scraped output. Content
+                within these tags (and their children) will be removed before
+                processing.
+            scrapeOptionsIncludeTags:
+              type: array
+              items:
+                type: string
+              title: Scrape Options Include Tags
+              examples:
+                - article
+                - main
+                - h1
+                - p
+              description: A list of HTML tags to specifically include in the scraped output.
+                Only content within these tags will be processed. If empty or
+                null, all relevant content is considered based on other options.
+            scrapeOptionsJsonOptions:
+              type: object
+              title: JsonOptions
+              properties:
+                prompt:
+                  type: string
+                  title: Prompt
+                  description: User prompt for JSON extraction
+                jsonSchema:
+                  type: object
+                  title: Json Schema
+                  description: JSON schema for structured extraction
+                  additionalProperties: true
+                systemPrompt:
+                  type: string
+                  title: System Prompt
+                  description: System prompt for JSON extraction
+              description: Options for JSON format extraction including schema and prompts.
+                REQUIRED when 'json' format is specified in
+                scrapeOptionsFormats. Conversely, if this is provided, 'json'
+                must be included in scrapeOptionsFormats.
+              additionalProperties: false
+            scrapeOptionsStoreInCache:
+              type: boolean
+              title: Scrape Options Store In Cache
+              examples:
+                - true
+                - false
+              description: If true, store scraped content in cache for future use
+            scrapeOptionsOnlyMainContent:
+              type: boolean
+              title: Scrape Options Only Main Content
+              default: true
+              examples:
+                - true
+                - false
+              description: If true, attempts to extract only the main content of each page,
+                excluding common elements like headers, navigation bars, and
+                footers. Default is true.
+            scrapeOptionsRemoveBase64Images:
+              type: boolean
+              title: Scrape Options Remove Base64 Images
+              examples:
+                - true
+                - false
+              description: If true, remove base64-encoded images from the scraped content
+            scrapeOptionsSkipTlsVerification:
+              type: boolean
+              title: Scrape Options Skip Tls Verification
+              examples:
+                - true
+                - false
+              description: If true, skip TLS certificate verification
+            scrapeOptionsChangeTrackingOptions:
+              type: object
+              title: ChangeTrackingOptions
+              properties:
+                tag:
+                  type: string
+                  title: Tag
+                  description: Tag for change tracking
+                modes:
+                  type: array
+                  items:
+                    type: string
+                  title: Modes
+                  description: Change tracking modes
+                prompt:
+                  type: string
+                  title: Prompt
+                  description: Prompt for change tracking
+                data_schema:
+                  type: object
+                  title: Data Schema
+                  description: Schema for change tracking
+                  additionalProperties: true
+              description: Options for tracking changes between crawls
+              additionalProperties: false
+          description: Parameters to initiate a web crawl, allowing customization of crawl
+            depth, path inclusion/exclusion (regex), content extraction formats,
+            and more, starting from a base URL.
+      FIRECRAWL_CRAWL_CANCEL:
+        name: firecrawl_FIRECRAWL_CRAWL_CANCEL
+        description: Cancels an active or queued web crawl job using its ID; attempting
+          to cancel completed, failed, or previously canceled jobs will not
+          change their state.
+        input_schema:
+          type: object
+          title: CrawlCancelRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - c72c3457-79c2-4212-a7ac-25350a2785f3
+              description: The unique identifier (UUID) of the crawl job to be canceled.
+          description: Request schema for `CrawlCancel`
+      FIRECRAWL_CRAWL_DELETE:
+        name: firecrawl_FIRECRAWL_CRAWL_DELETE
+        description: Tool to cancel a running crawl job by its ID. Use when you need to
+          stop an active crawl operation. The API returns a status of
+          'cancelled' upon successful cancellation.
+        input_schema:
+          type: object
+          title: CrawlDeleteRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - 019b0806-ccc5-741d-9359-0672822bb4e4
+              description: The unique identifier (UUID) of the crawl job to cancel.
+          description: Request schema for canceling a crawl job.
+      FIRECRAWL_CRAWL_GET:
+        name: firecrawl_FIRECRAWL_CRAWL_GET
+        description: Tool to retrieve the status and results of a Firecrawl crawl job.
+          Use when you need to check the progress or get data from an ongoing or
+          completed crawl operation. Returns crawl status, progress metrics,
+          credits used, and the crawled page data.
+        input_schema:
+          type: object
+          title: CrawlGetRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - 019b0806-b7a1-7652-94c1-e865b5d2e89a
+              description: The ID of the crawl job to check status for. This is the UUID
+                returned when the crawl was initiated.
+          description: Parameters for retrieving the status of a crawl job.
+      FIRECRAWL_CRAWL_GET_ERRORS:
+        name: firecrawl_FIRECRAWL_CRAWL_GET_ERRORS
+        description: Tool to retrieve errors from a Firecrawl crawl job. Use when you
+          need to understand why certain pages failed to scrape or which URLs
+          were blocked by robots.txt during a crawl operation.
+        input_schema:
+          type: object
+          title: CrawlGetErrorsRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - 019b0807-8578-70bf-9bfa-e5447315a6af
+              description: The unique identifier (UUID) of the crawl job to retrieve errors
+                from.
+          description: Request schema for getting errors from a crawl job.
+      FIRECRAWL_CRAWL_LIST_ACTIVE:
+        name: firecrawl_FIRECRAWL_CRAWL_LIST_ACTIVE
+        description: Tool to retrieve all active crawl jobs for the authenticated team.
+          Use when you need to see which crawl operations are currently running.
+        input_schema:
+          type: object
+          title: CrawlListActiveRequest
+          properties: {}
+          description: Request schema for getting all active crawl jobs. No parameters
+            required.
+      FIRECRAWL_CRAWL_PARAMS_PREVIEW:
+        name: firecrawl_FIRECRAWL_CRAWL_PARAMS_PREVIEW
+        description: Preview crawl parameters before starting a crawl by generating
+          optimal configuration from natural language instructions. Use this
+          tool to understand what crawl settings will be applied based on your
+          requirements before executing a full crawl operation. The endpoint
+          intelligently interprets natural language prompts to configure crawl
+          parameters like include/exclude paths, depth limits, and domain scope.
+        input_schema:
+          type: object
+          title: CrawlParamsPreviewRequest
+          required:
+            - url
+            - prompt
+          properties:
+            url:
+              type: string
+              title: Url
+              examples:
+                - https://example.com
+                - https://firecrawl.dev/
+              description: The website address to be crawled. This is the target URL for which
+                crawl parameters will be generated.
+            prompt:
+              type: string
+              title: Prompt
+              examples:
+                - Crawl all blog posts and documentation pages
+                - Only crawl API reference pages
+                - Crawl documentation, skip tutorials and guides
+              maxLength: 10000
+              description: Natural language description of crawling requirements (max 10,000
+                characters). Describe what pages to crawl, what to include or
+                exclude, and any specific crawl behavior needed.
+          description: Request parameters for previewing crawl configuration based on
+            natural language instructions.
+      FIRECRAWL_CRAWL_V2:
+        name: firecrawl_FIRECRAWL_CRAWL_V2
+        description: "[NEW v2 API] Initiates a Firecrawl v2 web crawl with enhanced
+          features over v1: natural language prompts for automatic crawler
+          configuration, crawlEntireDomain for sibling/parent page discovery,
+          better depth control with maxDiscoveryDepth, subdomain support, and
+          full webhook configuration. Polls until crawl is complete."
+        input_schema:
+          type: object
+          title: CrawlV2Request
+          required:
+            - url
+          properties:
+            url:
+              type: string
+              title: Url
+              examples:
+                - https://firecrawl.dev/
+              description: The base URL to start crawling from. This is the initial entry
+                point for the web crawler.
+            delay:
+              type: integer
+              title: Delay
+              examples:
+                - 1
+                - 2
+                - 5
+              description: Delay in seconds between scrapes to respect website rate limits.
+            limit:
+              type: integer
+              title: Limit
+              default: 10
+              examples:
+                - 5
+                - 10
+                - 50
+                - 100
+              description: Maximum number of pages to crawl. The crawl will stop once this
+                limit is reached. Default is 10.
+            prompt:
+              type: string
+              title: Prompt
+              examples:
+                - Only crawl API reference pages
+                - Crawl documentation, skip tutorials and guides
+              description: "A natural language prompt to automatically generate crawler
+                settings. Example: 'Only crawl blog posts and docs, skip
+                marketing pages'. Explicitly set parameters will override the
+                generated equivalents."
+            sitemap:
+              enum:
+                - include
+                - skip
+                - only
+              type: string
+              title: Sitemap
+              default: include
+              examples:
+                - include
+                - skip
+                - only
+              description: Sitemap mode when crawling. 'include' (default) uses sitemap and
+                discovers other pages. 'skip' ignores sitemap entirely and only
+                discovers pages from the start URL. 'only' crawls exclusively
+                URLs from the sitemap, ignoring other discovered links.
+            webhook:
+              type: object
+              title: WebhookConfig
+              required:
+                - url
+              properties:
+                url:
+                  type: string
+                  title: Url
+                  description: Webhook URL to receive crawl updates
+                events:
+                  type: array
+                  items:
+                    type: string
+                  title: Events
+                  default:
+                    - completed
+                  examples:
+                    - - completed
+                  description: Events to trigger webhook
+                headers:
+                  type: object
+                  title: Headers
+                  description: Custom headers for webhook requests
+                  additionalProperties:
+                    type: string
+                metadata:
+                  type: object
+                  title: Metadata
+                  description: Custom metadata to include in webhook payload (string key-value
+                    pairs)
+                  additionalProperties:
+                    type: string
+              description: Webhook configuration for receiving real-time crawl updates.
+              additionalProperties: false
+            excludePaths:
+              type: array
+              items:
+                type: string
+              title: Exclude Paths
+              examples:
+                - blog/archive/.*
+                - private/.*
+                - user/\d+/profile/edit
+              description: A list of Regular Expression (regex) patterns for URL paths to
+                exclude from the crawl. URLs whose paths match any of these
+                patterns will be ignored. For example, `"blog/archive/.*"` would
+                exclude all paths under `/blog/archive/`.
+            includePaths:
+              type: array
+              items:
+                type: string
+              title: Include Paths
+              examples:
+                - products/featured/.*
+                - docs/api/v1/.*
+                - articles/\d{4}/\d{2}/.*
+              description: A list of Regular Expression (regex) patterns for URL paths to
+                include in the crawl. Only URLs whose paths match one of these
+                patterns will be processed. For example,
+                `"products/featured/.*"` would only include paths under
+                `/products/featured/`.
+            maxConcurrency:
+              type: integer
+              title: Max Concurrency
+              examples:
+                - 3
+                - 5
+                - 10
+              description: Maximum number of concurrent scrapes. If not specified, uses your
+                team's concurrency limit.
+            allowSubdomains:
+              type: boolean
+              title: Allow Subdomains
+              default: false
+              examples:
+                - true
+                - false
+              description: If true, allows the crawler to follow links to subdomains of the
+                main domain.
+            crawlEntireDomain:
+              type: boolean
+              title: Crawl Entire Domain
+              default: false
+              examples:
+                - true
+                - false
+              description: "Allows the crawler to follow internal links to sibling or parent
+                URLs, not just child paths. False: Only crawls deeper (child)
+                URLs (e.g., /features/feature-1 → /features/feature-1/tips).
+                True: Crawls any internal links including siblings and parents
+                (e.g., /features/feature-1 → /pricing, /)."
+            maxDiscoveryDepth:
+              type: integer
+              title: Max Discovery Depth
+              examples:
+                - 1
+                - 2
+                - 3
+              description: Maximum depth to crawl based on discovery order. The root site and
+                sitemapped pages have a discovery depth of 0. For example, if
+                you set it to 1 and set sitemap='skip', you will only crawl the
+                entered URL and all URLs linked on that page.
+            zeroDataRetention:
+              type: boolean
+              title: Zero Data Retention
+              default: false
+              examples:
+                - true
+                - false
+              description: If true, enables zero data retention for this crawl. Contact
+                help@firecrawl.dev to enable this feature.
+            allowExternalLinks:
+              type: boolean
+              title: Allow External Links
+              default: false
+              examples:
+                - true
+                - false
+              description: If true, allows the crawler to follow links that lead to external
+                websites (different domains). Defaults to false.
+            scrapeOptions_proxy:
+              type: string
+              title: Scrape Options Proxy
+              examples:
+                - auto
+                - basic
+                - premium
+              description: Proxy configuration for requests
+            scrapeOptions_maxAge:
+              type: integer
+              title: Scrape Options Max Age
+              examples:
+                - 0
+                - 3600000
+                - 86400000
+              description: Maximum age in milliseconds for cached content. If content is older
+                than this, it will be re-scraped.
+            scrapeOptions_mobile:
+              type: boolean
+              title: Scrape Options Mobile
+              examples:
+                - true
+                - false
+              description: If true, emulate a mobile device when scraping
+            ignoreQueryParameters:
+              type: boolean
+              title: Ignore Query Parameters
+              default: false
+              examples:
+                - true
+                - false
+              description: If true, do not re-scrape the same path with different (or no)
+                query parameters
+            scrapeOptions_actions:
+              type: array
+              items:
+                type: object
+                title: Action
+                required:
+                  - type
+                properties:
+                  text:
+                    type: string
+                    title: Text
+                    description: Text to write or key to press
+                  type:
+                    enum:
+                      - wait
+                      - click
+                      - write
+                      - press
+                      - scroll
+                      - screenshot
+                    type: string
+                    title: Type
+                    description: Type of browser action to perform
+                  selector:
+                    type: string
+                    title: Selector
+                    description: CSS selector of the target element
+                  coordinate:
+                    type: array
+                    items:
+                      type: integer
+                    title: Coordinate
+                    description: Scroll coordinates as [x, y]
+                  milliseconds:
+                    type: integer
+                    title: Milliseconds
+                    description: Wait duration in milliseconds (for 'wait' action)
+              title: Scrape Options Actions
+              description: List of actions to perform on each page before scraping (e.g.,
+                clicking buttons, waiting)
+            scrapeOptions_formats:
+              type: array
+              items:
+                anyOf:
+                  - enum:
+                      - markdown
+                      - html
+                      - rawHtml
+                      - links
+                      - screenshot
+                      - json
+                    type: string
+                    title: FormatsEnm
+                  - type: object
+                    title: JsonFormatOptions
+                    properties:
+                      type:
+                        type: string
+                        const: json
+                        title: Type
+                        default: json
+                        description: Format type identifier
+                      prompt:
+                        anyOf:
+                          - type: string
+                          - type: "null"
+                        title: Prompt
+                        default: null
+                        description: Natural language prompt to guide JSON extraction (can be used with
+                          or without schema)
+                      schema:
+                        anyOf:
+                          - type: object
+                            additionalProperties: true
+                          - type: "null"
+                        title: Schema
+                        default: null
+                        description: JSON Schema object defining the structure for extracted data
+                    description: JSON extraction format configuration for v2 API.
+                    additionalProperties: false
+              title: Scrape Options Formats
+              default:
+                - markdown
+              examples:
+                - markdown
+                - html
+                - rawHtml
+                - links
+                - screenshot
+              description: 'Specifies the desired output formats for the scraped content from
+                each page. Can be a list of format strings (e.g., ["markdown",
+                "html"]) or format objects. For JSON extraction, use a
+                JsonFormatOptions object with type="json", optional schema (JSON
+                Schema), and optional prompt for guidance. Example: [{"type":
+                "json", "schema": {...}, "prompt": "Extract title"}]'
+            scrapeOptions_headers:
+              type: object
+              title: Scrape Options Headers
+              examples:
+                - Accept: text/html
+                  User-Agent: CustomBot/1.0
+              description: Custom HTTP headers to send with each request
+              additionalProperties:
+                type: string
+            scrapeOptions_parsers:
+              type: array
+              items:
+                enum:
+                  - pdf
+                type: string
+                title: ParserType
+              title: Scrape Options Parsers
+              examples:
+                - - pdf
+              description: List of parsers to use for specific content types (e.g., 'pdf')
+            scrapeOptions_timeout:
+              type: integer
+              title: Scrape Options Timeout
+              examples:
+                - 5000
+                - 15000
+                - 30000
+                - 60000
+              description: Timeout in milliseconds for each page request. Default is 30000ms
+                (30 seconds)
+            scrapeOptions_waitFor:
+              type: integer
+              title: Scrape Options Wait For
+              examples:
+                - 0
+                - 500
+                - 1000
+                - 2500
+              description: The duration in milliseconds to wait for page JavaScript to execute
+                and content to load before scraping.
+            scrapeOptions_blockAds:
+              type: boolean
+              title: Scrape Options Block Ads
+              examples:
+                - true
+                - false
+              description: If true, block advertisements during scraping
+            scrapeOptions_location:
+              type: object
+              title: Location
+              properties:
+                country:
+                  type: string
+                  title: Country
+                  default: US
+                  description: Country code for geolocation
+                languages:
+                  type: array
+                  items:
+                    type: string
+                  title: Languages
+                  default:
+                    - en-US
+                  description: Language preferences
+              description: Geolocation settings for the scraper
+              additionalProperties: false
+            scrapeOptions_excludeTags:
+              type: array
+              items:
+                type: string
+              title: Scrape Options Exclude Tags
+              examples:
+                - nav
+                - footer
+                - script
+                - style
+                - aside
+              description: A list of HTML tags to exclude from the scraped output. Content
+                within these tags will be removed.
+            scrapeOptions_includeTags:
+              type: array
+              items:
+                type: string
+              title: Scrape Options Include Tags
+              examples:
+                - article
+                - main
+                - h1
+                - p
+              description: A list of HTML tags to specifically include in the scraped output.
+                Only content within these tags will be processed.
+            scrapeOptions_storeInCache:
+              type: boolean
+              title: Scrape Options Store In Cache
+              examples:
+                - true
+                - false
+              description: If true, store scraped content in cache for future use
+            scrapeOptions_onlyMainContent:
+              type: boolean
+              title: Scrape Options Only Main Content
+              default: true
+              examples:
+                - true
+                - false
+              description: If true, attempts to extract only the main content of each page,
+                excluding common elements like headers, navigation bars, and
+                footers. Default is true.
+            scrapeOptions_removeBase64Images:
+              type: boolean
+              title: Scrape Options Remove Base64 Images
+              examples:
+                - true
+                - false
+              description: If true, remove base64-encoded images from the scraped content
+            scrapeOptions_skipTlsVerification:
+              type: boolean
+              title: Scrape Options Skip Tls Verification
+              examples:
+                - true
+                - false
+              description: If true, skip TLS certificate verification
+          description: Parameters for Firecrawl v2 crawl API with enhanced discovery,
+            natural language prompts, and granular control over crawl scope and
+            content extraction.
+      FIRECRAWL_CREDIT_USAGE_GET:
+        name: firecrawl_FIRECRAWL_CREDIT_USAGE_GET
+        description: Tool to get current team credit usage information. Use when you
+          need to check remaining credits or billing period details.
+        input_schema:
+          type: object
+          title: CreditUsageGetRequest
+          properties: {}
+          description: Request schema for getting team credit usage. No parameters required.
+      FIRECRAWL_CREDIT_USAGE_GET_HISTORICAL:
+        name: firecrawl_FIRECRAWL_CREDIT_USAGE_GET_HISTORICAL
+        description: Tool to retrieve historical team credit usage on a monthly basis.
+          Use when you need to analyze credit consumption patterns over time,
+          optionally segmented by API key.
+        input_schema:
+          type: object
+          title: CreditUsageGetHistoricalRequest
+          properties:
+            byApiKey:
+              type: boolean
+              title: By Api Key
+              default: false
+              examples:
+                - false
+                - true
+              description: When enabled, breaks down usage by individual API key. Defaults to
+                false.
+          description: Request schema for retrieving historical team credit usage.
+      FIRECRAWL_DEEP_RESEARCH:
+        name: firecrawl_FIRECRAWL_DEEP_RESEARCH
+        description: "Initiates an AI-powered deep research operation that autonomously
+          explores the web to investigate any topic and synthesizes findings
+          from multiple sources. Requires an active Firecrawl connection. The
+          research process iteratively searches, analyzes, and synthesizes
+          information across multiple web sources, providing comprehensive
+          insights with source citations. Results include a final analysis,
+          detailed activity timeline, and curated source list. Billing: 1 credit
+          per URL analyzed. Control costs with the maxUrls parameter. Note: This
+          API is in Alpha and being deprecated after June 30, 2025; prefer
+          FIRECRAWL_SEARCH + FIRECRAWL_EXTRACT or COMPOSIO_SEARCH_WEB for
+          durable workflows. Reserve this tool for cases requiring synthesized
+          multi-source analysis — it is slower and more resource-intensive than
+          FIRECRAWL_SEARCH."
+        input_schema:
+          type: object
+          title: DeepResearchRequest
+          required:
+            - query
+          properties:
+            query:
+              type: string
+              title: Query
+              examples:
+                - What are the latest developments in quantum computing?
+                - How does climate change affect ocean ecosystems?
+              description: The research question or topic to investigate. Provide a clear,
+                specific question or topic for best results.
+            formats:
+              type: array
+              items:
+                type: string
+              title: Formats
+              examples:
+                - - json
+              description: Output format list. Set to ["json"] to get structured JSON output.
+                When using "json" format, you must also provide jsonOptions.
+            maxUrls:
+              type: integer
+              title: Max Urls
+              default: 20
+              maximum: 1000
+              minimum: 1
+              examples:
+                - 10
+                - 20
+                - 50
+              description: "Maximum number of URLs to analyze during research. Range: 1-1000.
+                Default: 20. Higher values provide more comprehensive results
+                but consume more credits (1 credit per URL)."
+            maxDepth:
+              type: integer
+              title: Max Depth
+              maximum: 10
+              minimum: 1
+              examples:
+                - 3
+                - 5
+                - 7
+                - 10
+              description: "Controls how many iterations the research process goes through.
+                Range: 1-10. Default: 7 (if not specified). Higher depth means
+                more thorough research but longer processing time."
+            timeLimit:
+              type: integer
+              title: Time Limit
+              maximum: 300
+              minimum: 30
+              examples:
+                - 120
+                - 180
+                - 270
+                - 300
+              description: "Time limit for the research job in seconds. Range: 30-300 seconds.
+                Default: 270 (if not specified). Research will stop when this
+                limit is reached."
+            jsonOptions:
+              type: object
+              title: Json Options
+              examples:
+                - prompt: Extract key findings as a list
+                - schema:
+                    type: object
+                    properties:
+                      companies:
+                        type: array
+                        items:
+                          type: string
+              description: Configuration for JSON structured output. Must contain either
+                "schema" (a valid JSON Schema dict) or "prompt" (a string). When
+                using schema, provide a complete JSON Schema with "type",
+                "properties", etc., wrapped in a "schema" key.
+              additionalProperties: true
+            systemPrompt:
+              type: string
+              title: System Prompt
+              examples:
+                - You are a medical researcher. Focus on peer-reviewed sources.
+                - Prioritize recent developments from the last 2 years.
+              description: Custom system-level prompt to guide the agentic research
+                exploration process. Use this to set the context, tone, or
+                specific behaviors for the research agent.
+            analysisPrompt:
+              type: string
+              title: Analysis Prompt
+              examples:
+                - Provide a comprehensive executive summary with key takeaways.
+                - Focus on practical applications and business implications.
+              description: Custom prompt to guide the final synthesis and analysis generation.
+                Use this to specify how findings should be summarized or what
+                aspects to emphasize in the final analysis.
+          description: Input for initiating a deep research operation.
+      FIRECRAWL_EXTRACT:
+        name: firecrawl_FIRECRAWL_EXTRACT
+        description: Extracts structured data from web pages by initiating an extraction
+          job and polling for completion; requires a natural language `prompt`
+          or a JSON `schema` (one must be provided).
+        input_schema:
+          type: object
+          title: ExtractRequest
+          required:
+            - urls
+          properties:
+            urls:
+              type: array
+              items:
+                type: string
+              title: Urls
+              examples:
+                - - https://firecrawl.dev/
+                  - https://docs.firecrawl.dev/
+              maxItems: 10
+              description: "A list of URLs from which to extract data (maximum 10 URLs while
+                in beta). Wildcards (e.g., `https://example.com/blog/*`) can be
+                used for crawling multiple pages under a specific path. Note:
+                You can also pass a single URL as 'url' (singular) which will be
+                automatically converted to a list."
+            prompt:
+              type: string
+              title: Prompt
+              examples:
+                - Extract the company mission, whether it supports SSO, etc.
+              description: Natural language query for information to extract from URL content.
+                E.g., 'Extract the company mission, whether it supports SSO,
+                etc.'. At least one of 'prompt' or 'schema' must be provided.
+            schema:
+              type: object
+              title: Schema
+              examples:
+                - type: object
+                  required:
+                    - company_mission
+                    - supports_sso
+                    - is_open_source
+                    - is_in_yc
+                  properties:
+                    is_in_yc:
+                      type: boolean
+                    supports_sso:
+                      type: boolean
+                    is_open_source:
+                      type: boolean
+                    company_mission:
+                      type: string
+              description: JSON object (dictionary) defining the desired structure for
+                extracted data. Must be a valid JSON Schema object with
+                properties and types. At least one of 'prompt' or 'schema' must
+                be provided.
+              additionalProperties: true
+            showSources:
+              type: boolean
+              title: Show Sources
+              default: false
+              examples:
+                - true
+                - false
+              description: When true, the sources used to extract the data will be included in
+                the response as `sources` key.
+            ignoreSitemap:
+              type: boolean
+              title: Ignore Sitemap
+              default: false
+              examples:
+                - true
+                - false
+              description: Bypasses sitemap.xml during scanning.
+            scrapeOptions:
+              type: object
+              title: Scrape Options
+              description: Advanced scraping configuration.
+              additionalProperties: true
+            enableWebSearch:
+              type: boolean
+              title: Enable Web Search
+              default: false
+              examples:
+                - true
+                - false
+              description: If `True`, allows crawling links outside initial domains in `urls`;
+                if `False`, restricts to same domains.
+            ignoreInvalidURLs:
+              type: boolean
+              title: Ignore Invalid Ur Ls
+              default: false
+              examples:
+                - true
+                - false
+              description: Proceeds with valid URLs, returning invalid ones separately.
+            includeSubdomains:
+              type: boolean
+              title: Include Subdomains
+              default: true
+              examples:
+                - true
+                - false
+              description: Extends scanning to subdomains.
+          description: Request to extract structured data from URLs via a `prompt` or
+            `schema`.
+      FIRECRAWL_EXTRACT_GET:
+        name: firecrawl_FIRECRAWL_EXTRACT_GET
+        description: Tool to retrieve the status and results of a previously submitted
+          extract job. Use when you need to check the progress or get the final
+          results of an extraction operation.
+        input_schema:
+          type: object
+          title: ExtractGetRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - 019b0806-b54a-72bd-b747-3f58cc162081
+              minLength: 1
+              description: The unique identifier (UUID format) of the extract job to retrieve.
+          description: Request to get the status of an extract job.
+      FIRECRAWL_GET_AGENT_STATUS:
+        name: firecrawl_FIRECRAWL_GET_AGENT_STATUS
+        description: Tool to get the status and results of an agent job. Use when you
+          need to check if an agent job has completed and retrieve the collected
+          data. Agent jobs autonomously search, navigate, and extract data from
+          the web.
+        input_schema:
+          type: object
+          title: GetAgentStatusRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - 019c5ac9-e350-7588-8b6b-572288b92f57
+              description: Unique identifier (UUID) of the agent job.
+          description: Input for retrieving the status and results of an agent job.
+      FIRECRAWL_GET_DEEP_RESEARCH_STATUS:
+        name: firecrawl_FIRECRAWL_GET_DEEP_RESEARCH_STATUS
+        description: Retrieves the status and results of a deep research job by its ID.
+          Use when you need to check the progress or retrieve the final analysis
+          of a deep research operation.
+        input_schema:
+          type: object
+          title: GetDeepResearchStatusRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - 019b0808-2c3d-7790-a30d-7bcb5c77b545
+              description: Unique identifier (UUID) of the deep research job. Must be the UUID
+                returned by FIRECRAWL_DEEP_RESEARCH; arbitrary UUIDs are not
+                valid.
+          description: Input for retrieving the status of a deep research operation.
+      FIRECRAWL_GET_THE_STATUS_OF_A_CRAWL_JOB:
+        name: firecrawl_FIRECRAWL_GET_THE_STATUS_OF_A_CRAWL_JOB
+        description: Retrieves the current status, progress, and details of a web crawl
+          job, using the job ID obtained when the crawl was initiated.
+        input_schema:
+          type: object
+          title: GetTheStatusOfACrawlJobRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - f5e5a0c5-0b7c-455e-8c1a-31e0b0d1f3b0
+              description: Unique identifier (UUID) of the crawl job.
+          description: Input for retrieving the status of a specific crawl job.
+      FIRECRAWL_LLMS_TXT_GENERATE:
+        name: firecrawl_FIRECRAWL_LLMS_TXT_GENERATE
+        description: Initiates an async job to generate an LLMs.txt file for a website,
+          converting web content into LLM-friendly format. Returns a job ID to
+          check status and retrieve results. Use when you need to create a
+          standardized, machine-readable representation of website content for
+          language models.
+        input_schema:
+          type: object
+          title: LlmsTxtGenerateRequest
+          required:
+            - url
+          properties:
+            url:
+              type: string
+              title: Url
+              examples:
+                - https://example.com
+                - https://firecrawl.dev
+              description: The URL to generate LLMs.txt from. Must be a valid URI format.
+            maxUrls:
+              type: integer
+              title: Max Urls
+              default: 10
+              maximum: 100
+              minimum: 1
+              examples:
+                - 2
+                - 5
+                - 10
+              description: Maximum number of URLs to analyze when generating the LLMs.txt
+                file. Must be between 1 and 100. Default is 10.
+            showFullText:
+              type: boolean
+              title: Show Full Text
+              default: false
+              examples:
+                - false
+                - true
+              description: Include full text content in the response. When true, generates
+                both llmstxt and llmsfulltxt. Default is false.
+          description: Input for generating an LLMs.txt file for a website.
+      FIRECRAWL_LLMS_TXT_GET:
+        name: firecrawl_FIRECRAWL_LLMS_TXT_GET
+        description: Tool to get the status and results of an LLMs.txt generation job.
+          Use when you need to check if a job has completed and retrieve the
+          generated content.
+        input_schema:
+          type: object
+          title: LlmsTxtGetRequest
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              title: Id
+              examples:
+                - 019b0806-b267-7498-9ad2-3bfecef66377
+              description: Unique identifier (UUID) of the LLMs.txt generation job.
+          description: Input for retrieving the status and results of an LLMs.txt
+            generation job.
+      FIRECRAWL_MAP_MULTIPLE_URLS_BASED_ON_OPTIONS:
+        name: firecrawl_FIRECRAWL_MAP_MULTIPLE_URLS_BASED_ON_OPTIONS
+        description: Maps a website by discovering URLs from a starting base URL, with
+          options to customize the crawl via search query, subdomain inclusion,
+          sitemap handling, and result limits; search effectiveness is
+          site-dependent.
+        input_schema:
+          type: object
+          title: MapMultipleUrlsBasedOnOptionsRequest
+          required:
+            - url
+          properties:
+            url:
+              type: string
+              title: Url
+              pattern: ^https?://[^\s]+$
+              examples:
+                - https://example.com
+                - https://docs.firecrawl.dev
+                - https://sub.example.com/path
+              description: The starting website URL to map and discover links from. Must be a
+                valid HTTP/HTTPS URL string (e.g., 'https://example.com'). Do
+                NOT pass code snippets, SDK examples, or anything other than a
+                plain URL.
+            limit:
+              type: integer
+              title: Limit
+              examples:
+                - 100
+                - 1000
+                - 10000
+              description: Maximum number of links to return. Defaults to 5000. Maximum
+                allowed is 100000.
+            search:
+              type: string
+              title: Search
+              examples:
+                - product reviews
+                - articles about AI
+                - contact us page
+              description: Optional search query to guide URL mapping, prioritizing or finding
+                specific page types. 'Smart' search is limited to 1000 initial
+                results in Alpha, but overall mapping can exceed this.
+            sitemap:
+              type: string
+              title: Sitemap
+              examples:
+                - include
+                - skip
+                - only
+              description: "Sitemap handling mode: 'skip' to exclude sitemaps, 'include' to
+                use sitemaps with other discovery methods (default behavior), or
+                'only' to return only sitemap URLs."
+            timeout:
+              type: integer
+              title: Timeout
+              examples:
+                - 30000
+                - 60000
+              description: Timeout in milliseconds. No timeout is applied by default.
+            location:
+              type: object
+              title: Location
+              examples:
+                - country: US
+                  languages:
+                    - en
+                - country: DE
+                  languages:
+                    - de
+              description: Geographic settings for location-based request processing. Object
+                with 'country' (ISO 3166-1 alpha-2 code, e.g., 'US', 'DE', 'JP')
+                and optionally 'languages' (array of language codes, e.g.,
+                ['en'], ['de', 'en']).
+              additionalProperties: true
+            ignoreCache:
+              type: boolean
+              title: Ignore Cache
+              description: If true, bypasses cached sitemap data. Useful when sitemaps have
+                been recently updated. Sitemap data is cached for up to 7 days.
+                Defaults to false.
+            includeSubdomains:
+              type: boolean
+              title: Include Subdomains
+              description: If true, includes subdomains of the base URL in the mapping. E.g.,
+                if `url` is example.com, blog.example.com is mapped. Defaults to
+                true.
+            ignoreQueryParameters:
+              type: boolean
+              title: Ignore Query Parameters
+              description: If true, excludes URLs with query parameters from results. Defaults
+                to true.
+          description: Request schema for mapping URLs based on various options.
+      FIRECRAWL_QUEUE_GET:
+        name: firecrawl_FIRECRAWL_QUEUE_GET
+        description: Tool to retrieve metrics about the team's scrape queue. Use when
+          you need to check queue status, job counts, or concurrency limits.
+        input_schema:
+          type: object
+          title: QueueGetRequest
+          properties: {}
+          description: Request schema for getting team queue status. No parameters required.
+      FIRECRAWL_SCRAPE:
+        name: firecrawl_FIRECRAWL_SCRAPE
+        description: Scrapes a publicly accessible URL, optionally performing pre-scrape
+          browser actions or extracting structured JSON using an LLM, to
+          retrieve content in specified formats.
+        input_schema:
+          type: object
+          title: ScrapeRequest
+          required:
+            - url
+          properties:
+            url:
+              type: string
+              title: Url
+              examples:
+                - https://firecrawl.dev/
+                - https://example.com/article
+              description: The fully qualified URL of the web page to scrape. Must start with
+                'http://' or 'https://' and be a valid web URL.
+            actions:
+              type: array
+              items:
+                type: object
+                title: Action
+                required:
+                  - type
+                properties:
+                  key:
+                    type: string
+                    title: Key
+                    examples:
+                      - Enter
+                      - Escape
+                      - Tab
+                    description: Key to press (e.g., 'Enter', 'Escape', 'Tab'), used with 'press'
+                      actions.
+                  text:
+                    type: string
+                    title: Text
+                    examples:
+                      - Hello world
+                      - user@example.com
+                      - search query
+                    description: Text to be typed into an element, used with 'write' actions.
+                  type:
+                    type: string
+                    title: Type
+                    examples:
+                      - click
+                      - write
+                      - wait
+                      - press
+                      - scroll
+                    description: "The type of browser action to perform on the page before scraping.
+                      Supported actions: 'wait', 'click', 'screenshot', 'write',
+                      'press', 'scroll'."
+                  selector:
+                    type: string
+                    title: Selector
+                    examples:
+                      - "#submit-button"
+                      - .product-title
+                      - div[data-testid='item']
+                    description: CSS selector for the HTML element targeted by the action. Required
+                      for actions like 'click' or 'write'.
+                  milliseconds:
+                    type: integer
+                    title: Milliseconds
+                    examples:
+                      - "500"
+                      - "1000"
+                      - "2000"
+                    description: Specifies a duration in milliseconds, e.g., for a 'wait' action or
+                      a delay.
+                description: Action to perform on the page
+              title: Actions
+              description: An optional list of browser actions (e.g., click, write, wait,
+                press) to perform on the page before scraping. Useful for
+                interacting with dynamic content, filling forms, or navigating
+                through page elements.
+            formats:
+              type: array
+              items:
+                enum:
+                  - markdown
+                  - html
+                  - rawHtml
+                  - links
+                  - screenshot
+                  - json
+                  - screenshot@fullPage
+                type: string
+                title: FormatsEnm
+              title: Formats
+              default:
+                - markdown
+              examples:
+                - - markdown
+                - - html
+                  - screenshot
+                - - json
+              description: A list of desired output formats for the scraped content. Defaults
+                to ['markdown']. Cannot include both 'screenshot' and
+                'screenshot@fullPage'. If 'json' is included, jsonOptions must
+                be provided.
+            timeout:
+              type: integer
+              title: Timeout
+              default: 30000
+              examples:
+                - "30000"
+                - "10000"
+                - "60000"
+              description: Maximum time in milliseconds to wait for the scraping request to
+                complete. Defaults to 30000.
+            waitFor:
+              type: integer
+              title: Wait For
+              default: 0
+              examples:
+                - "0"
+                - "1000"
+                - "5000"
+              description: Time in milliseconds to wait for the page to load or for dynamic
+                content to render before starting the scrape. Defaults to 0.
+            location:
+              type: object
+              title: LocationRequest
+              properties:
+                country:
+                  type: string
+                  title: Country
+                  default: US
+                  examples:
+                    - US
+                    - AU
+                    - DE
+                    - JP
+                  description: ISO 3166-1 alpha-2 country code to make the request from (e.g.,
+                    'US', 'AU', 'DE', 'JP').
+                languages:
+                  type: array
+                  items:
+                    type: string
+                  title: Languages
+                  examples:
+                    - - en-US
+                      - en
+                    - - fr-CA
+                      - fr
+                    - - de-DE
+                  description: List of preferred languages and locales for the request, in order
+                    of priority. Uses format like 'en-US'.
+              description: Location settings for the request
+              additionalProperties: false
+            excludeTags:
+              type: array
+              items:
+                type: string
+              title: Exclude Tags
+              examples:
+                - - script
+                  - style
+                - - nav
+                  - footer
+                  - aside
+              description: A list of HTML tags to specifically exclude from the output.
+                Content within these tags will be removed.
+            includeTags:
+              type: array
+              items:
+                type: string
+              title: Include Tags
+              examples:
+                - - h1
+                  - p
+                - - article
+                  - section
+              description: A list of HTML tags to specifically include in the output. Content
+                within these tags will be prioritized.
+            jsonOptions:
+              type: object
+              title: JsonOptions
+              properties:
+                prompt:
+                  type: string
+                  title: Prompt
+                  examples:
+                    - Extract the main headline and the first paragraph.
+                    - What are the product specifications mentioned on this page?
+                    - Summarize the article in three bullet points.
+                  description: A user-defined prompt for data extraction when a specific JSON
+                    schema is not provided. Guides the LLM on what information
+                    to extract.
+                schema:
+                  type: object
+                  title: Schema
+                  examples:
+                    - type: object
+                      properties:
+                        title:
+                          type: string
+                        author:
+                          type: string
+                        published_date:
+                          type: string
+                    - type: object
+                      properties:
+                        products:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                              price:
+                                type: number
+                  description: "A JSON Schema object defining the structure for data extraction.
+                    The LLM will populate this schema with data from the page.
+                    The API requires 'type': 'object' at the root level.
+                    Supported formats: (1) Object schema with properties - used
+                    as-is. (2) Array schema with items - automatically wrapped
+                    as {type: object, properties: {items: <your_array_schema>}};
+                    the extracted data will be returned under the 'items' key.
+                    (3) Simplified property definitions - automatically wrapped
+                    with type: object."
+                  additionalProperties: true
+                systemPrompt:
+                  type: string
+                  title: System Prompt
+                  examples:
+                    - Extract key information accurately.
+                    - Focus on product details and specifications.
+                  description: "A system-level prompt to guide the LLM during JSON extraction,
+                    setting context or desired behavior. Note: This parameter is
+                    only supported in v1 API; it is ignored when using v2 API."
+              description: Options for JSON extraction
+              additionalProperties: false
+            onlyMainContent:
+              type: boolean
+              title: Only Main Content
+              default: true
+              description: If true, attempts to extract only the main article content,
+                excluding headers, footers, navigation bars, and ads. Defaults
+                to true.
+          description: >-
+            Defines the parameters for a scrape request to Firecrawl, enabling
+            web page content retrieval,
+
+            main content filtering, and optional structured data extraction
+            using LLM capabilities.
+      FIRECRAWL_SEARCH:
+        name: firecrawl_FIRECRAWL_SEARCH
+        description: Performs a web search for a query, scrapes content from the top
+          search results using Firecrawl, and returns details in specified
+          formats.
+        input_schema:
+          type: object
+          title: SearchRequest
+          required:
+            - q
+          properties:
+            q:
+              type: string
+              title: Q
+              examples:
+                - what is firecrawl?
+              description: The search query to execute. Can be provided as 'query' or 'q'.
+            lang:
+              type: string
+              title: Lang
+              default: en
+              examples:
+                - en
+                - es
+                - fr
+              description: Language code for search results (e.g., 'en' for English, default
+                'en').
+            limit:
+              type: integer
+              title: Limit
+              default: 5
+              maximum: 100
+              minimum: 1
+              examples:
+                - 1
+                - 5
+                - 10
+                - 50
+                - 100
+              description: Maximum number of search results to return (1-100, default 5).
+            country:
+              type: string
+              title: Country
+              default: us
+              examples:
+                - us
+                - uk
+                - fr
+              description: Country code to tailor search results (e.g., 'us' for United
+                States, default 'us').
+            formats:
+              type: array
+              items:
+                anyOf:
+                  - type: string
+                  - type: object
+                    additionalProperties: true
+              title: Formats
+              examples:
+                - - markdown
+                  - html
+                - - markdown
+                  - links
+                - - markdown
+                  - type: screenshot
+                    fullPage: true
+                - - markdown
+                  - html
+                  - rawHtml
+                  - links
+              description: "Desired output formats for scraped content of each search result.
+                If None, default scraping applies. Available string formats:
+                'markdown', 'html', 'rawHtml', 'links'. For screenshots, use
+                object format: {'type': 'screenshot', 'fullPage': true/false,
+                'quality': 1-100}. For other advanced formats, consult Firecrawl
+                API documentation."
+            timeout:
+              type: integer
+              title: Timeout
+              default: 60000
+              maximum: 300000
+              minimum: 1000
+              examples:
+                - "10000"
+                - "60000"
+                - "300000"
+              description: Maximum time in milliseconds for search and scrape operations
+                (1000-300000, default 60000).
+      FIRECRAWL_START_AGENT:
+        name: firecrawl_FIRECRAWL_START_AGENT
+        description: Tool to start an agent job for agentic web extraction with
+          multi-page navigation and interaction capabilities. Use when you need
+          to autonomously gather data from the web with complex navigation
+          requirements. The agent can search, navigate, and extract information
+          across multiple pages based on your natural language prompt.
+        input_schema:
+          type: object
+          title: StartAgentRequest
+          required:
+            - prompt
+          properties:
+            urls:
+              type: array
+              items:
+                type: string
+              title: Urls
+              examples:
+                - - https://news.ycombinator.com
+                - - https://example.com/pricing
+                  - https://example.com/features
+              description: Specific URLs to constrain the agent's search. If provided, the
+                agent will start from these URLs. If not provided, the agent
+                will autonomously search the web.
+            prompt:
+              type: string
+              title: Prompt
+              examples:
+                - Get the latest news about AI
+                - Find all job openings at Y Combinator companies
+                - Extract pricing information from SaaS product pages
+              description: Natural language description of what data you want to extract. The
+                agent will autonomously navigate and interact with web pages to
+                gather this information.
+            schema:
+              type: object
+              title: Schema
+              examples:
+                - type: object
+                  properties:
+                    news_items:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          url:
+                            type: string
+                          title:
+                            type: string
+                          summary:
+                            type: string
+              description: JSON schema defining the structure of data you want returned. Must
+                be a valid JSON Schema object with properties and types. This
+                ensures the extracted data matches your desired format.
+              additionalProperties: true
+            maxCredits:
+              type: integer
+              title: Max Credits
+              minimum: 1
+              examples:
+                - 100
+                - 500
+                - 1000
+              description: Maximum credits to spend on the request. The agent will stop when
+                this limit is reached, preventing unexpected costs. If not
+                specified, the agent will continue until the task is complete.
+            strictConstrainToURLs:
+              type: boolean
+              title: Strict Constrain To Ur Ls
+              examples:
+                - true
+                - false
+              description: Whether to strictly limit the agent to only the provided URLs. If
+                true, the agent will not navigate to external links. If false or
+                not specified, the agent can follow links to gather more
+                information.
+          description: Request schema for starting an agent job.
+      FIRECRAWL_TOKEN_USAGE_GET:
+        name: firecrawl_FIRECRAWL_TOKEN_USAGE_GET
+        description: Tool to retrieve the current team's token usage and balance
+          information for Firecrawl's Extract feature. Use when you need to
+          check remaining token credits, plan allocation, or billing period
+          details.
+        input_schema:
+          type: object
+          title: TokenUsageGetRequest
+          properties: {}
+          description: Request model for retrieving team token usage. No parameters
+            required.
+      FIRECRAWL_TOKEN_USAGE_GET_HISTORICAL:
+        name: firecrawl_FIRECRAWL_TOKEN_USAGE_GET_HISTORICAL
+        description: Tool to retrieve historical team token usage on a monthly basis.
+          Use when you need to analyze token consumption patterns over time,
+          optionally segmented by API key.
+        input_schema:
+          type: object
+          title: TokenUsageGetHistoricalRequest
+          properties:
+            byApiKey:
+              type: boolean
+              title: By Api Key
+              default: false
+              examples:
+                - false
+                - true
+              description: When enabled, breaks down usage by individual API key. Defaults to
+                false.
+          description: Request schema for retrieving historical team token usage.
