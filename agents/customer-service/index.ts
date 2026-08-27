@@ -91,11 +91,6 @@ export const config: AgentConfig = {
       return true
     },
   },
-  // No isSafeTool here — lookup_order and get_shipment_details each mark
-  // themselves `safe: true` on their own ToolDefinition (see
-  // tools/lookup_order.ts), so ToolLane runs them together in a parallel
-  // lane by default. issue_refund and send_email don't set it, so each
-  // still gets its own solo lane.
   sessionIdFor,
   // Resolved per request by tenantFor above, since who's calling can vary
   // request to request. Only adapters/http.ts can actually call this (see
@@ -103,9 +98,4 @@ export const config: AgentConfig = {
   // adapters/cli.ts, or any other caller with no request to resolve it
   // from, always sees 'default' instead.
   tenantFor,
-  // No skillsDirs here — it defaults to agents/customer-service/skills
-  // (see AgentConfig.skillsDirs's own doc comment), the same path this
-  // used to set explicitly. Scoped to this agent's own folder, not any
-  // shared root: SkillGarden's discovery has no per-agent filtering, so
-  // pointing at a shared root would leak skills across agents.
 }

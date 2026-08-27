@@ -34,17 +34,4 @@ export const config: AgentConfig = {
       return true
     },
   },
-  // No skillsDirs here — it defaults to agents/file-agent/skills (see
-  // AgentConfig.skillsDirs's own doc comment), the same path this used to
-  // set explicitly. Scoped to this agent's own folder, not any shared
-  // root: SkillGarden's discovery recursively walks whatever root it's
-  // given with no per-agent filtering, so pointing at a shared root would
-  // mean this agent picks up (and exposes to the model as callable) any
-  // other agent's skills dropped in there too. Nesting depth becomes the
-  // namespace relative to *this* root, so summarize-files still gets the
-  // plain name 'summarize-files' below, not 'file-agent:summarize-files'.
-  isSafeTool: (call) =>
-    call.name === 'read_file' ||
-    call.name === 'list_dir' ||
-    call.name === 'github_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER',
 }

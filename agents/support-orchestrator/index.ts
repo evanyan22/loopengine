@@ -14,8 +14,4 @@ export const config: AgentConfig = {
     'answering yourself — it has the actual billing data. Answer ' +
     'everything else directly.',
   model: { provider: 'anthropic', model: 'claude-sonnet-5' },
-  // No tools here — its only tool comes from subagents/billing-agent/,
-  // merged in automatically (see AgentConfig.tools's own doc comment).
-  // No rules here — defaults to agents/support-orchestrator/actauth.yml,
-  // which allows calling the billing-agent tool.
 }
