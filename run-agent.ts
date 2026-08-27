@@ -7,7 +7,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parse as parseYaml } from 'yaml'
-import { Gate, RuleSet, ConsoleApprover, type Scope, type Decision, type Condition } from 'actauth'
+import { Gate, RuleSet, ConsoleApprover, type Approver, type Scope, type Decision, type Condition } from 'actauth'
 import { SkillGarden } from 'skillgarden'
 import { ContextClipper, type Message as ContextClipMessage } from 'contextclip'
 import { ToolLane, type ToolCall as LaneCall, type SafetyClassifier } from 'toollane'
@@ -16,8 +16,8 @@ import type { AgentConfig, ToolDefinition, ToolSchema } from '#agent-config.js'
 import { loadAgentModule } from './discover-agents.js'
 import { agentAsTool } from './agent-as-tool.js'
 import { loadGatewayToolsFromDir } from './gateway-tools.js'
-import { systemTools } from './system-tools.js'
-export { systemTools } from './system-tools.js'
+import { systemTools, createAskUserTool, type PendingQuestion } from './system-tools/index.js'
+export { systemTools } from './system-tools/index.js'
 
 // Resolved relative to *this file's own location* (via import.meta.url),
 // not process.cwd() — the same reasoning agent-registry.ts's own
@@ -67,6 +67,13 @@ export interface ModelContentBlock {
   content?: string
   /** tool_result blocks: true if the tool call failed or was denied. */
   is_error?: boolean
+  /** tool_result blocks: the actauth decision's own reason this call was
+   * allowed (e.g. "matched rule '...'"). Extra metadata riding alongside
+   * `content`, not folded into it — every model-calls/* adapter
+   * explicitly whitelists which fields it forwards to a real model API,
+   * so this never reaches the model, only a caller (the playground)
+   * inspecting stored history directly. */
+  reason?: string
 }
 
 export interface ModelResponse {
@@ -101,6 +108,45 @@ export interface RunAgentOptions {
    * omitting it — every standalone/CLI caller (which never has a request
    * to resolve tenantFor from) gets that default automatically. */
   tenant?: string
+  /** This call's own session id (the *raw* one — see adapters/http.ts's
+   * own rawSessionId/storageSessionId distinction, this is the former),
+   * if the caller has one. runAgent() never sees a request or a
+   * SessionStore itself, so it can't derive this on its own — passed
+   * through purely so a pending ask_user question can be tagged with
+   * which session raised it (see system-tools/ask_user.ts's own
+   * PendingQuestion.sessionId), letting a caller list/answer questions
+   * scoped to one conversation instead of every one this process has ever
+   * seen. Omitted (a standalone script, most CLI usage) just means a
+   * pending question can't be session-scoped — still fine, it's still
+   * agent-scoped either way. */
+  sessionId?: string
+  /** Default Approver for this call's 'ask' decisions, when
+   * AgentConfig.approver isn't set — the seam an adapter uses to pick
+   * whichever approver actually fits its own channel (ConsoleApprover for
+   * a real terminal, a web-based one for an HTTP-served conversation,
+   * ...) without every agent needing to hardcode one itself. An explicit
+   * AgentConfig.approver still wins outright over this when the agent
+   * author set one on purpose — same as it always has (see Gate
+   * construction below) — this only fills in when that's absent. Default,
+   * if neither is given: actauth's own ConsoleApprover, same as always. */
+  approver?: Approver
+  /** Fired the instant the system ask_user tool registers a new pending
+   * question — this is the seam that decides between a real, answerable
+   * pending question (something adapters/http.ts's own /questions REST
+   * endpoints, or an SSE push, can resolve later) and a blocking terminal
+   * prompt with nowhere else to go (see system-tools/ask_user.ts's own
+   * promptOnConsole).
+   *
+   * Deliberately its own option, not inferred from onEvent above —
+   * onEvent means "please tell me about loop events" (adapters/cli.ts
+   * passes one purely to log them), not "I have a way to actually answer
+   * a question later." Conflating the two was a real bug: it made a
+   * plain `loopengine run` hang forever registering an unanswerable
+   * question instead of just prompting in the terminal it's already
+   * attached to — confirmed live before this existed. Only an adapter
+   * that genuinely has an answering mechanism (adapters/http.ts, for both
+   * its routes) should pass this. */
+  onQuestionPending?: (question: PendingQuestion) => void
 }
 
 export interface RunAgentResult {
@@ -117,11 +163,25 @@ export interface RunAgentResult {
    * only works if `history` only ever grows, which stops being true the
    * moment recovery can shrink/rewrite it, not just extend it. */
   newMessages: Message[]
-  /** Set to 'max_turns' if the loop stopped because it hit
-   * config.maxTurns, not because the model produced a final answer with
-   * no more tool_use blocks — `text` in that case is a synthetic notice,
-   * not something the model said. Absent on a normal finish. */
-  stopReason?: 'max_turns'
+  /** Set when the loop stopped for a reason other than the model
+   * producing a final answer with no more tool_use blocks — `text` in
+   * either case is a synthetic notice, not something the model said.
+   * Absent on a normal finish.
+   *
+   * 'max_turns': hit config.maxTurns without a final answer.
+   *
+   * 'denied': a human denied at least one requested tool call this turn
+   * (see actauth's own 'ask'/'deny' decisions) — the loop stops right
+   * there instead of feeding "denied: ..." back to the model and letting
+   * it keep going on its own, the same way Claude Code itself stops an
+   * entire pending batch rather than quietly carrying out the parts you
+   * didn't object to. A denial cancels the *whole* turn's batch, not
+   * just the call(s) that were themselves denied — any other call the
+   * model requested in the same turn, even one already approved, never
+   * runs either (see the loop's own body); it gets a "skipped", not a
+   * "denied", tool_result, since it was never evaluated against its own
+   * rule. */
+  stopReason?: 'max_turns' | 'denied'
 }
 
 /** ContextClip only ever needs a flat string per message to estimate
@@ -363,8 +423,15 @@ export async function runAgent(
   // tools always win over a same-named system default, never the
   // reverse, even though systemTools is merged in unconditionally
   // (unlike the others below, it's not gated on `tools` being omitted).
+  // ask_user is built fresh per call, not part of the static systemTools
+  // array — its onPending needs options.onQuestionPending, not `log`
+  // (options.onEvent's own fallback) — see RunAgentOptions.onQuestionPending's
+  // own doc comment for why those two are deliberately not the same thing.
+  const askUserTool = createAskUserTool({ agent: config.name, sessionId: options.sessionId }, options.onQuestionPending)
+
   const tools = dedupeToolsByName([
     ...systemTools,
+    askUserTool,
     ...(config.tools ?? (await loadDefaultTools(config))),
     ...(await loadSubagentAsTools(config)),
     ...(await loadGatewayToolsFromDir(join(agentsRootDir, config.name))),
@@ -389,7 +456,7 @@ export async function runAgent(
   const tailMessages = 4
   const contextClip = new ContextClipper({ budgetTokens: config.contextBudgetTokens ?? 8000, tailMessages })
   const rules = loadRules(config)
-  const gate = new Gate(rules, config.approver ?? new ConsoleApprover())
+  const gate = new Gate(rules, config.approver ?? options.approver ?? new ConsoleApprover())
   // No explicit isSafeTool: fall back to each called tool's own `safe`
   // flag (looked up by name) rather than defaulting every tool to unsafe
   // outright — see ToolDefinition.safe's own doc comment for why this is
@@ -455,6 +522,19 @@ export async function runAgent(
   })
 
   const toolsByName = new Map(tools.map((t) => [t.name, t]))
+  // Object identity, not name — an agent that overrides a system tool's
+  // name with its own ToolDefinition (dedupeToolsByName's own "config
+  // wins" rule above) is a deliberate opt-out, and that override should
+  // still go through the agent's own rules like anything else; only the
+  // genuine, unmodified system implementation always bypasses the gate.
+  // ask_user in particular can't be gated at all without a real deadlock:
+  // it's the mechanism a human uses to answer the agent, so requiring a
+  // human decision just to *ask* one is circular, not just redundant —
+  // and every default_decision this repo's own agents actually use
+  // ('ask' or 'deny', see loadRules' own doc comment) would otherwise
+  // catch it, since neither system tool ever appears in an agent's own
+  // actauth.yml.
+  const systemToolInstances = new Set<ToolDefinition>([...systemTools, askUserTool])
   const toolSchemas: ToolSchema[] = tools.map(({ name, description, input_schema }) => ({
     name,
     description,
@@ -530,8 +610,28 @@ export async function runAgent(
       return { text, history: messages, newMessages }
     }
 
+    // The model's own text alongside a tool_use request (its "I'll do X"
+    // preamble) is already durable via pushMessage above, but the only
+    // *live* SSE event that ever carries assistant text is 'done', which
+    // fires once at the very end of the whole turn — a live caller
+    // watching this turn in progress (adapters/http.ts's streaming route,
+    // the playground) would otherwise jump straight from "thinking..." to
+    // an approval/question card with zero explanation, and only ever see
+    // this sentence later, after a refresh replays stored history —
+    // confirmed live.
+    const preambleText = response.content.find((b) => b.type === 'text')?.text
+    if (preambleText) log('assistant:text', preambleText)
+
     const resultBlocks: ModelContentBlock[] = []
     const approvedCalls: LaneCall[] = []
+    const deniedTools: string[] = []
+    // Keyed by tool_use id — approvedCalls (a toollane LaneCall) has no
+    // room for extra fields of its own, and toolLane.run's own results
+    // only carry `id`/`name`/status, not anything about the *decision*
+    // that let a call through in the first place. This is what lets the
+    // reason still get attached to the right tool_result once execution
+    // finishes below, without changing toollane's own types.
+    const approvedReasonById = new Map<string, string>()
 
     for (const block of toolUseBlocks) {
       // Skill invocation injects instructions into context; it isn't a
@@ -545,9 +645,25 @@ export async function runAgent(
         continue
       }
 
+      // See systemToolInstances' own doc comment above — bypasses
+      // gate.evaluate entirely, not just auto-approves through it, since
+      // ask_user itself can be the approver's own only way to ask a human
+      // anything in the first place.
+      if (systemToolInstances.has(toolsByName.get(block.name!)!)) {
+        log('actauth:decision', { tool: block.name, decision: 'allow', reason: 'system tool — always allowed' })
+        approvedReasonById.set(block.id!, 'system tool — always allowed')
+        approvedCalls.push({
+          id: block.id!,
+          name: block.name!,
+          execute: () => toolsByName.get(block.name!)!.execute(block.input ?? {}),
+        })
+        continue
+      }
+
       const decision = await gate.evaluate(block.name!, block.input ?? {}, scope)
       log('actauth:decision', { tool: block.name, decision: decision.decision, reason: decision.reason })
       if (decision.decision === 'allow') {
+        approvedReasonById.set(block.id!, decision.reason)
         approvedCalls.push({
           id: block.id!,
           name: block.name!,
@@ -557,7 +673,11 @@ export async function runAgent(
         // Every requested tool gets exactly one tool_result back — a
         // denied call is not simply dropped, or the model has no way to
         // tell "denied" apart from "hasn't run yet" and may just
-        // re-request it forever.
+        // re-request it forever. Recorded even though this turn is about
+        // to stop (see deniedTools below) — a later message continuing
+        // this same session still needs a complete, consistent history,
+        // not a dangling tool_use with no answer.
+        deniedTools.push(block.name!)
         resultBlocks.push({
           type: 'tool_result',
           tool_use_id: block.id!,
@@ -567,23 +687,58 @@ export async function runAgent(
       }
     }
 
-    // result.id is the same id LaneCall.id was given above — the exact
-    // per-call identity that makes it possible to link a result back to
-    // the specific tool_use block that requested it, even when several
-    // calls ran in the same parallel lane. The old flattened-text design
-    // could only link by tool *name*, ambiguous the moment two calls to
-    // the same tool ran in one turn.
-    for await (const result of toolLane.run(approvedCalls)) {
-      const summary = result.status === 'fulfilled' ? JSON.stringify(result.value) : `ERROR: ${result.error}`
-      log('toollane:result', { name: result.name, summary })
-      resultBlocks.push({
-        type: 'tool_result',
-        tool_use_id: result.id,
-        content: summary,
-        is_error: result.status === 'rejected',
-      })
+    if (deniedTools.length > 0) {
+      // A denial cancels the *whole* batch, not just the call(s) that
+      // were themselves denied — an approved sibling call from the same
+      // turn never runs at all, same reasoning Claude Code itself stops
+      // an entire pending batch rather than quietly carrying out the
+      // parts you didn't object to. Every approved call still gets
+      // exactly one tool_result back regardless (the model emitted a
+      // tool_use for it, so it needs an answer) — "skipped", not
+      // "denied": it was never evaluated against its own rule, a
+      // *different* call in the same turn was what stopped it.
+      for (const call of approvedCalls) {
+        log('loop:skipped', { name: call.name, deniedTools })
+        resultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: call.id,
+          content: `skipped: a sibling tool call in this turn (${deniedTools.join(', ')}) was denied`,
+          is_error: true,
+        })
+      }
+    } else {
+      // result.id is the same id LaneCall.id was given above — the exact
+      // per-call identity that makes it possible to link a result back
+      // to the specific tool_use block that requested it, even when
+      // several calls ran in the same parallel lane. The old
+      // flattened-text design could only link by tool *name*, ambiguous
+      // the moment two calls to the same tool ran in one turn.
+      for await (const result of toolLane.run(approvedCalls)) {
+        const summary = result.status === 'fulfilled' ? JSON.stringify(result.value) : `ERROR: ${result.error}`
+        log('toollane:result', { name: result.name, summary })
+        resultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: result.id,
+          content: summary,
+          is_error: result.status === 'rejected',
+          reason: approvedReasonById.get(result.id),
+        })
+      }
     }
 
     pushMessage({ role: 'user', content: resultBlocks })
+
+    // Stop here, don't loop back for another model call — same reasoning
+    // Claude Code itself stops and waits for you rather than working
+    // around a tool call you just rejected, instead of silently handing
+    // "denied: ..." to the model and letting it decide on its own what to
+    // try next (retry the same tool, reach for a different one, or just
+    // talk its way past the refusal).
+    if (deniedTools.length > 0) {
+      const text = `Stopped — you denied: ${deniedTools.join(', ')}. Send another message to continue.`
+      pushMessage({ role: 'assistant', content: text })
+      log('loop:denied', { deniedTools })
+      return { text, history: messages, newMessages, stopReason: 'denied' }
+    }
   }
 }

@@ -75,7 +75,9 @@ describe('runAgent', () => {
     expect(assistantTurn?.content).toEqual([{ type: 'tool_use', id: 't1', name: 'echo', input: { msg: 'hi' } }])
 
     const results = toolResults(result.history)
-    expect(results).toEqual([{ type: 'tool_result', tool_use_id: 't1', content: '"echo:hi"', is_error: false }])
+    expect(results).toEqual([
+      { type: 'tool_result', tool_use_id: 't1', content: '"echo:hi"', is_error: false, reason: "matched rule 'default/production/test-agent'" },
+    ])
 
     // second modelCall invocation should have seen the tool result in its messages
     const secondCallMessages = (modelCall as ReturnType<typeof vi.fn>).mock.calls[1][0] as Message[]
@@ -208,7 +210,13 @@ describe('runAgent', () => {
 
     expect(requestApproval).toHaveBeenCalledTimes(1)
     expect(toolResults(result.history)).toEqual([
-      { type: 'tool_result', tool_use_id: 't1', content: '"echoed"', is_error: false },
+      {
+        type: 'tool_result',
+        tool_use_id: 't1',
+        content: '"echoed"',
+        is_error: false,
+        reason: "matched rule 'default/production/test-agent' — human approved",
+      },
     ])
   })
 
@@ -239,6 +247,74 @@ describe('runAgent', () => {
     expect(results).toHaveLength(1)
     expect(results[0]).toMatchObject({ tool_use_id: 't1', is_error: true })
     expect(results[0].content).toMatch(/^denied: /)
+  })
+
+  it('stops the loop after a denial instead of feeding it back to the model for another turn', async () => {
+    const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't1', name: 'dangerous', input: {} }))
+    const dangerous: ToolDefinition = {
+      name: 'dangerous',
+      description: 'Should never run',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'should not run'),
+    }
+    const config = baseConfig({
+      tools: [dangerous],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'dangerous', decision: 'deny' }],
+    })
+
+    const result = await runAgent(config, modelCall, 'do the dangerous thing')
+
+    // Only the one call that requested the tool — never a second one
+    // asking the model what to do about the denial.
+    expect(modelCall).toHaveBeenCalledTimes(1)
+    expect(result.stopReason).toBe('denied')
+    expect(result.text).toContain('dangerous')
+    // The synthetic stop notice is itself part of history, same as
+    // max_turns' own synthetic notice already is — a later continued
+    // conversation should see it, not just the raw tool_result.
+    const lastMessage = result.history[result.history.length - 1]
+    expect(lastMessage).toEqual({ role: 'assistant', content: expect.stringContaining('dangerous') })
+  })
+
+  it('skips an approved call from the same turn too when a sibling call is denied — a denial cancels the whole batch', async () => {
+    const modelCall: ModelCall = vi.fn(async () =>
+      toolUseResponse({ id: 't1', name: 'safe', input: {} }, { id: 't2', name: 'dangerous', input: {} }),
+    )
+    const safe: ToolDefinition = {
+      name: 'safe',
+      description: 'Fine to run',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'ran fine'),
+    }
+    const dangerous: ToolDefinition = {
+      name: 'dangerous',
+      description: 'Should never run',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'should not run'),
+    }
+    const config = baseConfig({
+      tools: [safe, dangerous],
+      rules: [
+        { scopePattern: 'default/production/test-agent', tool: 'safe', decision: 'allow' },
+        { scopePattern: 'default/production/test-agent', tool: 'dangerous', decision: 'deny' },
+      ],
+    })
+
+    const result = await runAgent(config, modelCall, 'do both')
+
+    // Neither ran — 'safe' was approved on its own merits, but a sibling
+    // call in the same batch was denied, and that cancels the batch.
+    expect(safe.execute).not.toHaveBeenCalled()
+    expect(dangerous.execute).not.toHaveBeenCalled()
+    expect(modelCall).toHaveBeenCalledTimes(1)
+    expect(result.stopReason).toBe('denied')
+    const results = toolResults(result.history)
+    expect(results).toHaveLength(2)
+    // "skipped", not "denied" — safe's own rule never actually rejected it.
+    expect(results.find((r) => r.tool_use_id === 't1')).toMatchObject({ is_error: true })
+    expect(results.find((r) => r.tool_use_id === 't1')?.content).toMatch(/^skipped:/)
+    expect(results.find((r) => r.tool_use_id === 't2')).toMatchObject({ is_error: true })
+    expect(results.find((r) => r.tool_use_id === 't2')?.content).toMatch(/^denied:/)
   })
 
   it('invokes a skill and injects its body as a tool_result, without going through actauth or toollane', async () => {
@@ -428,16 +504,17 @@ describe('runAgent', () => {
     // skillsDirs: [] isolates this from customer-service's own real
     // skills folder, though the always-on system skill still adds a
     // Skill tool regardless (see run-agent.ts's systemSkillsDir) — same
-    // "not opt-out-able" as the system read_file tool below. Checked with
-    // arrayContaining, not a fixed full list: customer-service's own
-    // gateway-tools.yml (see gateway-tools.ts) may or may not exist/have
-    // entries depending on what's been registered against this live repo
-    // checkout — not something this test should assert the contents of.
+    // "not opt-out-able" as the system system_read_file tool below.
+    // Checked with arrayContaining, not a fixed full list:
+    // customer-service's own gateway-tools.yml (see gateway-tools.ts) may
+    // or may not exist/have entries depending on what's been registered
+    // against this live repo checkout — not something this test should
+    // assert the contents of.
     await runAgent(baseConfig({ name: 'customer-service', rules: [], skillsDirs: [] }), modelCall, 'hi')
 
     const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
     expect(toolsSentToModel.map((t: { name: string }) => t.name)).toEqual(
-      expect.arrayContaining(['get_shipment_details', 'issue_refund', 'lookup_order', 'send_email', 'read_file', 'Skill']),
+      expect.arrayContaining(['get_shipment_details', 'issue_refund', 'lookup_order', 'send_email', 'system_read_file', 'Skill']),
     )
   })
 
@@ -449,7 +526,7 @@ describe('runAgent', () => {
     await runAgent(baseConfig({ tools: undefined }), modelCall, 'hi')
 
     const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
-    expect(toolsSentToModel.map((t: { name: string }) => t.name)).toEqual(['read_file', 'Skill'])
+    expect(toolsSentToModel.map((t: { name: string }) => t.name)).toEqual(['system_read_file', 'system_ask_user', 'Skill'])
   })
 
   it('an explicit empty tools array opts out of the agent default, but not of the system tools', async () => {
@@ -461,7 +538,7 @@ describe('runAgent', () => {
     // own comment for why customer-service's gateway tools aren't
     // asserted on here.
     const toolsSentToModel = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
-    expect(toolsSentToModel.map((t: { name: string }) => t.name)).toEqual(expect.arrayContaining(['read_file', 'Skill']))
+    expect(toolsSentToModel.map((t: { name: string }) => t.name)).toEqual(expect.arrayContaining(['system_read_file', 'Skill']))
   })
 
   it('passes args through to the invoked skill for $ARGUMENTS/$1/$2 substitution', async () => {
@@ -604,7 +681,12 @@ describe('runAgent', () => {
     expect(result.newMessages).toEqual([
       { role: 'user', content: 'new question' },
       { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'echo', input: { msg: 'hi' } }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '"echoed"', is_error: false }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 't1', content: '"echoed"', is_error: false, reason: "matched rule 'default/production/test-agent'" },
+        ],
+      },
       { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
     ])
     // history is still priorHistory + newMessages, in order.
@@ -657,9 +739,19 @@ describe('runAgent', () => {
     expect(result.newMessages).toEqual([
       { role: 'user', content: 'start multi-round' },
       { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'echo', input: { round: 1 } }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '"ok"', is_error: false }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 't1', content: '"ok"', is_error: false, reason: "matched rule 'default/production/test-agent'" },
+        ],
+      },
       { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'echo', input: { round: 2 } }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: '"ok"', is_error: false }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 't2', content: '"ok"', is_error: false, reason: "matched rule 'default/production/test-agent'" },
+        ],
+      },
       { role: 'assistant', content: [{ type: 'text', text: 'all done' }] },
     ])
     // The real prior history (20 messages) genuinely got compacted, not
@@ -741,35 +833,37 @@ describe('runAgent maxTurns', () => {
 })
 
 describe('runAgent system tools/skills', () => {
-  it('makes the system read_file tool available even when the agent defines no tools of its own', async () => {
+  it('makes the system_read_file tool available even when the agent defines no tools of its own', async () => {
     const modelCall: ModelCall = vi.fn(async () => textResponse('done'))
 
     await runAgent(baseConfig(), modelCall, 'hi')
 
     const toolsPassed = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][2]
-    expect(toolsPassed.map((t: { name: string }) => t.name)).toContain('read_file')
+    expect(toolsPassed.map((t: { name: string }) => t.name)).toContain('system_read_file')
   })
 
   it("lets the agent's own same-named tool override the system default", async () => {
     const modelCall: ModelCall = vi.fn(async () => {
-      return toolUseResponse({ id: 't1', name: 'read_file', input: { path: '/anything' } })
+      return toolUseResponse({ id: 't1', name: 'system_read_file', input: { path: '/anything' } })
     })
     const customReadFile: ToolDefinition = {
-      name: 'read_file',
+      name: 'system_read_file',
       description: 'custom override',
       input_schema: { type: 'object', properties: { path: { type: 'string' } } },
       execute: async () => 'custom result',
     }
     const config = baseConfig({
       tools: [customReadFile],
-      rules: [{ scopePattern: 'default/production/test-agent', tool: 'read_file', decision: 'allow' }],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'system_read_file', decision: 'allow' }],
       maxTurns: 1,
     })
 
     const result = await runAgent(config, modelCall, 'read something outside temp')
 
     const results = toolResults(result.history)
-    expect(results).toEqual([{ type: 'tool_result', tool_use_id: 't1', content: '"custom result"', is_error: false }])
+    expect(results).toEqual([
+      { type: 'tool_result', tool_use_id: 't1', content: '"custom result"', is_error: false, reason: "matched rule 'default/production/test-agent'" },
+    ])
   })
 
   it('includes the system composio-large-outputs skill even when the agent explicitly opts out of its own skills dir', async () => {

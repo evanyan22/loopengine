@@ -20,6 +20,6 @@ too large to return inline:
 
 When you see `storedInFile: true` in a tool result, the real data is
 **not** in that object — it's in the file at `outputFilePath`. Call
-`read_file` with that exact path to retrieve the actual content before
-answering. Don't guess at an answer, summarize from the pointer alone,
-or claim you don't have the data — read the file first.
+`system_read_file` with that exact path to retrieve the actual content
+before answering. Don't guess at an answer, summarize from the pointer
+alone, or claim you don't have the data — read the file first.

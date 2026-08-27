@@ -50,6 +50,16 @@ export interface SessionStore {
    * process or (for RedisSessionStore) any other — durably appends
    * fn's result.newMessages in order, and resolves with fn's result. */
   withSession<T>(sessionId: string, fn: (history: Message[]) => Promise<SessionResult<T>>): Promise<T>
+  /** Read-only peek at a session's current history — no new turn, nothing
+   * appended. Backs adapters/http.ts's GET .../sessions/:id (the
+   * playground's "resume a past conversation" sidebar rehydrates the chat
+   * pane from this, rather than pretending a new message was sent).
+   * Deliberately *not* behind withSession's own per-sessionId exclusivity
+   * — see the concrete implementation's own doc comment for why that's
+   * safe, and why this needs to work *especially* while a turn is still
+   * in flight (blocked on a human — see web-approver.ts/ask_user.ts),
+   * not only once it's finished. */
+  getHistory(sessionId: string): Promise<Message[]>
   close(): Promise<void>
 }
 
@@ -142,6 +152,26 @@ class SessionKnitStore implements SessionStore {
 
       return result
     })
+  }
+
+  // Deliberately *not* behind this.lock the way withSession is — that
+  // lock is held for withSession's *entire* fn(), which can now mean an
+  // 'ask' decision or an ask_user question blocked on a human for
+  // minutes (see web-approver.ts/system-tools/ask_user.ts). Confirmed
+  // live: a session with a pending question hung this call indefinitely,
+  // which is exactly backwards for what it's for — the playground's own
+  // "resume a session" flow (see its own checkForPendingItems) needs this
+  // to work *especially* while something's pending, not only once it
+  // isn't. Safe unlocked: withSession's own append loop only ever runs
+  // after fn() has already fully resolved (see its own body — nothing
+  // about the *next* turn is written until then), so there's nothing for
+  // an in-flight turn to race this against except that append loop
+  // itself, a few awaits, not the human-wait duration in front of it. A
+  // read that lands mid-append just sees an older, still-fully-valid
+  // prefix, not torn data.
+  async getHistory(sessionId: string): Promise<Message[]> {
+    const { messages } = await this.knit.resume(sessionId)
+    return messages
   }
 
   async close(): Promise<void> {

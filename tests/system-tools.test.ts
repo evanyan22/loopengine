@@ -2,11 +2,11 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { systemTools } from '#system-tools.js'
+import { systemTools } from '#system-tools/index.js'
 
-const readFile = systemTools.find((t) => t.name === 'read_file')!
+const readFile = systemTools.find((t) => t.name === 'system_read_file')!
 
-describe('systemTools read_file', () => {
+describe('systemTools system_read_file', () => {
   it('reads a file inside the OS temp directory', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'system-tools-test-'))
     const file = join(dir, 'inside.txt')

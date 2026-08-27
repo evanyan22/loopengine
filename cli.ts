@@ -184,8 +184,34 @@ async function pathExists(p: string): Promise<boolean> {
 function runTsx(args: string[]): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn('npx', ['tsx', ...args], { cwd: process.cwd(), stdio: 'inherit' })
-    child.on('exit', (code) => resolve(code ?? 1))
-    child.on('error', () => resolve(1))
+
+    // `stdio: 'inherit'` with no `detached` puts this child in the same
+    // foreground process group as this process itself — so a terminal's
+    // Ctrl+C delivers SIGINT to *both* at once, not just to this process
+    // for it to relay. Node's default disposition for an unhandled
+    // SIGINT/SIGTERM is to terminate immediately — without a listener,
+    // this process would die right then, before ever observing the
+    // child's own 'exit' below. That's a real bug, not cosmetic: this
+    // process is the shell's *direct* child, so the shell returns control
+    // as soon as it exits — but the child (tsx watch, itself possibly
+    // still killing *its* own child, adapters/http.ts) can still be alive
+    // for a moment after, orphaned but still attached to the same TTY.
+    // A plain no-op listener is enough to opt out of that default
+    // immediate-termination behavior — the child already gets the same
+    // signal directly (same process group), nothing needs forwarding —
+    // so this just keeps this process alive long enough to actually see
+    // the child finish, and exit in step with it instead of ahead of it.
+    const noop = () => {}
+    process.on('SIGINT', noop)
+    process.on('SIGTERM', noop)
+
+    function settle(result: number) {
+      process.off('SIGINT', noop)
+      process.off('SIGTERM', noop)
+      resolve(result)
+    }
+    child.on('exit', (code) => settle(code ?? 1))
+    child.on('error', () => settle(1))
   })
 }
 

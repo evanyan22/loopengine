@@ -24,7 +24,7 @@
 // *same* session don't race on read-modify-write of that session's
 // history. What counts as "the same session" is deliberately not this
 // file's call — see AgentConfig.sessionIdFor and defaultSessionIdFor below.
-import { randomUUID } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { getEntry, listAgents, projectDir, registerAgent, updateAgent, type RegistryEntry } from '../agent-registry.js'
 import { loadAgentModule, synthesizeCreateModelCall } from '#discover-agents.js'
@@ -64,25 +64,11 @@ import {
 } from '#actauth-admin.js'
 import { describeModelProviders, describeGateways } from '#global-config.js'
 import { scaffoldAgent, AgentNameError, AgentExistsError, AgentModelError, type AgentTemplateOptions } from '#cli.js'
-import { createTrackedApprover, webApprover, listApprovals, decideApproval } from '#web-approver.js'
-import type { Decision } from 'actauth'
+import { createTrackedApprover, listApprovals, decideApproval } from '#web-approver.js'
+import { listQuestions, answerQuestion, createAskUserTool, type PendingQuestion } from '#system-tools/index.js'
+import type { Decision, PendingApproval } from 'actauth'
 
 const sessions = createSessionStore()
-
-// runAgent() reads the approver off config.approver (defaulting to
-// ConsoleApprover, actauth's own default, if unset) — ConsoleApprover
-// reads its answer from *this process's* stdin, which hangs forever
-// behind an HTTP request (there's no terminal on the other end of the
-// connection to type "y" into). This is the one place that default gets
-// swapped for webApprover instead, without mutating the registry's own
-// AgentConfig object (an agent that explicitly sets its own approver,
-// e.g. a real SlackApprover, keeps it). Only used for the plain,
-// non-streaming /messages route — see handleMessagesStream for why the
-// streaming route builds its own per-turn approver instead of reusing
-// this shared one.
-function effectiveConfig(config: AgentConfig): AgentConfig {
-  return config.approver ? config : { ...config, approver: webApprover }
-}
 
 // Used when an AgentConfig doesn't define its own sessionIdFor — a plain
 // client-supplied key, same shape adapters/cli.ts's --session flag
@@ -272,7 +258,10 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
     skills: skillIndex.map((s) => ({ name: s.name, description: s.description })),
     systemSkills: systemSkillIndex.map((s) => ({ name: s.name, description: s.description })),
     tools: tools.map(describeTool),
-    systemTools: systemTools.map(describeTool),
+    // createAskUserTool() with no onPending, purely to describe its
+    // schema here — never executed, so the console-prompt fallback its
+    // own doc comment mentions never applies to this call.
+    systemTools: [...systemTools, createAskUserTool({ agent: config.name })].map(describeTool),
     localTools: localTools.map(describeTool),
     agentAsTools: agentAsTools.map(describeTool),
     gatewayTools: gatewayTools.map(describeTool),
@@ -724,6 +713,33 @@ function writeSseEvent(res: ServerResponse, event: string, data: unknown): void 
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
 }
 
+// Backs GET /agents/:name/sessions/:id — the playground's "resume a past
+// conversation" sidebar rehydrating the chat pane after a page refresh
+// lost its in-memory sessionId. rawSessionId is exactly what a `session`
+// SSE event (see handleMessagesStream) echoed back earlier, so
+// reconstructing the same storageSessionId parseRequest computes from it
+// (tenant/environment/agentName-namespaced — see its own doc comment for
+// why) finds the same underlying log. Tenant resolution has no request
+// body to work with here (a GET has none) — fine for the common case
+// (no custom tenantFor, or one that only reads headers), but an agent
+// whose tenantFor depends on the message body can't be resolved this way.
+async function handleSessionGet(req: IncomingMessage, res: ServerResponse, agentName: string, rawSessionId: string): Promise<void> {
+  const entry = getEntry(agentName)
+  if (!entry) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  const tenantResolution = resolveTenant(entry.config, req.headers, {})
+  if (!tenantResolution.ok) {
+    res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'could not verify tenant for this request' }))
+    return
+  }
+  const environment = process.env.LOOPENGINE_ENV ?? 'production'
+  const storageSessionId = `${tenantResolution.value}:${environment}:${agentName}:${rawSessionId}`
+  const history = await sessions.getHistory(storageSessionId)
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ sessionId: rawSessionId, history }))
+}
+
 async function handleMessages(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
   const parsed = await parseRequest(req, agentName)
   if (!parsed.ok) {
@@ -732,13 +748,74 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
   }
   const { entry, message, rawSessionId, storageSessionId, tenant } = parsed.value
 
-  const text = await sessions.withSession(storageSessionId, async (history) => {
-    // Fresh modelCall per request — see agent-registry.ts.
-    const result = await runAgent(effectiveConfig(entry.config), entry.createModelCall(), message, history, { tenant })
-    return { newMessages: result.newMessages, result: result.text }
+  // This route has no live channel of its own — no SSE connection to push
+  // a pending question/approval onto the way the streaming route does.
+  // Blocking indefinitely until a human answers (what this used to do)
+  // gives the caller zero signal that's even happening; confirmed live
+  // that a caller with no way to guess a pending id in advance has
+  // genuinely no way to discover, let alone resolve, it. So instead: race
+  // the whole turn against the *first* moment anything in it needs a
+  // human, and respond early with everything the caller needs to answer
+  // it themselves — no separate discovery call required — if that human
+  // moment comes first.
+  let resolveEarly: ((signal: { type: 'question'; entry: PendingQuestion } | { type: 'approval'; entry: PendingApproval }) => void) | undefined
+  const earlySignal = new Promise<{ type: 'question'; entry: PendingQuestion } | { type: 'approval'; entry: PendingApproval }>((resolve) => {
+    resolveEarly = resolve
   })
 
-  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ text, sessionId: rawSessionId }))
+  const approver = createTrackedApprover(rawSessionId, (approval) => resolveEarly?.({ type: 'approval', entry: approval }))
+
+  // Fresh modelCall per request — see agent-registry.ts. Not awaited
+  // directly below — see the Promise.race underneath it for why.
+  const turnPromise = sessions.withSession(storageSessionId, async (history) => {
+    const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
+      tenant,
+      sessionId: rawSessionId,
+      approver,
+      onQuestionPending: (question) => resolveEarly?.({ type: 'question', entry: question }),
+    })
+    return { newMessages: result.newMessages, result: { text: result.text, stopReason: result.stopReason } }
+  })
+
+  const winner = await Promise.race([
+    turnPromise.then((turnResult) => ({ kind: 'done' as const, turnResult })),
+    earlySignal.then((signal) => ({ kind: 'pending' as const, signal })),
+  ])
+
+  if (winner.kind === 'pending') {
+    // The turn itself keeps running in the background regardless —
+    // sessions.withSession still owns appending its result to the
+    // session log once it actually resolves (whenever the question/
+    // approval is decided), same durability guarantee as any other call.
+    // Nothing else is awaiting turnPromise anymore once this response is
+    // sent, so a later failure needs its own catch here or it's a silent
+    // unhandled rejection — logged, not surfaced to a client that's
+    // already moved on to polling/answering instead.
+    turnPromise.catch((err) => {
+      console.error(`[messages] background turn for '${agentName}' (session ${rawSessionId}) failed after responding early:`, err)
+    })
+    const { type, entry: pendingEntry } = winner.signal
+    const body =
+      type === 'question'
+        ? { pending: true, type, id: pendingEntry.id, sessionId: rawSessionId, question: pendingEntry.question, options: pendingEntry.options, answerUrl: `/questions/${pendingEntry.id}/answer` }
+        : {
+            pending: true,
+            type,
+            id: pendingEntry.id,
+            sessionId: rawSessionId,
+            tool: pendingEntry.tool,
+            args: pendingEntry.args,
+            reason: pendingEntry.reason,
+            approveUrl: `/approvals/${pendingEntry.id}/approve`,
+            denyUrl: `/approvals/${pendingEntry.id}/deny`,
+          }
+    res.writeHead(202, { 'content-type': 'application/json' }).end(JSON.stringify({ ...body, statusUrl: `/agents/${agentName}/sessions/${rawSessionId}` }))
+    return
+  }
+
+  const responseBody: Record<string, unknown> = { text: winner.turnResult.text, sessionId: rawSessionId }
+  if (winner.turnResult.stopReason) responseBody.stopReason = winner.turnResult.stopReason
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(responseBody))
 }
 
 async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
@@ -760,27 +837,32 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   // learn what got generated in order to resume this conversation later.
   writeSseEvent(res, 'session', { sessionId: rawSessionId })
 
-  // A fresh WebApprover per streamed turn, not the shared one
-  // effectiveConfig would give the plain /messages route — its onPending
-  // writes straight onto *this* SSE connection, so the approve/deny popup
-  // shows up inline in the conversation that's actually blocked on it,
-  // not on some separate page an operator has to remember to check. Only
-  // built (and only overrides the registry's own config) when the agent
-  // hasn't set its own approver, same condition effectiveConfig applies.
-  const streamConfig: AgentConfig = entry.config.approver
-    ? entry.config
-    : { ...entry.config, approver: createTrackedApprover((approval) => writeSseEvent(res, 'approval:pending', approval)) }
+  // A fresh WebApprover per streamed turn, not the shared one the plain
+  // /messages route passes — its onPending writes straight onto *this*
+  // SSE connection, so the approve/deny popup shows up inline in the
+  // conversation that's actually blocked on it, not on some separate page
+  // an operator has to remember to check. Passed unconditionally — same
+  // as the shared one above, entry.config.approver (if the agent sets its
+  // own) still wins outright over this; see RunAgentOptions.approver's
+  // own doc comment.
+  const streamApprover = createTrackedApprover(rawSessionId, (approval) => writeSseEvent(res, 'approval:pending', approval))
 
   try {
     await sessions.withSession(storageSessionId, async (history) => {
       // onEvent already fires at every loop step (contextclip:check,
       // actauth:decision, toollane:result, ...) — streaming is just
       // forwarding those, not a separate code path through runAgent.
-      const result = await runAgent(streamConfig, entry.createModelCall(), message, history, {
+      // onQuestionPending is separate (see its own doc comment for why):
+      // pushes straight onto this same SSE connection, same as
+      // streamApprover's own onPending does for approvals.
+      const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
         tenant,
+        sessionId: rawSessionId,
+        approver: streamApprover,
         onEvent: (event, detail) => writeSseEvent(res, event, detail),
+        onQuestionPending: (question) => writeSseEvent(res, 'question:pending', question),
       })
-      writeSseEvent(res, 'done', { text: result.text })
+      writeSseEvent(res, 'done', result.stopReason ? { text: result.text, stopReason: result.stopReason } : { text: result.text })
       return { newMessages: result.newMessages, result: result.text }
     })
   } catch (err) {
@@ -792,7 +874,51 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   }
 }
 
+// Gates every route this server has — the whole admin surface (approve/
+// deny tool calls, read conversation history, edit permission rules,
+// register gateway tools) is otherwise open to anyone who can reach the
+// port (see server.listen below: it binds every interface, not just
+// localhost). HTTP Basic Auth specifically, not a bearer token, because
+// it's the one scheme a plain browser navigation (GET /playground, no JS
+// involved yet) can satisfy on its own — the browser's native login
+// prompt handles it, then resends the same credentials automatically on
+// every later request to this origin, admin UI's own fetch() calls
+// included. curl covers the same ground with `-u user:pass`.
+//
+// Off entirely (today's behavior, unchanged) when LOOPENGINE_ADMIN_AUTH
+// isn't set — this file is meant to run locally with zero setup by
+// default. A real deployment opts in by setting it; either way, a
+// startup warning makes "I forgot to set this" loud instead of silent.
+const adminAuth = process.env.LOOPENGINE_ADMIN_AUTH
+if (!adminAuth) {
+  console.warn(
+    '[loopengine] LOOPENGINE_ADMIN_AUTH is not set — every route on this server (including tool-call approvals, conversation history, and permission rules) is open to anyone who can reach it. Set LOOPENGINE_ADMIN_AUTH="user:pass" to require HTTP Basic Auth.',
+  )
+}
+
+// Compares the whole "user:pass" string as one shared secret, not
+// username and password separately — simpler, and just as sound for a
+// single shared credential with no per-user distinction to make.
+// timingSafeEqual requires equal-length buffers, so length is checked
+// first; a length mismatch isn't sensitive information worth spending a
+// constant-time comparison to protect.
+function isAuthorized(req: IncomingMessage): boolean {
+  if (!adminAuth) return true
+  const header = req.headers.authorization
+  if (!header || !header.startsWith('Basic ')) return false
+  const provided = Buffer.from(header.slice('Basic '.length), 'base64')
+  const expected = Buffer.from(adminAuth)
+  return provided.length === expected.length && timingSafeEqual(provided, expected)
+}
+
 const server = createServer(async (req, res) => {
+  if (!isAuthorized(req)) {
+    res
+      .writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Basic realm="loopengine"' })
+      .end(JSON.stringify({ error: 'authorization required' }))
+    return
+  }
+
   // One catch-all around both routes. node:http does not catch rejections
   // from an async request listener itself — an uncaught one here doesn't
   // just fail the request, it crashes the whole process (confirmed: an
@@ -815,6 +941,12 @@ const server = createServer(async (req, res) => {
       return
     }
 
+    const sessionGetMatch = req.method === 'GET' && pathname.match(/^\/agents\/([^/]+)\/sessions\/([^/]+)$/)
+    if (sessionGetMatch) {
+      await handleSessionGet(req, res, decodeURIComponent(sessionGetMatch[1]), decodeURIComponent(sessionGetMatch[2]))
+      return
+    }
+
     // Dev playground: a browser client on top of the two routes above,
     // rendering the same SSE events /messages/stream already emits — see
     // adapters/playground.ts. GET, not POST, and an exact path match
@@ -825,14 +957,28 @@ const server = createServer(async (req, res) => {
       return
     }
 
-    // Pending 'ask' decisions across every agent this process serves (see
-    // web-approver.ts) — no browser page of its own: a streamed chat turn
-    // (handleMessagesStream above) pushes its own pending approvals
-    // straight onto that conversation's SSE connection instead, so this
-    // is really just the plain-JSON escape hatch for the non-streaming
-    // /messages route, or any other client that wants to decide by hand.
-    if (req.method === 'GET' && pathname === '/approvals') {
-      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ approvals: listApprovals() }))
+    // Pending 'ask' decisions — no browser page of its own: a streamed
+    // chat turn (handleMessagesStream above) pushes its own pending
+    // approvals straight onto that conversation's SSE connection instead,
+    // so this is really just the plain-JSON escape hatch for the
+    // non-streaming /messages route, or any other client that wants to
+    // decide by hand. Scoped to one agent (exact) and, when given, one
+    // session (best-effort — see web-approver.ts's sessionByApprover for
+    // why that's not always knowable) — never a blanket list across every
+    // agent/tenant this process serves, which would leak one
+    // conversation's pending approvals to any caller asking about a
+    // completely different one.
+    const approvalsSessionMatch = req.method === 'GET' && pathname.match(/^\/agents\/([^/]+)\/sessions\/([^/]+)\/approvals$/)
+    if (approvalsSessionMatch) {
+      const agent = decodeURIComponent(approvalsSessionMatch[1])
+      const sessionId = decodeURIComponent(approvalsSessionMatch[2])
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ approvals: listApprovals({ agent, sessionId }) }))
+      return
+    }
+    const approvalsAgentMatch = req.method === 'GET' && pathname.match(/^\/agents\/([^/]+)\/approvals$/)
+    if (approvalsAgentMatch) {
+      const agent = decodeURIComponent(approvalsAgentMatch[1])
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ approvals: listApprovals({ agent }) }))
       return
     }
     const approvalDecisionMatch = req.method === 'POST' && pathname.match(/^\/approvals\/([^/]+)\/(approve|deny)$/)
@@ -842,6 +988,43 @@ const server = createServer(async (req, res) => {
       const found = decideApproval(id, approved)
       if (!found) {
         res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `No pending approval '${id}' (already decided, timed out, or never existed).` }))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))
+      return
+    }
+
+    // Pending ask_user questions (see system-tools/ask_user.ts) — same
+    // shape/reasoning as /approvals just above: a streamed chat turn
+    // pushes its own 'question:pending' SSE event straight onto that
+    // conversation (see playground.ts's inline card for it), so this is
+    // the plain-JSON escape hatch for anything else — the non-streaming
+    // /messages route, a plain CLI run's fallback console prompt aside,
+    // or a client that wants to answer by hand. Scoped to one agent and,
+    // when given, one exact session — every question always knows both
+    // (see PendingQuestion's own doc comment), so unlike approvals this
+    // scoping is never just best-effort.
+    const questionsSessionMatch = req.method === 'GET' && pathname.match(/^\/agents\/([^/]+)\/sessions\/([^/]+)\/questions$/)
+    if (questionsSessionMatch) {
+      const agent = decodeURIComponent(questionsSessionMatch[1])
+      const sessionId = decodeURIComponent(questionsSessionMatch[2])
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ questions: listQuestions({ agent, sessionId }) }))
+      return
+    }
+    const questionsAgentMatch = req.method === 'GET' && pathname.match(/^\/agents\/([^/]+)\/questions$/)
+    if (questionsAgentMatch) {
+      const agent = decodeURIComponent(questionsAgentMatch[1])
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ questions: listQuestions({ agent }) }))
+      return
+    }
+    const questionAnswerMatch = req.method === 'POST' && pathname.match(/^\/questions\/([^/]+)\/answer$/)
+    if (questionAnswerMatch) {
+      const id = decodeURIComponent(questionAnswerMatch[1])
+      const body = await readJsonBody(req)
+      const answer = String(body.answer ?? '')
+      const found = answerQuestion(id, answer)
+      if (!found) {
+        res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `No pending question '${id}' (already answered, timed out, or never existed).` }))
         return
       }
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))
