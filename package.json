@@ -55,7 +55,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
-    "actauth": "^0.0.2",
+    "actauth": "^0.0.7",
     "contextclip": "^0.0.1",
     "ioredis": "^6.0.0",
     "mcpplug": "^0.0.1",

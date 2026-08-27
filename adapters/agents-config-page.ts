@@ -122,6 +122,15 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     margin: 0 0 8px;
     border-bottom: 1px solid light-dark(#eee, #2a2a2e);
     padding-bottom: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .hint-btn {
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: normal;
+    padding: 2px 8px;
   }
   pre {
     background: light-dark(#fff, #26262b);
@@ -1139,7 +1148,8 @@ export const agentsConfigPageHtml: string = `<!doctype html>
 
   function renderToolsTabHtml(cfg) {
     return '<section><h3>Local tools (' + cfg.localTools.length + ')</h3>' + renderTools(cfg.localTools) + '</section>' +
-      '<section id="gatewayToolsSection"><h3>Gateway Tools</h3>' +
+      '<section id="gatewayToolsSection">' +
+        '<h3>Gateway Tools <button type="button" id="gatewayToolsRefreshBtn" class="hint-btn">Refresh</button></h3>' +
         '<div id="gatewayToolsContent"><p class="hint">Loading&hellip;</p></div>' +
       '</section>' +
       '<section><h3>Agent as Tools (' + cfg.agentAsTools.length + ')</h3>' + renderTools(cfg.agentAsTools) + '</section>';
@@ -1430,11 +1440,16 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     gatewayLoadedFor = name;
   }
 
-  function loadGatewayTab(name) {
+  // force: true bypasses describeGatewayTools' own cache (see its own
+  // doc comment) — the "Refresh" button's case, for when an operator
+  // actually wants a live re-check (e.g. after reconnecting an account),
+  // not the default tab-open case, which is happy with whatever a prior
+  // load in this same gateway-tools.yml's lifetime already found.
+  function loadGatewayTab(name, force) {
     var content = gatewayContentEl();
     if (!content) return;
     content.innerHTML = '<p class="hint">Loading&hellip;</p>';
-    fetch('/agents/' + encodeURIComponent(name) + '/gateway-tools')
+    fetch('/agents/' + encodeURIComponent(name) + '/gateway-tools' + (force ? '?refresh=1' : ''))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (currentName !== name) return;
@@ -1552,6 +1567,10 @@ export const agentsConfigPageHtml: string = `<!doctype html>
 
     wireSkillsHandlers(cfg.name);
     wireOverviewHandlers(cfg.name);
+    var gatewayRefreshBtn = detail.querySelector('#gatewayToolsRefreshBtn');
+    if (gatewayRefreshBtn) {
+      gatewayRefreshBtn.addEventListener('click', function () { loadGatewayTab(cfg.name, true); });
+    }
 
     empty.style.display = 'none';
     detail.style.display = 'block';

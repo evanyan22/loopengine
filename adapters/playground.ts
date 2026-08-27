@@ -103,6 +103,31 @@ export const playgroundHtml: string = `<!doctype html>
   .msg-assistant .msg-body { background: light-dark(#fff, #2a2a2e); border: 1px solid light-dark(#ddd, #3a3a3e); }
   .msg-error .msg-body { background: light-dark(#fee2e2, #4a1f1f); color: light-dark(#991b1b, #f87171); }
   .msg-thinking .msg-body { display: inline-flex; gap: 4px; padding: 11px 10px; }
+  .msg-approval .msg-body {
+    background: light-dark(#fefce8, #422006);
+    border: 1px solid light-dark(#eab308, #a16207);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .approval-tool { font-family: ui-monospace, monospace; font-weight: 600; }
+  .approval-scope { font-size: 11px; color: light-dark(#666, #999); }
+  .approval-reason { font-size: 12px; }
+  .approval-args {
+    font-size: 11px;
+    margin: 0;
+    background: light-dark(#fff, #26262b);
+    border-radius: 6px;
+    padding: 6px 8px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .approval-actions { display: flex; gap: 8px; }
+  .approval-actions button { font-size: 12px; padding: 5px 12px; }
+  .approval-actions .approve { background: light-dark(#dcfce7, #14532d); }
+  .approval-actions .deny { background: light-dark(#fee2e2, #450a0a); }
+  .approval-status { font-size: 12px; font-style: italic; color: light-dark(#666, #999); }
   .dot {
     width: 6px;
     height: 6px;
@@ -134,6 +159,7 @@ export const playgroundHtml: string = `<!doctype html>
   .event-reflow { border-left-color: #ef4444; }
   .event-skillgarden { border-left-color: #10b981; }
   .event-loop { border-left-color: #6b7280; }
+  .event-approval { border-left-color: #eab308; }
   .composer {
     border-top: 1px solid light-dark(#ddd, #333);
     padding: 10px 12px;
@@ -248,6 +274,84 @@ export const playgroundHtml: string = `<!doctype html>
     chatPane.appendChild(div);
     chatPane.scrollTop = chatPane.scrollHeight;
     return div;
+  }
+
+  // A 'ask' decision arrived mid-turn (see run-agent.ts's gate.evaluate)
+  // and the server's default approver is now webApprover (see
+  // web-approver.ts) instead of a blocking terminal prompt — it parked
+  // this one and pushed it straight onto this exact SSE connection via
+  // onPending, so it can be decided right here instead of on a page
+  // nobody's watching. The rest of the turn (toollane:result, done, ...)
+  // keeps streaming into this same response once decide() resolves it.
+  function appendApprovalCard(data) {
+    clearEmptyHint(chatPane);
+    var div = document.createElement('div');
+    div.className = 'msg msg-assistant msg-approval';
+    var label = document.createElement('div');
+    label.className = 'msg-label';
+    label.textContent = 'approval needed';
+    var body = document.createElement('div');
+    body.className = 'msg-body';
+
+    var tool = document.createElement('div');
+    tool.className = 'approval-tool';
+    tool.textContent = data.tool;
+
+    var scope = document.createElement('div');
+    scope.className = 'approval-scope';
+    scope.textContent = data.scope.tenant + '/' + data.scope.environment + '/' + data.scope.agent;
+
+    var reason = document.createElement('div');
+    reason.className = 'approval-reason';
+    reason.textContent = data.reason;
+
+    var pre = document.createElement('pre');
+    pre.className = 'approval-args';
+    pre.textContent = JSON.stringify(data.args, null, 2);
+
+    var actions = document.createElement('div');
+    actions.className = 'approval-actions';
+    var approveBtn = document.createElement('button');
+    approveBtn.type = 'button';
+    approveBtn.className = 'approve';
+    approveBtn.textContent = 'Approve';
+    var denyBtn = document.createElement('button');
+    denyBtn.type = 'button';
+    denyBtn.className = 'deny';
+    denyBtn.textContent = 'Deny';
+    actions.appendChild(approveBtn);
+    actions.appendChild(denyBtn);
+
+    body.appendChild(tool);
+    body.appendChild(scope);
+    body.appendChild(reason);
+    body.appendChild(pre);
+    body.appendChild(actions);
+    div.appendChild(label);
+    div.appendChild(body);
+    chatPane.appendChild(div);
+    chatPane.scrollTop = chatPane.scrollHeight;
+
+    function decide(approved) {
+      approveBtn.disabled = true;
+      denyBtn.disabled = true;
+      fetch('/approvals/' + encodeURIComponent(data.id) + '/' + (approved ? 'approve' : 'deny'), { method: 'POST' })
+        .then(function () {
+          actions.remove();
+          var status = document.createElement('div');
+          status.className = 'approval-status';
+          status.textContent = approved ? 'Approved.' : 'Denied.';
+          body.appendChild(status);
+        })
+        .catch(function (err) {
+          approveBtn.disabled = false;
+          denyBtn.disabled = false;
+          alert('Could not record decision: ' + err.message);
+        });
+    }
+
+    approveBtn.addEventListener('click', function () { decide(true); });
+    denyBtn.addEventListener('click', function () { decide(false); });
   }
 
   function showThinking() {
@@ -412,6 +516,9 @@ export const playgroundHtml: string = `<!doctype html>
     } else if (eventName === 'error') {
       removeThinking();
       appendChatMessage('error', data.error);
+    } else if (eventName === 'approval:pending') {
+      appendApprovalCard(data);
+      appendTimelineEntry(eventName, data);
     } else {
       appendTimelineEntry(eventName, data);
     }

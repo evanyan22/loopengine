@@ -26,6 +26,12 @@ const execFileAsync = promisify(execFile)
 // from.
 const agentsRootDir = join(dirname(fileURLToPath(import.meta.url)), 'agents')
 
+export interface ResolvedGatewayTool {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+}
+
 export interface ComposioGatewayToolEntry {
   provider: 'composio'
   /** Namespaces every tool this source produces (`${name}_${slug}`,
@@ -36,6 +42,18 @@ export interface ComposioGatewayToolEntry {
   /** Override for a non-default binary name, or a stand-in script in
    * tests — see ComposioSourceOptions.cliCommand. Defaults to 'composio'. */
   cliCommand?: string
+  /** {name, description, input_schema} per slug, once resolved — see
+   * connectEntry/describeGatewayTools. Populated lazily (a slug just
+   * added via addGatewayTool has no entry here yet) and persisted back
+   * into this same file (see persistResolvedTools), not held in memory —
+   * so a schema, once resolved, survives a server restart instead of
+   * costing another ~3s Composio round trip on the next load. Keyed by
+   * slug, not by the derived tool name (`${name}_${slug}`), since the
+   * slug is what's stable if this source were ever renamed. Hand-editing
+   * this is never expected — treat it as generated, the same as
+   * describeGatewayTools' own in-memory result used to be before this
+   * existed. */
+  resolved?: Record<string, ResolvedGatewayTool>
 }
 
 // A union of one today — every other provider (Nango, Arcade, Scalekit)
@@ -86,6 +104,27 @@ export function readGatewayTools(agentName: string): GatewayToolEntry[] {
 function writeGatewayToolsFile(dir: string, sources: GatewayToolEntry[]): void {
   mkdirSync(dir, { recursive: true })
   writeFileSync(gatewayToolsPath(dir), stringifyYaml({ sources } satisfies GatewayToolsFile))
+}
+
+// Re-reads and writes gateway-tools.yml fresh, not off whatever snapshot
+// the caller (connectEntry/describeGatewayTools) originally read — a
+// live resolution can take real seconds (mcpplug's per-slug CLI round
+// trips), long enough for an admin-UI edit (add/remove a slug) to land
+// in between. Merged into the source's existing `resolved`, not
+// replaced, so two overlapping resolutions of different slug subsets
+// (e.g. connectEntry resolving one newly-added slug while
+// describeGatewayTools resolves another) don't clobber each other.
+// Silently a no-op if the source itself is gone by the time this runs —
+// nothing left to persist onto.
+function persistResolvedTools(dir: string, sourceName: string, newlyResolved: Record<string, ResolvedGatewayTool>): void {
+  if (!Object.keys(newlyResolved).length) return
+  const sources = readGatewayToolsFromDir(dir)
+  const index = sources.findIndex((s) => s.name === sourceName)
+  if (index === -1) return
+  const existing = sources[index]
+  const updated = [...sources]
+  updated[index] = { ...existing, resolved: { ...existing.resolved, ...newlyResolved } }
+  writeGatewayToolsFile(dir, updated)
 }
 
 export class GatewayToolExistsError extends Error {}
@@ -353,22 +392,87 @@ export function removeGatewayToolSlug(agentName: string, sourceName: string, slu
   }
 
   const remainingSlugs = sources[index].slugs.filter((s) => s !== slug)
+  // Drops the removed slug's own resolved entry too — leaving it behind
+  // would just be dead weight (nothing in `slugs` references it anymore,
+  // so it can never be read back), and would silently reappear if the
+  // exact same slug were ever re-added later, skipping what should be a
+  // fresh resolution. Omitted entirely (not `resolved: {}`) once empty —
+  // a source that never had any resolved slugs shouldn't gain a stray
+  // empty field just because one was removed from it.
+  const { [slug]: _removed, ...remainingResolved } = sources[index].resolved ?? {}
   const updated =
     remainingSlugs.length === 0
       ? sources.filter((_, i) => i !== index)
-      : sources.map((s, i) => (i === index ? { ...s, slugs: remainingSlugs } : s))
+      : sources.map((s, i) => {
+          if (i !== index) return s
+          const next = { ...s, slugs: remainingSlugs }
+          if (Object.keys(remainingResolved).length) next.resolved = remainingResolved
+          else delete next.resolved
+          return next
+        })
   writeGatewayToolsFile(dir, updated)
   removeAutoAddedActauthRules(dir, [`${sources[index].name}_${slug}`])
 }
 
-async function connectEntry(entry: GatewayToolEntry): Promise<ToolDefinition[]> {
+// Builds a ToolDefinition straight from gateway-tools.yml's own persisted
+// `resolved` entry — no CLI call at all for the schema/description, since
+// those are exactly what's already cached. execute() itself still always
+// shells out fresh (mirrors mcpplug's composio-source.ts own execute
+// closure exactly — resolving *what a tool is* is cacheable, actually
+// *running* it never is).
+function toolFromResolved(slug: string, resolved: ResolvedGatewayTool, cliCommand?: string): ToolDefinition {
+  return {
+    name: resolved.name,
+    description: resolved.description,
+    input_schema: resolved.input_schema,
+    execute: async (input) => {
+      const result = (await runComposioCli(cliCommand ?? 'composio', ['execute', slug, '-d', JSON.stringify(input)])) as Record<string, unknown>
+      if (result.successful === false || result.error) {
+        throw new Error(`composio tool ${slug} failed: ${JSON.stringify(result.error ?? result)}`)
+      }
+      return result.data ?? result
+    },
+  }
+}
+
+// The only thing that still needs mcpplug/a live Composio round trip —
+// slugs with no persisted resolution yet (just registered, or a `force`
+// re-check). Returns [] without touching the CLI at all when there's
+// nothing left to resolve, which is the common case once a source's
+// slugs have all been resolved once.
+async function fetchUnresolvedSlugs(entry: ComposioGatewayToolEntry, slugs: string[]): Promise<ToolDefinition[]> {
+  if (!slugs.length) return []
+  const source = await connectComposioSource(entry.name, { slugs, cliCommand: entry.cliCommand })
+  try {
+    return await source.loadTools()
+  } finally {
+    await source.close()
+  }
+}
+
+/** Resolves `entry` into real ToolDefinitions for run-agent.ts to merge
+ * in, preferring gateway-tools.yml's own persisted `resolved` data (see
+ * ComposioGatewayToolEntry's own doc comment) over asking Composio again —
+ * mcpplug's connectComposioSource (and the ~3s-per-slug CLI round trip it
+ * costs) is only ever invoked for slugs that aren't resolved yet. Newly
+ * resolved slugs are persisted back before returning, so the *next* call
+ * (even after a restart) skips the live fetch entirely too. */
+async function connectEntry(entry: GatewayToolEntry, dir: string): Promise<ToolDefinition[]> {
   if (entry.provider === 'composio') {
-    const source = await connectComposioSource(entry.name, { slugs: entry.slugs, cliCommand: entry.cliCommand })
-    try {
-      return await source.loadTools()
-    } finally {
-      await source.close()
+    const resolved = entry.resolved ?? {}
+    const cachedTools = entry.slugs.filter((slug) => resolved[slug]).map((slug) => toolFromResolved(slug, resolved[slug], entry.cliCommand))
+    const unresolvedSlugs = entry.slugs.filter((slug) => !resolved[slug])
+
+    const freshTools = await fetchUnresolvedSlugs(entry, unresolvedSlugs)
+    if (freshTools.length) {
+      const newlyResolved: Record<string, ResolvedGatewayTool> = {}
+      freshTools.forEach((tool, i) => {
+        newlyResolved[unresolvedSlugs[i]] = { name: tool.name, description: tool.description, input_schema: tool.input_schema }
+      })
+      persistResolvedTools(dir, entry.name, newlyResolved)
     }
+
+    return [...cachedTools, ...freshTools]
   }
   // Unreachable while GatewayToolEntry is a union of one — the check (and
   // the cast it needs) starts earning its keep the moment a second
@@ -385,9 +489,10 @@ async function connectEntry(entry: GatewayToolEntry): Promise<ToolDefinition[]> 
  * <toolkit>`) has a genuinely useful one instead (e.g. "Tool to abort a
  * repository migration that is queued or in progress. Use when you need
  * to cancel an ongoing migration operation.") — worth fetching for
- * describeGatewayTools specifically (see its own "always current worth
- * more than cheap" doc comment), an occasional, deliberate admin action.
- * Deliberately *not* applied inside connectEntry itself, even though
+ * describeGatewayTools specifically — only paid once per slug, right
+ * before persisting it (see ComposioGatewayToolEntry's own `resolved`
+ * doc comment), not on every load. Deliberately *not* applied inside
+ * connectEntry itself, even though
  * that would also improve what the model actually sees at runtime —
  * connectEntry is loadGatewayToolsFromDir's hot path, and that function's
  * own doc comment already explicitly rejects paying any extra
@@ -437,19 +542,45 @@ export interface GatewayToolStatus {
  * function surfaces it explicitly, per source, since an operator looking
  * at this page needs to know *which* source is broken and why — where
  * loadGatewayToolsFromDir just logs and drops it, since runAgent() has no
- * structured place to hand a per-source error to. Deliberately bypasses
- * loadGatewayToolsFromDir's mtime cache — this is an occasional,
- * deliberate operator action, not a per-turn hot path, so "always
- * current" is worth more here than "cheap." */
-export async function describeGatewayTools(agentName: string): Promise<GatewayToolStatus[]> {
+ * structured place to hand a per-source error to.
+ *
+ * No in-memory cache here (or anywhere in this file, for this) — the
+ * cache *is* gateway-tools.yml's own `resolved` field (see
+ * ComposioGatewayToolEntry's own doc comment and connectEntry, which this
+ * shares that field with), so it survives a restart instead of being
+ * lost on one. Only genuinely-unresolved slugs pay for a live fetch, and
+ * for those this still enriches with Composio's real catalog description
+ * (see withRealComposioDescriptions) before persisting — unlike
+ * connectEntry, which doesn't (see that function's own reasoning), this
+ * is an occasional operator action, not runAgent()'s hot path, so paying
+ * for the better description once, at resolution time, is worth it here.
+ * Pass `force: true` (the admin page's own "Refresh" button) to treat
+ * every slug as unresolved and overwrite their persisted entries with a
+ * fresh live check — e.g. after reconnecting an account, or on the rare
+ * chance a schema changed upstream without gateway-tools.yml itself
+ * changing. */
+export async function describeGatewayTools(agentName: string, options: { force?: boolean } = {}): Promise<GatewayToolStatus[]> {
+  const dir = agentDir(agentName)
   const entries = readGatewayTools(agentName)
+
   return Promise.all(
     entries.map(async (entry): Promise<GatewayToolStatus> => {
       try {
-        const rawTools = await connectEntry(entry)
-        // See withRealComposioDescriptions' own doc comment for why this
-        // enrichment happens here, not inside connectEntry itself.
-        const tools = entry.provider === 'composio' ? await withRealComposioDescriptions(rawTools, entry.slugs, entry.cliCommand) : rawTools
+        const resolved = entry.resolved ?? {}
+        const cachedTools = options.force ? [] : entry.slugs.filter((slug) => resolved[slug]).map((slug) => toolFromResolved(slug, resolved[slug], entry.cliCommand))
+        const unresolvedSlugs = options.force ? entry.slugs : entry.slugs.filter((slug) => !resolved[slug])
+
+        const rawFreshTools = await fetchUnresolvedSlugs(entry, unresolvedSlugs)
+        const freshTools = entry.provider === 'composio' ? await withRealComposioDescriptions(rawFreshTools, unresolvedSlugs, entry.cliCommand) : rawFreshTools
+        if (freshTools.length) {
+          const newlyResolved: Record<string, ResolvedGatewayTool> = {}
+          freshTools.forEach((tool, i) => {
+            newlyResolved[unresolvedSlugs[i]] = { name: tool.name, description: tool.description, input_schema: tool.input_schema }
+          })
+          persistResolvedTools(dir, entry.name, newlyResolved)
+        }
+
+        const tools = [...cachedTools, ...freshTools]
         return { entry, status: 'ok', tools: tools.map((t) => ({ name: t.name, description: t.description })) }
       } catch (err) {
         return { entry, status: 'error', tools: [], error: err instanceof Error ? err.message : String(err) }
@@ -498,7 +629,7 @@ export async function loadGatewayToolsFromDir(dir: string): Promise<ToolDefiniti
   const resolved = await Promise.all(
     entries.map(async (entry) => {
       try {
-        return await connectEntry(entry)
+        return await connectEntry(entry, dir)
       } catch (err) {
         console.error(`[gateway-tools] source '${entry.name}' (${entry.provider}) failed to load, skipping: ${err instanceof Error ? err.message : String(err)}`)
         return []

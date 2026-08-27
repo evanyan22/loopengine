@@ -3,3 +3,111 @@ sources:
     name: github
     slugs:
       - GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER
+    resolved:
+      GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER:
+        name: github_GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER
+        description: github list repositories for the authenticated user
+        input_schema:
+          type: object
+          title: ListRepositoriesForTheAuthenticatedUserRequest
+          properties:
+            page:
+              type: integer
+              title: Page
+              default: 1
+              examples:
+                - "1"
+                - "2"
+                - "10"
+              description: Page number of results to fetch.
+              human_parameter_name: Page Number
+              human_parameter_description: Which page of results you want to view. Use this to
+                move through the list when there are many repositories.
+            sort:
+              enum:
+                - created
+                - updated
+                - pushed
+                - full_name
+              type: string
+              title: Sort
+              default: full_name
+              examples:
+                - created
+                - full_name
+                - updated
+              description: The repository property by which to sort the results.
+              human_parameter_name: Sort By
+              human_parameter_description: Select the property to order the results by, like
+                creation date, last update, or full name. Pick what makes
+                browsing easiest for you.
+            type:
+              enum:
+                - all
+                - owner
+                - public
+                - private
+                - member
+              type: string
+              title: Type
+              default: all
+              examples:
+                - all
+                - owner
+                - member
+              description: Filters the results to repositories of the specified type.
+              human_parameter_name: Repository Type
+              human_parameter_description: Choose which repositories to include, such as all,
+                only ones you own, or those you’re a member of. This helps
+                narrow the list to what matters to you.
+            since:
+              type: string
+              title: Since
+              examples:
+                - 2023-01-01T00:00:00Z
+                - 2023-05-15T10:30:00-07:00
+              description: Filters for repositories updated at or after this specified time.
+                Provide as an ISO 8601 formatted timestamp.
+              human_parameter_name: Updated Since
+              human_parameter_description: Only show repositories updated at or after this
+                date and time. Helpful for focusing on recent activity from a
+                specific point.
+            before:
+              type: string
+              title: Before
+              examples:
+                - 2024-01-01T00:00:00Z
+                - 2024-03-20T18:45:00+00:00
+              description: Filters for repositories updated before this specified time.
+                Provide as an ISO 8601 formatted timestamp.
+              human_parameter_name: Updated Before
+              human_parameter_description: Only show repositories updated before this date and
+                time. Helpful for reviewing activity that happened earlier.
+            per_page:
+              type: integer
+              title: Per Page
+              default: 30
+              examples:
+                - "30"
+                - "50"
+                - "100"
+              description: The number of results to return per page (maximum 100).
+              human_parameter_name: Results Per Page
+              human_parameter_description: How many repositories to show per page. Set a
+                higher number to see more at once (up to 100).
+            direction:
+              enum:
+                - asc
+                - desc
+              type: string
+              title: DirectionEnm
+              examples:
+                - asc
+                - desc
+              description: The direction of the sort. Defaults to `asc` when `sort` is
+                'full_name', and `desc` otherwise.
+              human_parameter_name: Sort Direction
+              human_parameter_description: Choose whether the list is sorted ascending or
+                descending. For example, A–Z vs Z–A, or oldest first vs newest
+                first.
+          description: Request schema for `ListRepositoriesForTheAuthenticatedUser`

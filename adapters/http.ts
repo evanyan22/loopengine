@@ -64,9 +64,25 @@ import {
 } from '#actauth-admin.js'
 import { describeModelProviders, describeGateways } from '#global-config.js'
 import { scaffoldAgent, AgentNameError, AgentExistsError, AgentModelError, type AgentTemplateOptions } from '#cli.js'
+import { createTrackedApprover, webApprover, listApprovals, decideApproval } from '#web-approver.js'
 import type { Decision } from 'actauth'
 
 const sessions = createSessionStore()
+
+// runAgent() reads the approver off config.approver (defaulting to
+// ConsoleApprover, actauth's own default, if unset) — ConsoleApprover
+// reads its answer from *this process's* stdin, which hangs forever
+// behind an HTTP request (there's no terminal on the other end of the
+// connection to type "y" into). This is the one place that default gets
+// swapped for webApprover instead, without mutating the registry's own
+// AgentConfig object (an agent that explicitly sets its own approver,
+// e.g. a real SlackApprover, keeps it). Only used for the plain,
+// non-streaming /messages route — see handleMessagesStream for why the
+// streaming route builds its own per-turn approver instead of reusing
+// this shared one.
+function effectiveConfig(config: AgentConfig): AgentConfig {
+  return config.approver ? config : { ...config, approver: webApprover }
+}
 
 // Used when an AgentConfig doesn't define its own sessionIdFor — a plain
 // client-supplied key, same shape adapters/cli.ts's --session flag
@@ -268,7 +284,7 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
     isSafeTool: config.isSafeTool ? 'custom' : "default (each tool's own `safe` flag)",
     sessionIdFor: config.sessionIdFor ? 'custom' : 'default (client-supplied `sessionId` field)',
     tenantFor: config.tenantFor ? 'custom' : "none (every request is the 'default' tenant)",
-    approver: config.approver ? 'custom' : 'default (ConsoleApprover)',
+    approver: config.approver ? 'custom' : 'default (web — approvals pop up inline in the playground)',
   }
 }
 
@@ -301,12 +317,12 @@ function isGatewayToolDecision(value: unknown): value is GatewayToolDecision {
   return isDecision(value) || value === 'auto'
 }
 
-async function handleToolSourcesGet(res: ServerResponse, agentName: string): Promise<void> {
+async function handleToolSourcesGet(res: ServerResponse, agentName: string, force: boolean): Promise<void> {
   if (!getEntry(agentName)) {
     res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
     return
   }
-  const sources = await describeGatewayTools(agentName)
+  const sources = await describeGatewayTools(agentName, { force })
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ sources }))
 }
 
@@ -718,7 +734,7 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
 
   const text = await sessions.withSession(storageSessionId, async (history) => {
     // Fresh modelCall per request — see agent-registry.ts.
-    const result = await runAgent(entry.config, entry.createModelCall(), message, history, { tenant })
+    const result = await runAgent(effectiveConfig(entry.config), entry.createModelCall(), message, history, { tenant })
     return { newMessages: result.newMessages, result: result.text }
   })
 
@@ -744,12 +760,23 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   // learn what got generated in order to resume this conversation later.
   writeSseEvent(res, 'session', { sessionId: rawSessionId })
 
+  // A fresh WebApprover per streamed turn, not the shared one
+  // effectiveConfig would give the plain /messages route — its onPending
+  // writes straight onto *this* SSE connection, so the approve/deny popup
+  // shows up inline in the conversation that's actually blocked on it,
+  // not on some separate page an operator has to remember to check. Only
+  // built (and only overrides the registry's own config) when the agent
+  // hasn't set its own approver, same condition effectiveConfig applies.
+  const streamConfig: AgentConfig = entry.config.approver
+    ? entry.config
+    : { ...entry.config, approver: createTrackedApprover((approval) => writeSseEvent(res, 'approval:pending', approval)) }
+
   try {
     await sessions.withSession(storageSessionId, async (history) => {
       // onEvent already fires at every loop step (contextclip:check,
       // actauth:decision, toollane:result, ...) — streaming is just
       // forwarding those, not a separate code path through runAgent.
-      const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
+      const result = await runAgent(streamConfig, entry.createModelCall(), message, history, {
         tenant,
         onEvent: (event, detail) => writeSseEvent(res, event, detail),
       })
@@ -797,6 +824,30 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'text/html' }).end(playgroundHtml)
       return
     }
+
+    // Pending 'ask' decisions across every agent this process serves (see
+    // web-approver.ts) — no browser page of its own: a streamed chat turn
+    // (handleMessagesStream above) pushes its own pending approvals
+    // straight onto that conversation's SSE connection instead, so this
+    // is really just the plain-JSON escape hatch for the non-streaming
+    // /messages route, or any other client that wants to decide by hand.
+    if (req.method === 'GET' && pathname === '/approvals') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ approvals: listApprovals() }))
+      return
+    }
+    const approvalDecisionMatch = req.method === 'POST' && pathname.match(/^\/approvals\/([^/]+)\/(approve|deny)$/)
+    if (approvalDecisionMatch) {
+      const id = decodeURIComponent(approvalDecisionMatch[1])
+      const approved = approvalDecisionMatch[2] === 'approve'
+      const found = decideApproval(id, approved)
+      if (!found) {
+        res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `No pending approval '${id}' (already decided, timed out, or never existed).` }))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))
+      return
+    }
+
     if (req.method === 'GET' && pathname === '/agents') {
       if (prefersHtml(req)) {
         res.writeHead(200, { 'content-type': 'text/html' }).end(agentsListPageHtml)
@@ -904,7 +955,11 @@ const server = createServer(async (req, res) => {
 
     const gatewayToolsMatch = pathname.match(/^\/agents\/([^/]+)\/gateway-tools$/)
     if (gatewayToolsMatch && req.method === 'GET') {
-      await handleToolSourcesGet(res, decodeURIComponent(gatewayToolsMatch[1]))
+      // ?refresh=1 is the admin page's own "Refresh" button — bypasses
+      // describeGatewayTools' own cache to actually re-check Composio
+      // live (see its own doc comment for why a plain page load doesn't).
+      const force = new URLSearchParams((req.url ?? '').split('?')[1] ?? '').get('refresh') === '1'
+      await handleToolSourcesGet(res, decodeURIComponent(gatewayToolsMatch[1]), force)
       return
     }
     if (gatewayToolsMatch && req.method === 'POST') {
