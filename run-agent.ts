@@ -628,10 +628,25 @@ export async function runAgent(
     // Keyed by tool_use id — approvedCalls (a toollane LaneCall) has no
     // room for extra fields of its own, and toolLane.run's own results
     // only carry `id`/`name`/status, not anything about the *decision*
-    // that let a call through in the first place. This is what lets the
-    // reason still get attached to the right tool_result once execution
-    // finishes below, without changing toollane's own types.
-    const approvedReasonById = new Map<string, string>()
+    // that let a call through in the first place (or what it was even
+    // called with). This is what lets the reason still get attached to
+    // the right tool_result once execution finishes below, and lets the
+    // 'tool:result' live event (see below) report the same args a
+    // resumed/refreshed view of this same call would show, without
+    // changing toollane's own types.
+    const approvedMetaById = new Map<string, { reason: string; args: Record<string, unknown>; wasAsked: boolean }>()
+
+    // actauth's own Gate only ever appends this suffix when the rule it
+    // matched said 'ask' in the first place (see actauth's own gate.ts)
+    // — the one reliable way to tell "a human was actually asked, live,
+    // via an interactive card" apart from a straight allow/deny rule that
+    // never asked anyone anything. Needed below to avoid emitting a
+    // redundant 'tool:result' event for a call that already has its own
+    // interactive card showing exactly this — confirmed live that
+    // without this check, every interactively-approved or -denied call
+    // showed up *twice*: once as the approval card itself, once more as
+    // a second "approval needed" card right under it.
+    const wasAskedInteractively = (reason: string) => reason.includes(' — human approved') || reason.includes(' — human denied')
 
     for (const block of toolUseBlocks) {
       // Skill invocation injects instructions into context; it isn't a
@@ -651,7 +666,7 @@ export async function runAgent(
       // anything in the first place.
       if (systemToolInstances.has(toolsByName.get(block.name!)!)) {
         log('actauth:decision', { tool: block.name, decision: 'allow', reason: 'system tool — always allowed' })
-        approvedReasonById.set(block.id!, 'system tool — always allowed')
+        approvedMetaById.set(block.id!, { reason: 'system tool — always allowed', args: block.input ?? {}, wasAsked: false })
         approvedCalls.push({
           id: block.id!,
           name: block.name!,
@@ -663,7 +678,7 @@ export async function runAgent(
       const decision = await gate.evaluate(block.name!, block.input ?? {}, scope)
       log('actauth:decision', { tool: block.name, decision: decision.decision, reason: decision.reason })
       if (decision.decision === 'allow') {
-        approvedReasonById.set(block.id!, decision.reason)
+        approvedMetaById.set(block.id!, { reason: decision.reason, args: block.input ?? {}, wasAsked: wasAskedInteractively(decision.reason) })
         approvedCalls.push({
           id: block.id!,
           name: block.name!,
@@ -684,6 +699,14 @@ export async function runAgent(
           content: `denied: ${decision.reason}`,
           is_error: true,
         })
+        // A denied call that went through an interactive ask already has
+        // its own approval card showing exactly this (see
+        // wasAskedInteractively's own doc comment) — only a *straight*-
+        // denied call (no approver ever asked — a plain deny rule, never
+        // got any live representation at all otherwise) needs this.
+        if (!wasAskedInteractively(decision.reason)) {
+          log('tool:result', { tool: block.name, args: block.input ?? {}, detailText: decision.reason, statusText: 'Denied.' })
+        }
       }
     }
 
@@ -699,12 +722,18 @@ export async function runAgent(
       // *different* call in the same turn was what stopped it.
       for (const call of approvedCalls) {
         log('loop:skipped', { name: call.name, deniedTools })
+        const skipReason = `a sibling tool call in this turn (${deniedTools.join(', ')}) was denied`
         resultBlocks.push({
           type: 'tool_result',
           tool_use_id: call.id,
-          content: `skipped: a sibling tool call in this turn (${deniedTools.join(', ')}) was denied`,
+          content: `skipped: ${skipReason}`,
           is_error: true,
         })
+        // A skipped call never went through gate.evaluate at all — no
+        // approver, no interactive card, nothing live ever showed it was
+        // even requested. Same reasoning as the straight-denied case
+        // just above.
+        log('tool:result', { tool: call.name, args: approvedMetaById.get(call.id)?.args, detailText: skipReason, statusText: 'Skipped.' })
       }
     } else {
       // result.id is the same id LaneCall.id was given above — the exact
@@ -715,14 +744,38 @@ export async function runAgent(
       // the moment two calls to the same tool ran in one turn.
       for await (const result of toolLane.run(approvedCalls)) {
         const summary = result.status === 'fulfilled' ? JSON.stringify(result.value) : `ERROR: ${result.error}`
+        const meta = approvedMetaById.get(result.id)
         log('toollane:result', { name: result.name, summary })
         resultBlocks.push({
           type: 'tool_result',
           tool_use_id: result.id,
           content: summary,
           is_error: result.status === 'rejected',
-          reason: approvedReasonById.get(result.id),
+          reason: meta?.reason,
         })
+        // An auto-allowed call never had any card shown live at all —
+        // this closes that gap (confirmed live watching a real approved
+        // firecrawl_FIRECRAWL_SCRAPE call vanish into the Loop events
+        // pane with nothing in the conversation itself; see
+        // adapters/playground.ts's own 'tool:result' handling for why
+        // that matters even more for a *slow* tool, where the wait
+        // between deciding and this landing can be several real
+        // seconds). A call that *was* interactively asked already has
+        // its own card showing "Approved." — redundant to say it again
+        // on a successful execution, so skip it there (same
+        // wasAskedInteractively check as the denied branch above); but
+        // that card never shows what execution actually *returned* or
+        // whether it then failed, so a rejected result still gets this
+        // regardless of wasAsked — the one thing that card genuinely
+        // can't have shown yet.
+        if (!meta?.wasAsked || result.status === 'rejected') {
+          log('tool:result', {
+            tool: result.name,
+            args: meta?.args,
+            detailText: meta?.reason,
+            statusText: result.status === 'fulfilled' ? 'Approved.' : 'Error.',
+          })
+        }
       }
     }
 

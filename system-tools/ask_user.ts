@@ -146,6 +146,14 @@ export function listQuestions(filter?: { agent?: string; sessionId?: string }): 
     .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt))
 }
 
+/** Peek at a pending question's own entry (its agent/sessionId, in
+ * particular) without answering it — adapters/http.ts needs this *before*
+ * calling answerQuestion() below, to know which turn's early-return race
+ * (see its own sessionTurns) to resume once this one's answered. */
+export function findQuestion(id: string): PendingQuestion | undefined {
+  return questionsById.get(id)?.entry
+}
+
 /** Returns false for an unknown/already-answered/timed-out id, so the
  * caller can report that distinctly (a 404) instead of silently
  * no-opping — same convention web-approver.ts's decideApproval uses. */

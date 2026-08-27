@@ -72,3 +72,17 @@ export function decideApproval(id: string, approved: boolean): boolean {
   if (!approver) return false
   return approver.decide(id, approved)
 }
+
+/** Peek at a pending approval's own entry and owning session, without
+ * deciding it — adapters/http.ts needs this *before* calling
+ * decideApproval() above, to know which turn's early-return race (see its
+ * own sessionTurns) to resume once this one's decided. */
+export function findApproval(id: string): { approval: PendingApproval; sessionId: string } | undefined {
+  const approver = approversById.get(id)
+  if (!approver) return undefined
+  const approval = approver.list().find((a) => a.id === id)
+  if (!approval) return undefined
+  const sessionId = sessionByApprover.get(approver)
+  if (sessionId === undefined) return undefined
+  return { approval, sessionId }
+}

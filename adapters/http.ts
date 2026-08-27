@@ -64,8 +64,8 @@ import {
 } from '#actauth-admin.js'
 import { describeModelProviders, describeGateways } from '#global-config.js'
 import { scaffoldAgent, AgentNameError, AgentExistsError, AgentModelError, type AgentTemplateOptions } from '#cli.js'
-import { createTrackedApprover, listApprovals, decideApproval } from '#web-approver.js'
-import { listQuestions, answerQuestion, createAskUserTool, type PendingQuestion } from '#system-tools/index.js'
+import { createTrackedApprover, listApprovals, decideApproval, findApproval } from '#web-approver.js'
+import { listQuestions, answerQuestion, findQuestion, createAskUserTool, type PendingQuestion } from '#system-tools/index.js'
 import type { Decision, PendingApproval } from 'actauth'
 
 const sessions = createSessionStore()
@@ -740,6 +740,117 @@ async function handleSessionGet(req: IncomingMessage, res: ServerResponse, agent
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ sessionId: rawSessionId, history }))
 }
 
+type PendingSignal = { type: 'question'; entry: PendingQuestion } | { type: 'approval'; entry: PendingApproval }
+type FinishedTurn = { text: string; stopReason?: 'max_turns' | 'denied' }
+
+// One entry per turn currently in flight for the plain (non-streaming)
+// /messages route, keyed by "<agentName>:<rawSessionId>" — the same
+// (agent, sessionId) granularity every other pending-item lookup in this
+// file already uses (see listApprovals/listQuestions's own filters),
+// not a stricter per-tenant key: a custom rawSessionId reused across two
+// tenants for the same agent was already ambiguous before this existed.
+// This is what makes POST /approvals/:id/approve|deny and
+// POST /questions/:id/answer able to report "what's next" (another
+// pending item, or the final result) instead of just "ok" — see
+// raceAndRespond below for the shared logic, and its own doc comment for
+// why a fresh Promise per race isn't enough on its own once a *second*
+// pending item can arrive after the first is already decided.
+interface SessionTurnState {
+  turnPromise: Promise<FinishedTurn> | null
+  // At most one of these is ever non-null at a time: a signal that
+  // arrived before anyone asked for it (bufferedSignal), or a resolver
+  // waiting for one that hasn't arrived yet (waiter) — never both, since
+  // pushSignal always drains whichever waiter is currently registered
+  // the instant a signal shows up, and nextSignal always drains the
+  // buffer the instant something asks. Only one item can genuinely be
+  // pending at a time per session regardless (run-agent.ts's own gate
+  // loop evaluates — and so can only ever be blocked on — one tool call
+  // at a time), so a single slot is enough; no queue needed.
+  bufferedSignal: PendingSignal | null
+  waiter: ((signal: PendingSignal) => void) | null
+}
+
+const sessionTurns = new Map<string, SessionTurnState>()
+
+function turnKey(agentName: string, rawSessionId: string): string {
+  return `${agentName}:${rawSessionId}`
+}
+
+function pushSignal(state: SessionTurnState, signal: PendingSignal): void {
+  if (state.waiter) {
+    const waiter = state.waiter
+    state.waiter = null
+    waiter(signal)
+  } else {
+    state.bufferedSignal = signal
+  }
+}
+
+function nextSignal(state: SessionTurnState): Promise<PendingSignal> {
+  if (state.bufferedSignal) {
+    const signal = state.bufferedSignal
+    state.bufferedSignal = null
+    return Promise.resolve(signal)
+  }
+  return new Promise((resolve) => {
+    state.waiter = resolve
+  })
+}
+
+function pendingResponseBody(rawSessionId: string, signal: PendingSignal): Record<string, unknown> {
+  const { type, entry } = signal
+  return type === 'question'
+    ? { pending: true, type, id: entry.id, sessionId: rawSessionId, question: entry.question, options: entry.options, answerUrl: `/questions/${entry.id}/answer` }
+    : {
+        pending: true,
+        type,
+        id: entry.id,
+        sessionId: rawSessionId,
+        tool: entry.tool,
+        args: entry.args,
+        // Already on PendingApproval itself (actauth's own Scope) — the
+        // playground's appendApprovalCard reads data.scope.tenant/
+        // environment/agent directly, live or resumed alike, so this was
+        // missing here even before raceAndRespond was reused for the
+        // decide/answer routes too; just never exercised until a resumed
+        // card's own decision started rendering the next one straight
+        // from this body instead of a fresh /approvals fetch (which does
+        // include it).
+        scope: entry.scope,
+        reason: entry.reason,
+        approveUrl: `/approvals/${entry.id}/approve`,
+        denyUrl: `/approvals/${entry.id}/deny`,
+      }
+}
+
+// The one place that actually answers "what should the HTTP response be
+// right now" for this whole pending-item family — POST /messages calls it
+// once the turn starts; POST .../approve|deny|answer call it again after
+// resolving their own one decision, to report whatever comes next instead
+// of a bare {ok: true} that leaves the caller polling. Every one of these
+// routes ends up returning exactly one of the same two shapes: 202
+// {pending: true, ...} if the turn immediately needs another decision, or
+// 200 {text, sessionId, stopReason?} if it's actually done — a caller can
+// treat the whole family as one uniform "decide-or-finish" loop regardless
+// of which endpoint the response came from.
+async function raceAndRespond(res: ServerResponse, agentName: string, rawSessionId: string, state: SessionTurnState): Promise<void> {
+  const winner = await Promise.race([
+    state.turnPromise!.then((turnResult) => ({ kind: 'done' as const, turnResult })),
+    nextSignal(state).then((signal) => ({ kind: 'pending' as const, signal })),
+  ])
+
+  if (winner.kind === 'pending') {
+    res.writeHead(202, { 'content-type': 'application/json' }).end(
+      JSON.stringify({ ...pendingResponseBody(rawSessionId, winner.signal), statusUrl: `/agents/${agentName}/sessions/${rawSessionId}` }),
+    )
+    return
+  }
+
+  const responseBody: Record<string, unknown> = { text: winner.turnResult.text, sessionId: rawSessionId }
+  if (winner.turnResult.stopReason) responseBody.stopReason = winner.turnResult.stopReason
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(responseBody))
+}
+
 async function handleMessages(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
   const parsed = await parseRequest(req, agentName)
   if (!parsed.ok) {
@@ -755,67 +866,49 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
   // that a caller with no way to guess a pending id in advance has
   // genuinely no way to discover, let alone resolve, it. So instead: race
   // the whole turn against the *first* moment anything in it needs a
-  // human, and respond early with everything the caller needs to answer
-  // it themselves — no separate discovery call required — if that human
-  // moment comes first.
-  let resolveEarly: ((signal: { type: 'question'; entry: PendingQuestion } | { type: 'approval'; entry: PendingApproval }) => void) | undefined
-  const earlySignal = new Promise<{ type: 'question'; entry: PendingQuestion } | { type: 'approval'; entry: PendingApproval }>((resolve) => {
-    resolveEarly = resolve
-  })
+  // human — and every *subsequent* moment too (see raceAndRespond, called
+  // again from POST .../approve|deny|answer below), not just the first —
+  // respond early with everything the caller needs to decide it
+  // themselves, no separate discovery/polling call required.
+  const key = turnKey(agentName, rawSessionId)
+  const state: SessionTurnState = { turnPromise: null, bufferedSignal: null, waiter: null }
+  sessionTurns.set(key, state)
 
-  const approver = createTrackedApprover(rawSessionId, (approval) => resolveEarly?.({ type: 'approval', entry: approval }))
+  const approver = createTrackedApprover(rawSessionId, (approval) => pushSignal(state, { type: 'approval', entry: approval }))
 
   // Fresh modelCall per request — see agent-registry.ts. Not awaited
-  // directly below — see the Promise.race underneath it for why.
+  // directly below — see raceAndRespond's own Promise.race for why.
   const turnPromise = sessions.withSession(storageSessionId, async (history) => {
     const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
       tenant,
       sessionId: rawSessionId,
       approver,
-      onQuestionPending: (question) => resolveEarly?.({ type: 'question', entry: question }),
+      onQuestionPending: (question) => pushSignal(state, { type: 'question', entry: question }),
     })
     return { newMessages: result.newMessages, result: { text: result.text, stopReason: result.stopReason } }
   })
+  state.turnPromise = turnPromise
 
-  const winner = await Promise.race([
-    turnPromise.then((turnResult) => ({ kind: 'done' as const, turnResult })),
-    earlySignal.then((signal) => ({ kind: 'pending' as const, signal })),
-  ])
-
-  if (winner.kind === 'pending') {
-    // The turn itself keeps running in the background regardless —
-    // sessions.withSession still owns appending its result to the
-    // session log once it actually resolves (whenever the question/
-    // approval is decided), same durability guarantee as any other call.
-    // Nothing else is awaiting turnPromise anymore once this response is
-    // sent, so a later failure needs its own catch here or it's a silent
-    // unhandled rejection — logged, not surfaced to a client that's
-    // already moved on to polling/answering instead.
-    turnPromise.catch((err) => {
-      console.error(`[messages] background turn for '${agentName}' (session ${rawSessionId}) failed after responding early:`, err)
+  // The turn itself keeps running to completion regardless of how (or
+  // whether) this specific request ever responds — sessions.withSession
+  // still owns appending its result to the session log once it actually
+  // resolves, same durability guarantee as any other call. Nothing else
+  // is guaranteed to be awaiting turnPromise by the time it settles (a
+  // caller might stop polling, or this response might win the race
+  // below), so a failure needs its own catch here or it's a silent
+  // unhandled rejection. Cleanup only removes *this* state if it's still
+  // the current one for `key` — an unrelated new POST /messages reusing
+  // the same (agent, sessionId) pair before this one's cleanup runs would
+  // otherwise have its own fresh state clobbered here.
+  turnPromise
+    .catch((err) => {
+      console.error(`[messages] background turn for '${agentName}' (session ${rawSessionId}) failed:`, err)
     })
-    const { type, entry: pendingEntry } = winner.signal
-    const body =
-      type === 'question'
-        ? { pending: true, type, id: pendingEntry.id, sessionId: rawSessionId, question: pendingEntry.question, options: pendingEntry.options, answerUrl: `/questions/${pendingEntry.id}/answer` }
-        : {
-            pending: true,
-            type,
-            id: pendingEntry.id,
-            sessionId: rawSessionId,
-            tool: pendingEntry.tool,
-            args: pendingEntry.args,
-            reason: pendingEntry.reason,
-            approveUrl: `/approvals/${pendingEntry.id}/approve`,
-            denyUrl: `/approvals/${pendingEntry.id}/deny`,
-          }
-    res.writeHead(202, { 'content-type': 'application/json' }).end(JSON.stringify({ ...body, statusUrl: `/agents/${agentName}/sessions/${rawSessionId}` }))
-    return
-  }
+    .finally(() => {
+      if (sessionTurns.get(key) === state) sessionTurns.delete(key)
+    })
 
-  const responseBody: Record<string, unknown> = { text: winner.turnResult.text, sessionId: rawSessionId }
-  if (winner.turnResult.stopReason) responseBody.stopReason = winner.turnResult.stopReason
-  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(responseBody))
+  await raceAndRespond(res, agentName, rawSessionId, state)
 }
 
 async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
@@ -837,6 +930,21 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   // learn what got generated in order to resume this conversation later.
   writeSseEvent(res, 'session', { sessionId: rawSessionId })
 
+  // Same shared per-(agent, sessionId) tracking the plain /messages route
+  // uses (see sessionTurns' own doc comment) — registered here too so a
+  // decide/answer call made *after* this SSE connection is gone (a
+  // resumed session, with no live connection left to push onto) can still
+  // learn what's next from its own response instead of falling back to
+  // plain {ok: true} and leaving the playground to poll (see
+  // playground.ts's own pollForCompletion, now dead code once this
+  // shipped — nothing about a *live* connection needs this for itself,
+  // writeSseEvent already pushes everything as it happens; this is purely
+  // for whoever might decide something after the tab that started it is
+  // long gone).
+  const key = turnKey(agentName, rawSessionId)
+  const state: SessionTurnState = { turnPromise: null, bufferedSignal: null, waiter: null }
+  sessionTurns.set(key, state)
+
   // A fresh WebApprover per streamed turn, not the shared one the plain
   // /messages route passes — its onPending writes straight onto *this*
   // SSE connection, so the approve/deny popup shows up inline in the
@@ -845,31 +953,41 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   // as the shared one above, entry.config.approver (if the agent sets its
   // own) still wins outright over this; see RunAgentOptions.approver's
   // own doc comment.
-  const streamApprover = createTrackedApprover(rawSessionId, (approval) => writeSseEvent(res, 'approval:pending', approval))
+  const streamApprover = createTrackedApprover(rawSessionId, (approval) => {
+    writeSseEvent(res, 'approval:pending', approval)
+    pushSignal(state, { type: 'approval', entry: approval })
+  })
+
+  const turnPromise = sessions.withSession(storageSessionId, async (history) => {
+    // onEvent already fires at every loop step (contextclip:check,
+    // actauth:decision, toollane:result, ...) — streaming is just
+    // forwarding those, not a separate code path through runAgent.
+    // onQuestionPending is separate (see its own doc comment for why):
+    // pushes straight onto this same SSE connection, same as
+    // streamApprover's own onPending does for approvals.
+    const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
+      tenant,
+      sessionId: rawSessionId,
+      approver: streamApprover,
+      onEvent: (event, detail) => writeSseEvent(res, event, detail),
+      onQuestionPending: (question) => {
+        writeSseEvent(res, 'question:pending', question)
+        pushSignal(state, { type: 'question', entry: question })
+      },
+    })
+    writeSseEvent(res, 'done', result.stopReason ? { text: result.text, stopReason: result.stopReason } : { text: result.text })
+    return { newMessages: result.newMessages, result: { text: result.text, stopReason: result.stopReason } }
+  })
+  state.turnPromise = turnPromise
 
   try {
-    await sessions.withSession(storageSessionId, async (history) => {
-      // onEvent already fires at every loop step (contextclip:check,
-      // actauth:decision, toollane:result, ...) — streaming is just
-      // forwarding those, not a separate code path through runAgent.
-      // onQuestionPending is separate (see its own doc comment for why):
-      // pushes straight onto this same SSE connection, same as
-      // streamApprover's own onPending does for approvals.
-      const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
-        tenant,
-        sessionId: rawSessionId,
-        approver: streamApprover,
-        onEvent: (event, detail) => writeSseEvent(res, event, detail),
-        onQuestionPending: (question) => writeSseEvent(res, 'question:pending', question),
-      })
-      writeSseEvent(res, 'done', result.stopReason ? { text: result.text, stopReason: result.stopReason } : { text: result.text })
-      return { newMessages: result.newMessages, result: result.text }
-    })
+    await turnPromise
   } catch (err) {
     // Headers are already sent by this point, so an error becomes an SSE
     // event, not an HTTP status code.
     writeSseEvent(res, 'error', { error: String(err) })
   } finally {
+    if (sessionTurns.get(key) === state) sessionTurns.delete(key)
     res.end()
   }
 }
@@ -985,9 +1103,48 @@ const server = createServer(async (req, res) => {
     if (approvalDecisionMatch) {
       const id = decodeURIComponent(approvalDecisionMatch[1])
       const approved = approvalDecisionMatch[2] === 'approve'
-      const found = decideApproval(id, approved)
+      // Looked up *before* deciding — decideApproval below removes it (see
+      // web-approver.ts's own onSettled), so this is the last chance to
+      // learn which agent/session it belonged to. No await in between, so
+      // nothing else can race in and decide it out from under this lookup.
+      const found = findApproval(id)
       if (!found) {
         res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `No pending approval '${id}' (already decided, timed out, or never existed).` }))
+        return
+      }
+      decideApproval(id, approved)
+      // A session-turn state only exists for a turn started via the plain
+      // POST /messages route (see its own doc comment) — one raised via
+      // the streaming route, or whose owning turn already finished and
+      // cleaned itself up, falls back to the old plain {ok: true}: that
+      // caller already has its own way of finding out what happens next
+      // (its still-open SSE connection, or the fact the turn's already
+      // over). Known, accepted gap: two overlapping POST /messages calls
+      // for the very same (agent, sessionId) before the first resolves
+      // would leave this decide racing the *second* call's state instead
+      // of the first's — sessions.withSession's own per-session lock
+      // still serializes their actual execution either way, so nothing
+      // is lost or corrupted, just possibly reported against the wrong
+      // one of the two. Sending a second message before the first
+      // finishes isn't a flow this API is meant to support regardless.
+      const state = sessionTurns.get(turnKey(found.approval.scope.agent, found.sessionId))
+      if (state) {
+        // A streamed turn registers this same state (see
+        // handleMessagesStream) but never drains it itself — its own live
+        // SSE connection already delivers everything as it happens, so
+        // pushSignal's buffer (see its own doc comment) just sits there
+        // holding *this exact* now-decided approval, unconsumed, the
+        // whole time. Left alone, the race below would immediately "win"
+        // on that stale entry instead of actually waiting for whatever
+        // comes next — confirmed live: approving step_one echoed step_one
+        // straight back as the "next" pending item. Only one thing can
+        // ever be genuinely pending at a time per session (run-agent.ts's
+        // own gate loop blocks on one decision before evaluating the
+        // next), so any buffered signal still sitting here at this exact
+        // moment can only be the one just decided — safe to discard
+        // unconditionally, not just when it happens to match this id.
+        state.bufferedSignal = null
+        await raceAndRespond(res, found.approval.scope.agent, found.sessionId, state)
         return
       }
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))
@@ -1022,9 +1179,24 @@ const server = createServer(async (req, res) => {
       const id = decodeURIComponent(questionAnswerMatch[1])
       const body = await readJsonBody(req)
       const answer = String(body.answer ?? '')
-      const found = answerQuestion(id, answer)
+      // Same "look up before deciding" reasoning as the approval route
+      // just above.
+      const found = findQuestion(id)
       if (!found) {
         res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `No pending question '${id}' (already answered, timed out, or never existed).` }))
+        return
+      }
+      answerQuestion(id, answer)
+      // See the approval route's own doc comment for why a missing state
+      // (or a question with no sessionId at all — see PendingQuestion's
+      // own doc comment for when that happens) falls back to plain
+      // {ok: true} instead.
+      const state = found.sessionId ? sessionTurns.get(turnKey(found.agent, found.sessionId)) : undefined
+      if (state && found.sessionId) {
+        // See the approval route's own doc comment on this exact line —
+        // same staleness hazard, same fix.
+        state.bufferedSignal = null
+        await raceAndRespond(res, found.agent, found.sessionId, state)
         return
       }
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))

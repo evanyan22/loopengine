@@ -162,9 +162,6 @@ export const playgroundHtml: string = `<!doctype html>
   .approval-actions .approve { background: light-dark(#dcfce7, #14532d); }
   .approval-actions .deny { background: light-dark(#fee2e2, #450a0a); }
   .approval-status { font-size: 12px; font-style: italic; color: light-dark(#666, #999); }
-  .tool-call-approved .msg-body { background: light-dark(#f0fdf4, #14291b); border-color: light-dark(#22c55e, #16803c); }
-  .tool-call-denied .msg-body, .tool-call-error .msg-body { background: light-dark(#fef2f2, #3f1414); border-color: light-dark(#ef4444, #b91c1c); }
-  .tool-call-skipped .msg-body { background: light-dark(#f3f3f4, #26262b); border-color: light-dark(#a1a1aa, #52525b); }
   .msg-question .msg-body {
     background: light-dark(#eff6ff, #1e293b);
     border: 1px solid light-dark(#3b82f6, #60a5fa);
@@ -333,11 +330,7 @@ export const playgroundHtml: string = `<!doctype html>
     pane.appendChild(p);
   }
 
-  // beforeEl: normally omitted (append at the end, the common case). Only
-  // pollForCompletion passes it, and only for the one message that needs
-  // to land *before* an approval/question card already sitting in the
-  // chat pane — see its own doc comment for why.
-  function appendChatMessage(role, text, beforeEl) {
+  function appendChatMessage(role, text) {
     clearEmptyHint(chatPane);
     var div = document.createElement('div');
     div.className = 'msg msg-' + role;
@@ -349,13 +342,29 @@ export const playgroundHtml: string = `<!doctype html>
     body.textContent = text;
     div.appendChild(label);
     div.appendChild(body);
-    if (beforeEl && beforeEl.parentNode === chatPane) {
-      chatPane.insertBefore(div, beforeEl);
-    } else {
-      chatPane.appendChild(div);
-    }
+    chatPane.appendChild(div);
     chatPane.scrollTop = chatPane.scrollHeight;
     return div;
+  }
+
+  // Only ever called for a resumeContext'd card (see decide()/answer()
+  // below, both gated on it the same way) — a live SSE-pushed card has no
+  // resumeContext and never calls this, since its own connection already
+  // independently shows whatever comes next via handleFrame. Renders
+  // exactly what that same live connection would have shown for this
+  // response: another pending card, or the final text — the decide/
+  // answer response itself already says which (see adapters/http.ts's own
+  // raceAndRespond), so there's nothing left to poll or replay history
+  // for. Replaced pollForCompletion, which used to re-fetch and replay
+  // session history to find out the same thing.
+  function applyDecisionResult(respBody, resumeContext) {
+    if (respBody.pending) {
+      if (respBody.type === 'question') appendQuestionCard(respBody, resumeContext);
+      else appendApprovalCard(respBody, resumeContext);
+      return;
+    }
+    var doneEl = appendChatMessage('assistant', respBody.text);
+    if (respBody.stopReason) doneEl.classList.add('msg-stopped');
   }
 
   // A 'ask' decision arrived mid-turn (see run-agent.ts's gate.evaluate)
@@ -418,26 +427,44 @@ export const playgroundHtml: string = `<!doctype html>
     function decide(approved) {
       approveBtn.disabled = true;
       denyBtn.disabled = true;
+      // Live connection only: shown *synchronously*, before fetch() even
+      // starts — not inside its .then(). adapters/http.ts's own decide
+      // route now races the rest of the turn the same way POST /messages
+      // does (see raceAndRespond), so this response and the SSE 'done'/
+      // 'approval:pending' event for the very same outcome can land in
+      // either order — confirmed live. Calling showThinking() here is
+      // guaranteed to happen before either one, since nothing async can
+      // run before this synchronous click handler finishes; putting it in
+      // the .then() instead meant that whenever the SSE frame won the
+      // race and called removeThinking() *first*, this call landed after
+      // and left an orphaned thinking indicator nothing would ever clear
+      // — the "stuck on pending" bug.
+      if (!resumeContext) showThinking();
       fetch('/approvals/' + encodeURIComponent(data.id) + '/' + (approved ? 'approve' : 'deny'), { method: 'POST' })
-        .then(function () {
+        .then(function (r) {
+          return r.json().then(function (respBody) {
+            if (!r.ok) throw new Error(respBody.error || ('HTTP ' + r.status));
+            return respBody;
+          });
+        })
+        .then(function (respBody) {
           actions.remove();
           var status = document.createElement('div');
           status.className = 'approval-status';
           status.textContent = approved ? 'Approved.' : 'Denied.';
           body.appendChild(status);
-          // The turn is still going — either the tool this card just
-          // cleared is now actually running, or (a denial) the loop is
-          // wrapping up the rest of the batch — and nothing else says so
-          // until the next chat-relevant event lands (a live SSE frame, or
-          // pollForCompletion finding new history). Without this, clicking
-          // Approve/Deny looked like it did nothing at all in the gap
-          // before that — confirmed live.
-          showThinking();
-          if (resumeContext) pollForCompletion(resumeContext.agent, resumeContext.sessionId, resumeContext.historyLength, 20, div, resumeContext.textAlreadyShown);
+          // Resumed: no live connection to show what's next on its own,
+          // so use the response directly (see applyDecisionResult).
+          // Live: nothing further to do here — the SSE stream (which may
+          // well have already fired by now) is what shows whatever comes
+          // next; this response was only ever needed to confirm the
+          // decision was recorded.
+          if (resumeContext) applyDecisionResult(respBody, resumeContext);
         })
         .catch(function (err) {
           approveBtn.disabled = false;
           denyBtn.disabled = false;
+          if (!resumeContext) removeThinking();
           alert('Could not record decision: ' + err.message);
         });
     }
@@ -459,7 +486,7 @@ export const playgroundHtml: string = `<!doctype html>
     div.className = 'msg msg-assistant msg-question';
     var label = document.createElement('div');
     label.className = 'msg-label';
-    label.textContent = 'question';
+    label.textContent = 'answer needed';
     var body = document.createElement('div');
     body.className = 'msg-body';
 
@@ -507,27 +534,35 @@ export const playgroundHtml: string = `<!doctype html>
       input.disabled = true;
       sendBtn.disabled = true;
       if (optionsRow) optionsRow.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+      // See appendApprovalCard's own decide() for why this fires
+      // synchronously, before fetch(), instead of inside its .then() —
+      // same race against the SSE stream, same fix.
+      if (!resumeContext) showThinking();
       fetch('/questions/' + encodeURIComponent(data.id) + '/answer', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ answer: value }),
       })
-        .then(function () {
+        .then(function (r) {
+          return r.json().then(function (respBody) {
+            if (!r.ok) throw new Error(respBody.error || ('HTTP ' + r.status));
+            return respBody;
+          });
+        })
+        .then(function (respBody) {
           answerRow.remove();
           if (optionsRow) optionsRow.remove();
           var status = document.createElement('div');
           status.className = 'question-status';
           status.textContent = 'Answered: ' + value;
           body.appendChild(status);
-          // See appendApprovalCard's own decide() for why — same gap,
-          // same fix.
-          showThinking();
-          if (resumeContext) pollForCompletion(resumeContext.agent, resumeContext.sessionId, resumeContext.historyLength, 20, div, resumeContext.textAlreadyShown);
+          if (resumeContext) applyDecisionResult(respBody, resumeContext);
         })
         .catch(function (err) {
           input.disabled = false;
           sendBtn.disabled = false;
           if (optionsRow) optionsRow.querySelectorAll('button').forEach(function (b) { b.disabled = false; });
+          if (!resumeContext) removeThinking();
           alert('Could not send answer: ' + err.message);
         });
     }
@@ -550,16 +585,22 @@ export const playgroundHtml: string = `<!doctype html>
   // that refreshing after approving firecrawl_FIRECRAWL_SCRAPE left no
   // way to see what URL had even been requested, or what it returned.
   //
-  // outcome: 'approved' | 'denied' | 'skipped' | 'error' — only changes
-  // the status line's wording and color (see the .tool-call-<outcome>
-  // CSS below); the underlying card structure is identical either way.
-  function appendToolCallCard(toolName, args, detailText, statusText, outcome, beforeEl) {
+  // Same yellow .msg-approval styling regardless of outcome (approved,
+  // denied, skipped, or error) — statusText is the only thing that
+  // changes; deliberately not recolored per outcome afterward.
+  //
+  // Labeled the same as the live card this same event would have shown
+  // ("approval needed"/appendApprovalCard, "answer needed"/
+  // appendQuestionCard) — not a distinct "tool call" label — so live and
+  // refreshed views of the exact same event read the same way instead of
+  // looking like two different kinds of thing.
+  function appendToolCallCard(toolName, args, detailText, statusText) {
     clearEmptyHint(chatPane);
     var div = document.createElement('div');
-    div.className = 'msg msg-assistant msg-approval tool-call-' + outcome;
+    div.className = 'msg msg-assistant msg-approval';
     var label = document.createElement('div');
     label.className = 'msg-label';
-    label.textContent = 'tool call';
+    label.textContent = toolName === 'system_ask_user' ? 'answer needed' : 'approval needed';
     var body = document.createElement('div');
     body.className = 'msg-body';
 
@@ -589,8 +630,7 @@ export const playgroundHtml: string = `<!doctype html>
 
     div.appendChild(label);
     div.appendChild(body);
-    if (beforeEl && beforeEl.parentNode === chatPane) chatPane.insertBefore(div, beforeEl);
-    else chatPane.appendChild(div);
+    chatPane.appendChild(div);
     chatPane.scrollTop = chatPane.scrollHeight;
     return div;
   }
@@ -728,25 +768,13 @@ export const playgroundHtml: string = `<!doctype html>
   // back to which tool it's for (by tool_use_id) across the two separate
   // messages that always bundle them — threaded in from resumeSession's
   // own render loop below, one map per session render.
-  // beforeEl: threaded straight through to appendChatMessage — see
-  // pollForCompletion's own doc comment for the one case that actually
-  // uses it (the turn's own preamble text needing to land before an
-  // already-rendered approval/question card, not after it).
-  //
-  // silent: still walks tool_use blocks to populate toolCallsById, but
-  // never calls appendChatMessage — for a message that's already visible
-  // on screen some other way (resumeSession's own pendingAssistantText
-  // fallback covers the *text*, but not the tool_use id -> name mapping a
-  // *later* message's own card reconstruction still needs; without this,
-  // pollForCompletion re-scanning only the newly-revealed slice would
-  // miss it and fall back to the generic "a tool call" label).
-  function renderHistoryMessage(msg, toolCallsById, beforeEl, silent) {
+  function renderHistoryMessage(msg, toolCallsById) {
     if (Array.isArray(msg.content)) {
       for (var i = 0; i < msg.content.length; i++) {
         var block = msg.content[i];
         if (block.type === 'tool_use') {
           toolCallsById[block.id] = { name: block.name, input: block.input };
-        } else if (!silent && block.type === 'tool_result' && typeof block.content === 'string') {
+        } else if (block.type === 'tool_result' && typeof block.content === 'string') {
           var call = toolCallsById[block.tool_use_id];
           var toolName = call ? call.name : 'a tool call';
           var toolArgs = call ? call.input : undefined;
@@ -771,21 +799,20 @@ export const playgroundHtml: string = `<!doctype html>
             // here (that's the Loop events pane's job for the live run
             // that produced it); this card is about *why it was allowed*,
             // not what it returned.
-            appendToolCallCard(toolName, toolArgs, block.reason, 'Approved.', 'approved', beforeEl);
+            appendToolCallCard(toolName, toolArgs, block.reason, 'Approved.');
           } else if (block.content.indexOf(deniedPrefix) === 0) {
-            appendToolCallCard(toolName, toolArgs, block.content.slice(deniedPrefix.length), 'Denied.', 'denied', beforeEl);
+            appendToolCallCard(toolName, toolArgs, block.content.slice(deniedPrefix.length), 'Denied.');
           } else if (block.content.indexOf(skippedPrefix) === 0) {
-            appendToolCallCard(toolName, toolArgs, block.content.slice(skippedPrefix.length), 'Skipped.', 'skipped', beforeEl);
+            appendToolCallCard(toolName, toolArgs, block.content.slice(skippedPrefix.length), 'Skipped.');
           } else {
-            appendToolCallCard(toolName, toolArgs, block.content, 'Error.', 'error', beforeEl);
+            appendToolCallCard(toolName, toolArgs, block.content, 'Error.');
           }
         }
       }
     }
-    if (silent) return;
 
     if (typeof msg.content === 'string') {
-      appendChatMessage(msg.role, msg.content, beforeEl);
+      appendChatMessage(msg.role, msg.content);
       return;
     }
     if (!Array.isArray(msg.content)) return;
@@ -793,7 +820,7 @@ export const playgroundHtml: string = `<!doctype html>
       .filter(function (b) { return b.type === 'text'; })
       .map(function (b) { return b.text; })
       .join('\\n');
-    if (text) appendChatMessage(msg.role, text, beforeEl);
+    if (text) appendChatMessage(msg.role, text);
   }
 
   function resumeSession(item) {
@@ -827,19 +854,9 @@ export const playgroundHtml: string = `<!doctype html>
         // making the pending card look like it came out of nowhere. The
         // sidebar already has it locally regardless (rememberSession
         // saves it the moment it's sent), so fall back to that instead.
-        // Bump the baseline pollForCompletion (via checkForPendingItems)
-        // compares against by one whenever this synthetic bubble renders
-        // — it's one more message than what's actually in history right
-        // now, and that pending turn's own message *will* land at exactly
-        // this index once it's persisted for real. Without this, denying
-        // a resumed card and polling for what happens next re-renders
-        // this exact same message a second time, straight from history —
-        // confirmed live: "fetch top hn news" showing up twice.
-        var effectiveHistoryLength = history.length;
         if (item.preview && item.preview !== lastRenderedUserText) {
           clearEmptyHint(chatPane);
           appendChatMessage('user', item.preview);
-          effectiveHistoryLength = history.length + 1;
 
           // Same reasoning, one message later: the turn's own assistant
           // text (its "I'll do X" alongside the tool_use an approval/
@@ -855,34 +872,17 @@ export const playgroundHtml: string = `<!doctype html>
           // Without this, resuming while an approval/question is pending
           // showed only the bare card, with the reasoning it was
           // responding to nowhere on the page until the card was decided.
-          if (item.pendingAssistantText) {
-            appendChatMessage('assistant', item.pendingAssistantText);
-            effectiveHistoryLength = history.length + 2;
-          }
+          if (item.pendingAssistantText) appendChatMessage('assistant', item.pendingAssistantText);
         }
-        checkForPendingItems(item.agent, item.sessionId, effectiveHistoryLength, !!item.pendingAssistantText);
+        checkForPendingItems(item.agent, item.sessionId);
       })
       .catch(function (err) {
         setEmptyHint(chatPane, 'Could not load this session: ' + err.message);
       });
   }
 
-  // historyLength: how many messages this session had at the moment this
-  // check ran — threaded into each rendered card as its own resumeContext
-  // (see appendApprovalCard/appendQuestionCard) so that *if* it's decided
-  // from here, pollForCompletion below knows what "new" means for this
-  // specific session, not just some page-global baseline.
-  //
-  // textAlreadyShown: only ever true from resumeSession's own call, and
-  // only when its pendingAssistantText fallback actually rendered — see
-  // pollForCompletion's own doc comment for why this, not historyLength
-  // alone, is what it needs to know whether the *next* new message still
-  // owes the chat pane an out-of-order insert or not. Omitted (a chained
-  // checkForPendingItems call from inside pollForCompletion itself, below)
-  // means false: a newly-discovered card at that point has never had its
-  // own preamble text shown anywhere yet.
-  function checkForPendingItems(agent, sessionId, historyLength, textAlreadyShown) {
-    var resumeContext = { agent: agent, sessionId: sessionId, historyLength: historyLength, textAlreadyShown: !!textAlreadyShown };
+  function checkForPendingItems(agent, sessionId) {
+    var resumeContext = { agent: agent, sessionId: sessionId };
     fetch('/agents/' + encodeURIComponent(agent) + '/sessions/' + encodeURIComponent(sessionId) + '/questions')
       .then(function (r) { return r.json(); })
       .then(function (data) {
@@ -897,80 +897,6 @@ export const playgroundHtml: string = `<!doctype html>
         for (var i = 0; i < approvals.length; i++) appendApprovalCard(approvals[i], resumeContext);
       })
       .catch(function () {});
-  }
-
-  // A *live* pending card (pushed via the 'approval:pending'/
-  // 'question:pending' SSE events, still on an open connection) never
-  // needs this — deciding it just lets that same connection's own
-  // pump() naturally show whatever comes next, the way it always has. A
-  // *resumed* card (see checkForPendingItems above) has no such
-  // connection at all: confirmed live that denying one left the page
-  // showing nothing further whatsoever, even though the turn itself
-  // completed and persisted correctly server-side — only a manual
-  // refresh ever revealed it. This polls session history until new
-  // messages actually show up (or gives up after a while, in case
-  // something's stuck on yet another pending item nobody's answered),
-  // rendering them the same way resuming the session would.
-  // cardEl: the approval/question card's own root element, still sitting
-  // in the chat pane right where it was decided. Unless textAlreadyShown
-  // (see below) says otherwise, the turn's first newly-persisted message
-  // is that same turn's own preamble text (the model's "I'll do X"
-  // alongside the tool_use that triggered this card) — chronologically it
-  // belongs *before* the decision it prompted, not after, but it can't be
-  // rendered until the whole turn (including the human wait) finishes and
-  // gets persisted, by which point the card already exists earlier in the
-  // DOM. Passing cardEl through to renderHistoryMessage (only for that one
-  // first message) is what inserts it there instead of tacking it onto
-  // the end — confirmed live that without this, resuming a session,
-  // denying, and seeing the reply land showed the model's own explanation
-  // *after* the approval card that reply was supposedly explaining.
-  //
-  // textAlreadyShown: true only when resumeSession's own
-  // pendingAssistantText fallback already rendered that exact preamble
-  // text *before* cardEl — in that case the "first new message" here is
-  // one message later (the tool_result, not the text), which belongs
-  // *after* the card like everything else, not before it. Confirmed live
-  // this was a real bug: without this flag, that tool_result got inserted
-  // ahead of the card it was answering, and — since its own tool_use
-  // block lives in the message *before* knownHistoryLength, entirely
-  // skipped by the loop below — its "Denied:"/"Skipped:" reconstruction
-  // fell back to the generic "a tool call" label instead of the real
-  // name. The silent pre-scan just below (0 up to knownHistoryLength)
-  // exists purely to still populate toolCallsById from whatever was
-  // already shown some other way, without re-rendering any of it.
-  function pollForCompletion(agent, sessionId, knownHistoryLength, attemptsLeft, cardEl, textAlreadyShown) {
-    if (attemptsLeft <= 0) {
-      // Same gap decide()'s own showThinking() call left open, just the
-      // give-up side of it — 20 attempts (~20s) of nothing new landing
-      // means something's genuinely stuck (maybe a *later* pending item
-      // nobody's answered yet), not that this is about to resolve any
-      // second now. Leaving the dots spinning forever read as broken,
-      // not "still working."
-      removeThinking();
-      appendChatMessage('error', 'Still waiting on this turn to finish — refresh to check on it, or it may need another decision (see the sidebar).');
-      return;
-    }
-    setTimeout(function () {
-      fetch('/agents/' + encodeURIComponent(agent) + '/sessions/' + encodeURIComponent(sessionId))
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          var history = data.history || [];
-          if (history.length > knownHistoryLength) {
-            removeThinking();
-            var toolCallsById = {};
-            for (var i = 0; i < knownHistoryLength; i++) renderHistoryMessage(history[i], toolCallsById, undefined, true);
-            for (var i = knownHistoryLength; i < history.length; i++) {
-              renderHistoryMessage(history[i], toolCallsById, i === knownHistoryLength && !textAlreadyShown ? cardEl : undefined);
-            }
-            checkForPendingItems(agent, sessionId, history.length);
-          } else {
-            pollForCompletion(agent, sessionId, knownHistoryLength, attemptsLeft - 1, cardEl, textAlreadyShown);
-          }
-        })
-        .catch(function () {
-          pollForCompletion(agent, sessionId, knownHistoryLength, attemptsLeft - 1, cardEl, textAlreadyShown);
-        });
-    }, 1000);
   }
 
   function appendTimelineEntry(eventName, data) {
@@ -1134,6 +1060,23 @@ export const playgroundHtml: string = `<!doctype html>
       appendChatMessage('assistant', data);
       showThinking();
       if (sessionId) updateSessionField(agentSelect.value, sessionId, 'pendingAssistantText', data);
+    } else if (eventName === 'tool:result') {
+      // A tool call's own resolution (see run-agent.ts's own 'tool:result'
+      // log call) — auto-allowed, approved, denied, or skipped alike.
+      // Previously this only ever reached the Loop events pane
+      // ('toollane:result'/'actauth:decision'/'loop:skipped', none of
+      // which carry enough to reconstruct a real card on their own); nothing
+      // in the chat pane ever showed a tool call happened at all unless it
+      // needed an interactive approval card — an auto-allowed or skipped
+      // call was invisible there until the *whole* turn's final text
+      // landed, or a refresh replayed history. Confirmed live watching a
+      // real approved call vanish into the timeline with zero trace in the
+      // conversation itself, and — for a slow tool — a multi-second gap
+      // with nothing on screen at all in the meantime.
+      removeThinking();
+      appendToolCallCard(data.tool, data.args, data.detailText, data.statusText);
+      showThinking();
+      appendTimelineEntry(eventName, data);
     } else if (eventName === 'approval:pending') {
       removeThinking();
       appendApprovalCard(data);
