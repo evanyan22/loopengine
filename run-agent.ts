@@ -667,6 +667,11 @@ export async function runAgent(
       if (systemToolInstances.has(toolsByName.get(block.name!)!)) {
         log('actauth:decision', { tool: block.name, decision: 'allow', reason: 'system tool — always allowed' })
         approvedMetaById.set(block.id!, { reason: 'system tool — always allowed', args: block.input ?? {}, wasAsked: false })
+        // Fired the moment the decision is in, not once execution finishes
+        // (see the 'tool:started' vs 'tool:result' split below) — a system
+        // tool can still be slow, and this is the one path that had no
+        // interactive card of its own to show something sooner.
+        log('tool:started', { id: block.id!, tool: block.name, args: block.input ?? {}, detailText: 'system tool — always allowed' })
         approvedCalls.push({
           id: block.id!,
           name: block.name!,
@@ -678,7 +683,18 @@ export async function runAgent(
       const decision = await gate.evaluate(block.name!, block.input ?? {}, scope)
       log('actauth:decision', { tool: block.name, decision: decision.decision, reason: decision.reason })
       if (decision.decision === 'allow') {
-        approvedMetaById.set(block.id!, { reason: decision.reason, args: block.input ?? {}, wasAsked: wasAskedInteractively(decision.reason) })
+        const wasAsked = wasAskedInteractively(decision.reason)
+        approvedMetaById.set(block.id!, { reason: decision.reason, args: block.input ?? {}, wasAsked })
+        // An interactively-asked call already has its own live approval
+        // card showing this — a straight auto-allow never had anything
+        // shown at all until execution finished below, which is exactly
+        // the multi-second silent gap the comment on the later
+        // 'tool:result' call used to describe as a known, accepted gap.
+        // This closes it: the card now appears the instant the decision
+        // is made, showing 'Running…', and the later 'tool:result' event
+        // (matched by this same id) updates it in place with the outcome
+        // instead of appending a second card.
+        if (!wasAsked) log('tool:started', { id: block.id!, tool: block.name, args: block.input ?? {}, detailText: decision.reason })
         approvedCalls.push({
           id: block.id!,
           name: block.name!,
@@ -705,7 +721,7 @@ export async function runAgent(
         // denied call (no approver ever asked — a plain deny rule, never
         // got any live representation at all otherwise) needs this.
         if (!wasAskedInteractively(decision.reason)) {
-          log('tool:result', { tool: block.name, args: block.input ?? {}, detailText: decision.reason, statusText: 'Denied.' })
+          log('tool:result', { id: block.id!, tool: block.name, args: block.input ?? {}, detailText: decision.reason, statusText: 'Denied.' })
         }
       }
     }
@@ -733,7 +749,7 @@ export async function runAgent(
         // approver, no interactive card, nothing live ever showed it was
         // even requested. Same reasoning as the straight-denied case
         // just above.
-        log('tool:result', { tool: call.name, args: approvedMetaById.get(call.id)?.args, detailText: skipReason, statusText: 'Skipped.' })
+        log('tool:result', { id: call.id, tool: call.name, args: approvedMetaById.get(call.id)?.args, detailText: skipReason, statusText: 'Skipped.' })
       }
     } else {
       // result.id is the same id LaneCall.id was given above — the exact
@@ -753,16 +769,14 @@ export async function runAgent(
           is_error: result.status === 'rejected',
           reason: meta?.reason,
         })
-        // An auto-allowed call never had any card shown live at all —
-        // this closes that gap (confirmed live watching a real approved
-        // firecrawl_FIRECRAWL_SCRAPE call vanish into the Loop events
-        // pane with nothing in the conversation itself; see
-        // adapters/playground.ts's own 'tool:result' handling for why
-        // that matters even more for a *slow* tool, where the wait
-        // between deciding and this landing can be several real
-        // seconds). A call that *was* interactively asked already has
-        // its own card showing "Approved." — redundant to say it again
-        // on a successful execution, so skip it there (same
+        // An auto-allowed call already got its 'tool:started' card the
+        // moment it was decided (see above) — this is what turns that
+        // "Running…" placeholder into the real outcome (matched by the
+        // same id; see adapters/playground.ts's own 'tool:result'
+        // handling), not what first reveals the call happened at all. A
+        // call that *was* interactively asked already has its own card
+        // showing "Approved." — redundant to say it again on a
+        // successful execution, so skip it there (same
         // wasAskedInteractively check as the denied branch above); but
         // that card never shows what execution actually *returned* or
         // whether it then failed, so a rejected result still gets this
@@ -770,6 +784,7 @@ export async function runAgent(
         // can't have shown yet.
         if (!meta?.wasAsked || result.status === 'rejected') {
           log('tool:result', {
+            id: result.id,
             tool: result.name,
             args: meta?.args,
             detailText: meta?.reason,

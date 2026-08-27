@@ -307,6 +307,15 @@ export const playgroundHtml: string = `<!doctype html>
   // what the user just said to it," the two things rememberSession needs.
   var lastSentMessage = null;
 
+  // Keyed by tool_use id — a 'tool:started' card (see appendToolCallCard
+  // below) parks its status <div> here so the later 'tool:result' event
+  // for the exact same call (run-agent.ts emits both with the same id)
+  // can update it in place instead of appending a second, redundant card.
+  // Cleared on every conversation switch (resetConversation/resumeSession)
+  // since a card from a previous session/turn is never a valid update
+  // target for one that happens to reuse an id namespace.
+  var toolCallCardsById = {};
+
   // A page refresh only ever loses *this tab's* JS state — the actual
   // conversation is durably stored server-side (see session-store.ts).
   // What's missing after a refresh is just "which session ids did I
@@ -594,7 +603,7 @@ export const playgroundHtml: string = `<!doctype html>
   // appendQuestionCard) — not a distinct "tool call" label — so live and
   // refreshed views of the exact same event read the same way instead of
   // looking like two different kinds of thing.
-  function appendToolCallCard(toolName, args, detailText, statusText) {
+  function appendToolCallCard(toolName, args, detailText, statusText, id) {
     clearEmptyHint(chatPane);
     var div = document.createElement('div');
     div.className = 'msg msg-assistant msg-approval';
@@ -632,7 +641,26 @@ export const playgroundHtml: string = `<!doctype html>
     div.appendChild(body);
     chatPane.appendChild(div);
     chatPane.scrollTop = chatPane.scrollHeight;
+    // Only a 'tool:started' card (the one phase with a real "later update"
+    // coming) registers itself here — see updateToolCallCard below.
+    if (id) toolCallCardsById[id] = status;
     return div;
+  }
+
+  // Turns a 'tool:started' card's "Running…" placeholder into its real
+  // outcome in place, rather than appending a second card right under it
+  // — same call, same id, just the second half of the same event pushed
+  // by run-agent.ts once execution actually finishes. Returns whether an
+  // in-place update happened; the caller falls back to a fresh
+  // appendToolCallCard when it didn't (a denied/skipped call, which never
+  // gets a 'tool:started' card in the first place — see run-agent.ts's
+  // own wasAskedInteractively-gated emission).
+  function updateToolCallCard(id, statusText) {
+    var status = id && toolCallCardsById[id];
+    if (!status) return false;
+    delete toolCallCardsById[id];
+    status.textContent = statusText;
+    return true;
   }
 
   function showThinking() {
@@ -832,6 +860,7 @@ export const playgroundHtml: string = `<!doctype html>
     sessionLabel.title = 'Click to copy session id';
     sessionLabel.classList.add('copyable');
     chatPane.textContent = '';
+    toolCallCardsById = {};
     setEmptyHint(timelinePane, 'Loop events (tool calls, permission checks, budget checks) will appear here as the agent runs.');
     renderSessionsPane();
 
@@ -973,6 +1002,7 @@ export const playgroundHtml: string = `<!doctype html>
 
   function resetConversation() {
     sessionId = null;
+    toolCallCardsById = {};
     removeThinking();
     sessionLabel.textContent = 'session: (new)';
     sessionLabel.classList.remove('copyable');
@@ -1060,21 +1090,30 @@ export const playgroundHtml: string = `<!doctype html>
       appendChatMessage('assistant', data);
       showThinking();
       if (sessionId) updateSessionField(agentSelect.value, sessionId, 'pendingAssistantText', data);
+    } else if (eventName === 'tool:started') {
+      // Fired the instant an auto-allowed call is decided (see
+      // run-agent.ts's own 'tool:started' log call) — before it's even
+      // started executing, let alone finished. Shows the card right away
+      // with a 'Running…' placeholder instead of leaving the chat pane
+      // silent for however long the call actually takes; the matching
+      // 'tool:result' below (same id) fills in the real outcome in place.
+      removeThinking();
+      appendToolCallCard(data.tool, data.args, data.detailText, 'Running\\u2026', data.id);
+      showThinking();
+      appendTimelineEntry(eventName, data);
     } else if (eventName === 'tool:result') {
       // A tool call's own resolution (see run-agent.ts's own 'tool:result'
-      // log call) — auto-allowed, approved, denied, or skipped alike.
-      // Previously this only ever reached the Loop events pane
-      // ('toollane:result'/'actauth:decision'/'loop:skipped', none of
-      // which carry enough to reconstruct a real card on their own); nothing
-      // in the chat pane ever showed a tool call happened at all unless it
-      // needed an interactive approval card — an auto-allowed or skipped
-      // call was invisible there until the *whole* turn's final text
-      // landed, or a refresh replayed history. Confirmed live watching a
-      // real approved call vanish into the timeline with zero trace in the
-      // conversation itself, and — for a slow tool — a multi-second gap
-      // with nothing on screen at all in the meantime.
+      // log call) — auto-allowed, approved, denied, or skipped alike. A
+      // call that got its own 'tool:started' card above updates it in
+      // place (updateToolCallCard); one that didn't (denied/skipped, or
+      // an interactively-asked call whose own approval card already said
+      // "Approved."/"Denied.") gets a fresh card instead — same fallback
+      // renderHistoryMessage's replay of stored history already relies on
+      // for a resumed session, which never sees 'tool:started' at all.
       removeThinking();
-      appendToolCallCard(data.tool, data.args, data.detailText, data.statusText);
+      if (!updateToolCallCard(data.id, data.statusText)) {
+        appendToolCallCard(data.tool, data.args, data.detailText, data.statusText, data.id);
+      }
       showThinking();
       appendTimelineEntry(eventName, data);
     } else if (eventName === 'approval:pending') {
