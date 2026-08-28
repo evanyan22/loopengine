@@ -67,6 +67,7 @@ import { scaffoldAgent, AgentNameError, AgentExistsError, AgentModelError, type 
 import { createTrackedApprover, listApprovals, decideApproval, findApproval } from '#web-approver.js'
 import { listQuestions, answerQuestion, findQuestion, createAskUserTool, type PendingQuestion } from '#system-tools/index.js'
 import type { Decision, PendingApproval } from 'actauth'
+import type { LoopEvent } from '#loop-events.js'
 
 const sessions = createSessionStore()
 
@@ -709,8 +710,11 @@ function prefersHtml(req: IncomingMessage): boolean {
   return (req.headers.accept ?? '').includes('text/html')
 }
 
-function writeSseEvent(res: ServerResponse, event: string, data: unknown): void {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+// The event's own `type` field is both the SSE event name and the
+// serialized payload — see loop-events.ts's own header comment for why a
+// wire frame is never "name + unrelated detail" the way it used to be.
+function writeSseEvent(res: ServerResponse, event: LoopEvent): void {
+  res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
 }
 
 // Backs GET /agents/:name/sessions/:id — the playground's "resume a past
@@ -768,6 +772,19 @@ interface SessionTurnState {
   // at a time), so a single slot is enough; no queue needed.
   bufferedSignal: PendingSignal | null
   waiter: ((signal: PendingSignal) => void) | null
+  // Every LoopEvent this turn has produced so far, in order — populated
+  // identically whether this state backs a streamed or a plain turn (see
+  // both handleMessages/handleMessagesStream below). The streaming route
+  // already delivers each one live over SSE and has no direct use for the
+  // array itself, but keeps it anyway: a decide/answer call that arrives
+  // after that turn's own SSE connection is long gone (see this
+  // interface's own header comment) still resumes via raceAndRespond,
+  // whose final response should report the same full transcript a plain
+  // turn's response would, not an empty one. The plain (non-streaming)
+  // /messages route is what actually reads this on the way out — see
+  // pendingResponseBody/raceAndRespond below — since it has no live
+  // channel to have delivered any of this already.
+  events: LoopEvent[]
 }
 
 const sessionTurns = new Map<string, SessionTurnState>()
@@ -797,10 +814,19 @@ function nextSignal(state: SessionTurnState): Promise<PendingSignal> {
   })
 }
 
-function pendingResponseBody(rawSessionId: string, signal: PendingSignal): Record<string, unknown> {
+function pendingResponseBody(rawSessionId: string, signal: PendingSignal, events: LoopEvent[]): Record<string, unknown> {
   const { type, entry } = signal
   return type === 'question'
-    ? { pending: true, type, id: entry.id, sessionId: rawSessionId, question: entry.question, options: entry.options, answerUrl: `/questions/${entry.id}/answer` }
+    ? {
+        pending: true,
+        type,
+        id: entry.id,
+        sessionId: rawSessionId,
+        question: entry.question,
+        options: entry.options,
+        answerUrl: `/questions/${entry.id}/answer`,
+        events,
+      }
     : {
         pending: true,
         type,
@@ -820,6 +846,7 @@ function pendingResponseBody(rawSessionId: string, signal: PendingSignal): Recor
         reason: entry.reason,
         approveUrl: `/approvals/${entry.id}/approve`,
         denyUrl: `/approvals/${entry.id}/deny`,
+        events,
       }
 }
 
@@ -841,12 +868,18 @@ async function raceAndRespond(res: ServerResponse, agentName: string, rawSession
 
   if (winner.kind === 'pending') {
     res.writeHead(202, { 'content-type': 'application/json' }).end(
-      JSON.stringify({ ...pendingResponseBody(rawSessionId, winner.signal), statusUrl: `/agents/${agentName}/sessions/${rawSessionId}` }),
+      JSON.stringify({ ...pendingResponseBody(rawSessionId, winner.signal, state.events), statusUrl: `/agents/${agentName}/sessions/${rawSessionId}` }),
     )
     return
   }
 
-  const responseBody: Record<string, unknown> = { text: winner.turnResult.text, sessionId: rawSessionId }
+  // events: the full typed lifecycle of this turn, start to finish — see
+  // SessionTurnState.events's own doc comment. Both the plain and
+  // streaming routes populate it identically; this is what makes a plain
+  // POST /messages response a real, complete projection of the same
+  // lifecycle the streaming route delivers frame-by-frame, not just a
+  // final-text summary of it.
+  const responseBody: Record<string, unknown> = { text: winner.turnResult.text, sessionId: rawSessionId, events: state.events }
   if (winner.turnResult.stopReason) responseBody.stopReason = winner.turnResult.stopReason
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(responseBody))
 }
@@ -871,10 +904,13 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
   // respond early with everything the caller needs to decide it
   // themselves, no separate discovery/polling call required.
   const key = turnKey(agentName, rawSessionId)
-  const state: SessionTurnState = { turnPromise: null, bufferedSignal: null, waiter: null }
+  const state: SessionTurnState = { turnPromise: null, bufferedSignal: null, waiter: null, events: [{ type: 'session', sessionId: rawSessionId }] }
   sessionTurns.set(key, state)
 
-  const approver = createTrackedApprover(rawSessionId, (approval) => pushSignal(state, { type: 'approval', entry: approval }))
+  const approver = createTrackedApprover(rawSessionId, (approval) => {
+    state.events.push({ type: 'approval:pending', ...approval })
+    pushSignal(state, { type: 'approval', entry: approval })
+  })
 
   // Fresh modelCall per request — see agent-registry.ts. Not awaited
   // directly below — see raceAndRespond's own Promise.race for why.
@@ -883,8 +919,19 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
       tenant,
       sessionId: rawSessionId,
       approver,
-      onQuestionPending: (question) => pushSignal(state, { type: 'question', entry: question }),
+      onEvent: (event) => state.events.push(event),
+      onQuestionPending: (question) => {
+        state.events.push({ type: 'question:pending', ...question })
+        pushSignal(state, { type: 'question', entry: question })
+      },
     })
+    // No SSE connection to write this to (see this route's own header
+    // comment) — pushed straight onto state.events instead, same event
+    // shape the streaming route's own 'done' SSE frame uses, so the final
+    // `events` array this route's response body carries (see
+    // raceAndRespond) always ends the same way regardless of which route
+    // produced it.
+    state.events.push({ type: 'done', text: result.text, ...(result.stopReason ? { stopReason: result.stopReason } : {}) })
     return { newMessages: result.newMessages, result: { text: result.text, stopReason: result.stopReason } }
   })
   state.turnPromise = turnPromise
@@ -928,7 +975,7 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   // First event, always — same reason handleMessages echoes sessionId in
   // its JSON body: a caller that omitted sessionId needs some way to
   // learn what got generated in order to resume this conversation later.
-  writeSseEvent(res, 'session', { sessionId: rawSessionId })
+  writeSseEvent(res, { type: 'session', sessionId: rawSessionId })
 
   // Same shared per-(agent, sessionId) tracking the plain /messages route
   // uses (see sessionTurns' own doc comment) — registered here too so a
@@ -942,7 +989,7 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   // for whoever might decide something after the tab that started it is
   // long gone).
   const key = turnKey(agentName, rawSessionId)
-  const state: SessionTurnState = { turnPromise: null, bufferedSignal: null, waiter: null }
+  const state: SessionTurnState = { turnPromise: null, bufferedSignal: null, waiter: null, events: [{ type: 'session', sessionId: rawSessionId }] }
   sessionTurns.set(key, state)
 
   // A fresh WebApprover per streamed turn, not the shared one the plain
@@ -954,7 +1001,9 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   // own) still wins outright over this; see RunAgentOptions.approver's
   // own doc comment.
   const streamApprover = createTrackedApprover(rawSessionId, (approval) => {
-    writeSseEvent(res, 'approval:pending', approval)
+    const event: LoopEvent = { type: 'approval:pending', ...approval }
+    writeSseEvent(res, event)
+    state.events.push(event)
     pushSignal(state, { type: 'approval', entry: approval })
   })
 
@@ -969,13 +1018,20 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
       tenant,
       sessionId: rawSessionId,
       approver: streamApprover,
-      onEvent: (event, detail) => writeSseEvent(res, event, detail),
+      onEvent: (event) => {
+        writeSseEvent(res, event)
+        state.events.push(event)
+      },
       onQuestionPending: (question) => {
-        writeSseEvent(res, 'question:pending', question)
+        const event: LoopEvent = { type: 'question:pending', ...question }
+        writeSseEvent(res, event)
+        state.events.push(event)
         pushSignal(state, { type: 'question', entry: question })
       },
     })
-    writeSseEvent(res, 'done', result.stopReason ? { text: result.text, stopReason: result.stopReason } : { text: result.text })
+    const doneEvent: LoopEvent = { type: 'done', text: result.text, ...(result.stopReason ? { stopReason: result.stopReason } : {}) }
+    writeSseEvent(res, doneEvent)
+    state.events.push(doneEvent)
     return { newMessages: result.newMessages, result: { text: result.text, stopReason: result.stopReason } }
   })
   state.turnPromise = turnPromise
@@ -985,7 +1041,9 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   } catch (err) {
     // Headers are already sent by this point, so an error becomes an SSE
     // event, not an HTTP status code.
-    writeSseEvent(res, 'error', { error: String(err) })
+    const errorEvent: LoopEvent = { type: 'error', error: String(err) }
+    writeSseEvent(res, errorEvent)
+    state.events.push(errorEvent)
   } finally {
     if (sessionTurns.get(key) === state) sessionTurns.delete(key)
     res.end()

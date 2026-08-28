@@ -17,7 +17,9 @@ import { loadAgentModule } from './discover-agents.js'
 import { agentAsTool } from './agent-as-tool.js'
 import { loadGatewayToolsFromDir } from './gateway-tools.js'
 import { systemTools, createAskUserTool, type PendingQuestion } from './system-tools/index.js'
+import type { LoopEvent } from './loop-events.js'
 export { systemTools } from './system-tools/index.js'
+export type * from './loop-events.js'
 
 // Resolved relative to *this file's own location* (via import.meta.url),
 // not process.cwd() — the same reasoning agent-registry.ts's own
@@ -99,8 +101,10 @@ export interface Message {
 export type ModelCall = (messages: Message[], system: string, tools: ToolSchema[]) => Promise<ModelResponse>
 
 export interface RunAgentOptions {
-  /** Emitted at each loop step for callers that want visibility (logging, UI, tests). Default: no-op. */
-  onEvent?: (event: string, detail: unknown) => void
+  /** Emitted at each loop step for callers that want visibility (logging, UI, tests) —
+   * see loop-events.ts's own header comment for why this is a single typed
+   * union rather than a string name plus untyped detail. Default: no-op. */
+  onEvent?: (event: LoopEvent) => void
   /** The ActAuth tenant this call runs as — feeds the Gate's scope, so it
    * governs which rules apply. runAgent() never sees a request, so it
    * can't call AgentConfig.tenantFor itself; adapters/http.ts resolves it
@@ -494,7 +498,7 @@ export async function runAgent(
       const priorPortion = currentMessages.slice(0, priorCount)
 
       const result = await contextClip.recover(priorPortion.map(flattenForContextClip))
-      log('reflow:recover', { from: currentMessages.length, to: result.messages.length + newMessages.length })
+      log({ type: 'reflow:recover', from: currentMessages.length, to: result.messages.length + newMessages.length })
       if (result.action === 'unchanged') return currentMessages
 
       // Same tail-preservation reuse as before, just scoped to
@@ -581,19 +585,19 @@ export async function runAgent(
     if (turn > maxTurns) {
       const text = `Stopped after ${maxTurns} turns without a final answer — the agent may be stuck in a loop.`
       pushMessage({ role: 'assistant', content: text })
-      log('loop:max_turns', { maxTurns })
+      log({ type: 'loop:max_turns', maxTurns })
       return { text, history: messages, newMessages, stopReason: 'max_turns' }
     }
 
     const budget = contextClip.check(messages.map(flattenForContextClip))
-    log('contextclip:check', budget)
+    log({ type: 'contextclip:check', ...budget })
     if (budget.action === 'nudge' && budget.nudge) pushMessage(budget.nudge)
 
     const { value: response, recoveries } = await reflow.call(
       (msgs) => modelCall(msgs, systemPrompt, toolSchemas),
       messages,
     )
-    if (recoveries.length > 0) log('reflow:recoveries', recoveries)
+    if (recoveries.length > 0) log({ type: 'reflow:recoveries', recoveries })
 
     // The model's full response — text and tool_use blocks alike, with
     // real ids — becomes this turn's assistant message verbatim. Every
@@ -606,7 +610,7 @@ export async function runAgent(
 
     if (toolUseBlocks.length === 0) {
       const text = response.content.find((b) => b.type === 'text')?.text ?? ''
-      log('loop:done', text)
+      log({ type: 'loop:done', text })
       return { text, history: messages, newMessages }
     }
 
@@ -620,7 +624,7 @@ export async function runAgent(
     // this sentence later, after a refresh replays stored history —
     // confirmed live.
     const preambleText = response.content.find((b) => b.type === 'text')?.text
-    if (preambleText) log('assistant:text', preambleText)
+    if (preambleText) log({ type: 'assistant:text', text: preambleText })
 
     const resultBlocks: ModelContentBlock[] = []
     const approvedCalls: LaneCall[] = []
@@ -634,19 +638,7 @@ export async function runAgent(
     // 'tool:result' live event (see below) report the same args a
     // resumed/refreshed view of this same call would show, without
     // changing toollane's own types.
-    const approvedMetaById = new Map<string, { reason: string; args: Record<string, unknown>; wasAsked: boolean }>()
-
-    // actauth's own Gate only ever appends this suffix when the rule it
-    // matched said 'ask' in the first place (see actauth's own gate.ts)
-    // — the one reliable way to tell "a human was actually asked, live,
-    // via an interactive card" apart from a straight allow/deny rule that
-    // never asked anyone anything. Needed below to avoid emitting a
-    // redundant 'tool:result' event for a call that already has its own
-    // interactive card showing exactly this — confirmed live that
-    // without this check, every interactively-approved or -denied call
-    // showed up *twice*: once as the approval card itself, once more as
-    // a second "approval needed" card right under it.
-    const wasAskedInteractively = (reason: string) => reason.includes(' — human approved') || reason.includes(' — human denied')
+    const approvedMetaById = new Map<string, { reason: string; args: Record<string, unknown> }>()
 
     for (const block of toolUseBlocks) {
       // Skill invocation injects instructions into context; it isn't a
@@ -655,7 +647,7 @@ export async function runAgent(
       // so it still needs a tool_result to answer it, same as any other.
       if (block.name === 'Skill' && skillGarden) {
         const body = skillGarden.invoke(block.input!.skill as string, block.input?.args as string | undefined)
-        log('skillgarden:invoke', block.input!.skill)
+        log({ type: 'skillgarden:invoke', skill: block.input!.skill as string })
         resultBlocks.push({ type: 'tool_result', tool_use_id: block.id!, content: body })
         continue
       }
@@ -665,13 +657,13 @@ export async function runAgent(
       // ask_user itself can be the approver's own only way to ask a human
       // anything in the first place.
       if (systemToolInstances.has(toolsByName.get(block.name!)!)) {
-        log('actauth:decision', { tool: block.name, decision: 'allow', reason: 'system tool — always allowed' })
-        approvedMetaById.set(block.id!, { reason: 'system tool — always allowed', args: block.input ?? {}, wasAsked: false })
+        log({ type: 'actauth:decision', tool: block.name!, decision: 'allow', reason: 'system tool — always allowed' })
+        approvedMetaById.set(block.id!, { reason: 'system tool — always allowed', args: block.input ?? {} })
         // Fired the moment the decision is in, not once execution finishes
         // (see the 'tool:started' vs 'tool:result' split below) — a system
         // tool can still be slow, and this is the one path that had no
         // interactive card of its own to show something sooner.
-        log('tool:started', { id: block.id!, tool: block.name, args: block.input ?? {}, detailText: 'system tool — always allowed' })
+        log({ type: 'tool:started', id: block.id!, tool: block.name!, args: block.input ?? {}, detailText: 'system tool — always allowed' })
         approvedCalls.push({
           id: block.id!,
           name: block.name!,
@@ -681,20 +673,19 @@ export async function runAgent(
       }
 
       const decision = await gate.evaluate(block.name!, block.input ?? {}, scope)
-      log('actauth:decision', { tool: block.name, decision: decision.decision, reason: decision.reason })
+      log({ type: 'actauth:decision', tool: block.name!, decision: decision.decision, reason: decision.reason })
       if (decision.decision === 'allow') {
-        const wasAsked = wasAskedInteractively(decision.reason)
-        approvedMetaById.set(block.id!, { reason: decision.reason, args: block.input ?? {}, wasAsked })
-        // An interactively-asked call already has its own live approval
-        // card showing this — a straight auto-allow never had anything
-        // shown at all until execution finished below, which is exactly
-        // the multi-second silent gap the comment on the later
-        // 'tool:result' call used to describe as a known, accepted gap.
-        // This closes it: the card now appears the instant the decision
-        // is made, showing 'Running…', and the later 'tool:result' event
-        // (matched by this same id) updates it in place with the outcome
-        // instead of appending a second card.
-        if (!wasAsked) log('tool:started', { id: block.id!, tool: block.name, args: block.input ?? {}, detailText: decision.reason })
+        approvedMetaById.set(block.id!, { reason: decision.reason, args: block.input ?? {} })
+        // Fired the instant the decision is in, not once execution
+        // finishes below — closes what would otherwise be a multi-second
+        // silent gap while a slow call runs. Always emitted, whether or
+        // not a human was actually asked live: run-agent.ts itself has no
+        // notion of "already shown elsewhere" — that's a rendering
+        // decision, and belongs to whichever channel adapter is actually
+        // presenting this turn (see adapters/playground.ts's own
+        // wasAskedInteractively, which decides whether this duplicates an
+        // approval card already on screen), not to the engine loop.
+        log({ type: 'tool:started', id: block.id!, tool: block.name!, args: block.input ?? {}, detailText: decision.reason })
         approvedCalls.push({
           id: block.id!,
           name: block.name!,
@@ -715,14 +706,13 @@ export async function runAgent(
           content: `denied: ${decision.reason}`,
           is_error: true,
         })
-        // A denied call that went through an interactive ask already has
-        // its own approval card showing exactly this (see
-        // wasAskedInteractively's own doc comment) — only a *straight*-
-        // denied call (no approver ever asked — a plain deny rule, never
-        // got any live representation at all otherwise) needs this.
-        if (!wasAskedInteractively(decision.reason)) {
-          log('tool:result', { id: block.id!, tool: block.name, args: block.input ?? {}, detailText: decision.reason, statusText: 'Denied.' })
-        }
+        // Always emitted — see the 'allow' branch's own comment above on
+        // why this engine loop no longer decides whether a live UI
+        // already has some other representation of this decision on
+        // screen (an approval card that went through an interactive
+        // ask). That's a rendering call, made by whichever channel
+        // adapter is presenting this turn.
+        log({ type: 'tool:result', id: block.id!, tool: block.name!, args: block.input ?? {}, detailText: decision.reason, statusText: 'Denied.' })
       }
     }
 
@@ -737,7 +727,7 @@ export async function runAgent(
       // "denied": it was never evaluated against its own rule, a
       // *different* call in the same turn was what stopped it.
       for (const call of approvedCalls) {
-        log('loop:skipped', { name: call.name, deniedTools })
+        log({ type: 'loop:skipped', name: call.name, deniedTools })
         const skipReason = `a sibling tool call in this turn (${deniedTools.join(', ')}) was denied`
         resultBlocks.push({
           type: 'tool_result',
@@ -749,7 +739,7 @@ export async function runAgent(
         // approver, no interactive card, nothing live ever showed it was
         // even requested. Same reasoning as the straight-denied case
         // just above.
-        log('tool:result', { id: call.id, tool: call.name, args: approvedMetaById.get(call.id)?.args, detailText: skipReason, statusText: 'Skipped.' })
+        log({ type: 'tool:result', id: call.id, tool: call.name, args: approvedMetaById.get(call.id)?.args, detailText: skipReason, statusText: 'Skipped.' })
       }
     } else {
       // result.id is the same id LaneCall.id was given above — the exact
@@ -761,7 +751,7 @@ export async function runAgent(
       for await (const result of toolLane.run(approvedCalls)) {
         const summary = result.status === 'fulfilled' ? JSON.stringify(result.value) : `ERROR: ${result.error}`
         const meta = approvedMetaById.get(result.id)
-        log('toollane:result', { name: result.name, summary })
+        log({ type: 'toollane:result', name: result.name, summary })
         resultBlocks.push({
           type: 'tool_result',
           tool_use_id: result.id,
@@ -769,28 +759,21 @@ export async function runAgent(
           is_error: result.status === 'rejected',
           reason: meta?.reason,
         })
-        // An auto-allowed call already got its 'tool:started' card the
-        // moment it was decided (see above) — this is what turns that
-        // "Running…" placeholder into the real outcome (matched by the
-        // same id; see adapters/playground.ts's own 'tool:result'
-        // handling), not what first reveals the call happened at all. A
-        // call that *was* interactively asked already has its own card
-        // showing "Approved." — redundant to say it again on a
-        // successful execution, so skip it there (same
-        // wasAskedInteractively check as the denied branch above); but
-        // that card never shows what execution actually *returned* or
-        // whether it then failed, so a rejected result still gets this
-        // regardless of wasAsked — the one thing that card genuinely
-        // can't have shown yet.
-        if (!meta?.wasAsked || result.status === 'rejected') {
-          log('tool:result', {
-            id: result.id,
-            tool: result.name,
-            args: meta?.args,
-            detailText: meta?.reason,
-            statusText: result.status === 'fulfilled' ? 'Approved.' : 'Error.',
-          })
-        }
+        // Always emitted — this is what turns the earlier 'tool:started'
+        // event's "Running…" placeholder into the real outcome (matched
+        // by the same id), for every call regardless of how it got
+        // approved. See the 'allow' branch's own comment above: deciding
+        // whether this duplicates an approval card already on screen is
+        // a rendering call for the channel adapter presenting this turn,
+        // not something this engine loop tracks.
+        log({
+          type: 'tool:result',
+          id: result.id,
+          tool: result.name,
+          args: meta?.args,
+          detailText: meta?.reason,
+          statusText: result.status === 'fulfilled' ? 'Approved.' : 'Error.',
+        })
       }
     }
 
@@ -805,7 +788,7 @@ export async function runAgent(
     if (deniedTools.length > 0) {
       const text = `Stopped — you denied: ${deniedTools.join(', ')}. Send another message to continue.`
       pushMessage({ role: 'assistant', content: text })
-      log('loop:denied', { deniedTools })
+      log({ type: 'loop:denied', deniedTools })
       return { text, history: messages, newMessages, stopReason: 'denied' }
     }
   }

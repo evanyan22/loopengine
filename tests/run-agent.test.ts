@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { runAgent, type Message, type ModelCall, type ModelResponse } from '#run-agent.js'
 import type { AgentConfig, ToolDefinition } from '#agent-config.js'
+import type { LoopEvent } from '#loop-events.js'
 
 function baseConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -325,11 +326,11 @@ describe('runAgent', () => {
       return textResponse('done')
     })
 
-    const events: Array<{ event: string; detail: unknown }> = []
+    const events: LoopEvent[] = []
     const config = baseConfig({ skillsDirs: ['agents/file-agent/skills'] })
 
     const result = await runAgent(config, modelCall, 'summarize', [], {
-      onEvent: (event, detail) => events.push({ event, detail }),
+      onEvent: (event) => events.push(event),
     })
 
     const results = toolResults(result.history)
@@ -337,9 +338,9 @@ describe('runAgent', () => {
     expect(results[0].tool_use_id).toBe('t1')
     expect(results[0].content).toContain('Summarize files')
 
-    expect(events.some((e) => e.event === 'skillgarden:invoke')).toBe(true)
-    expect(events.some((e) => e.event === 'actauth:decision')).toBe(false)
-    expect(events.some((e) => e.event === 'toollane:result')).toBe(false)
+    expect(events.some((e) => e.type === 'skillgarden:invoke')).toBe(true)
+    expect(events.some((e) => e.type === 'actauth:decision')).toBe(false)
+    expect(events.some((e) => e.type === 'toollane:result')).toBe(false)
 
     // The model can only ever spontaneously call a tool it was actually
     // told about — this is the fix for the gap where Skill was handled on
@@ -384,7 +385,7 @@ describe('runAgent', () => {
 
   it('defaults rules to agents/<name>/actauth.yml when omitted entirely', async () => {
     const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't1', name: 'lookup_order', input: {} }))
-    const events: Array<{ event: string; detail: unknown }> = []
+    const events: LoopEvent[] = []
 
     const lookupOrder: ToolDefinition = {
       name: 'lookup_order',
@@ -397,12 +398,14 @@ describe('runAgent', () => {
     // agents/customer-service/actauth.yml, which allows lookup_order
     // unconditionally ('lookup-order-always-allowed').
     await runAgent(baseConfig({ name: 'customer-service', rules: undefined, tools: [lookupOrder] }), modelCall, 'hi', [], {
-      onEvent: (event, detail) => events.push({ event, detail }),
+      onEvent: (event) => events.push(event),
     })
 
     expect(events).toContainEqual({
-      event: 'actauth:decision',
-      detail: { tool: 'lookup_order', decision: 'allow', reason: "matched rule 'lookup-order-always-allowed'" },
+      type: 'actauth:decision',
+      tool: 'lookup_order',
+      decision: 'allow',
+      reason: "matched rule 'lookup-order-always-allowed'",
     })
   })
 
@@ -451,15 +454,17 @@ describe('runAgent', () => {
         input_schema: { type: 'object', properties: {} },
         execute: async () => 'echoed',
       }
-      const events: Array<{ event: string; detail: unknown }> = []
+      const events: LoopEvent[] = []
 
       await runAgent(baseConfig({ rules: join(dir, 'actauth.yml'), tools: [echo] }), modelCall, 'hi', [], {
-        onEvent: (event, detail) => events.push({ event, detail }),
+        onEvent: (event) => events.push(event),
       })
 
       expect(events).toContainEqual({
-        event: 'actauth:decision',
-        detail: { tool: 'echo', decision: 'allow', reason: "matched rule 'echo-allowed'" },
+        type: 'actauth:decision',
+        tool: 'echo',
+        decision: 'allow',
+        reason: "matched rule 'echo-allowed'",
       })
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -481,15 +486,17 @@ describe('runAgent', () => {
         input_schema: { type: 'object', properties: {} },
         execute: async () => 'echoed',
       }
-      const events: Array<{ event: string; detail: unknown }> = []
+      const events: LoopEvent[] = []
 
       await runAgent(baseConfig({ rules: join(dir, 'actauth.yml'), tools: [echo] }), modelCall, 'hi', [], {
-        onEvent: (event, detail) => events.push({ event, detail }),
+        onEvent: (event) => events.push(event),
       })
 
       expect(events).toContainEqual({
-        event: 'actauth:decision',
-        detail: { tool: 'echo', decision: 'allow', reason: "matched rule 'echo-allowed'" },
+        type: 'actauth:decision',
+        tool: 'echo',
+        decision: 'allow',
+        reason: "matched rule 'echo-allowed'",
       })
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -582,7 +589,7 @@ describe('runAgent', () => {
       execute: async () => 'echoed',
     }
 
-    const events: Array<{ event: string; detail: unknown }> = []
+    const events: LoopEvent[] = []
     const config = baseConfig({
       skillsDirs: ['agents/file-agent/skills'],
       tools: [echo],
@@ -590,14 +597,14 @@ describe('runAgent', () => {
     })
 
     const result = await runAgent(config, modelCall, 'summarize and say hi', [], {
-      onEvent: (event, detail) => events.push({ event, detail }),
+      onEvent: (event) => events.push(event),
     })
 
     const results = toolResults(result.history)
     expect(results.find((r) => r.tool_use_id === 't1')?.content).toContain('Summarize files')
     expect(results.find((r) => r.tool_use_id === 't2')?.content).toBe('"echoed"')
-    expect(events.some((e) => e.event === 'actauth:decision')).toBe(true)
-    expect(events.some((e) => e.event === 'toollane:result')).toBe(true)
+    expect(events.some((e) => e.type === 'actauth:decision')).toBe(true)
+    expect(events.some((e) => e.type === 'toollane:result')).toBe(true)
   })
 
   it('recovers via reflow when the model call reports the prompt is too long', async () => {
@@ -610,15 +617,15 @@ describe('runAgent', () => {
       return textResponse(`ok with ${messages.length} messages`)
     })
 
-    const events: Array<{ event: string; detail: unknown }> = []
+    const events: LoopEvent[] = []
     const config = baseConfig({ contextBudgetTokens: 8000 })
 
     const result = await runAgent(config, modelCall, 'hi', [], {
-      onEvent: (event, detail) => events.push({ event, detail }),
+      onEvent: (event) => events.push(event),
     })
 
     expect(modelCall).toHaveBeenCalledTimes(2)
-    expect(events.some((e) => e.event === 'reflow:recover')).toBe(true)
+    expect(events.some((e) => e.type === 'reflow:recover')).toBe(true)
     expect(result.text).toMatch(/^ok with \d+ messages$/)
   })
 

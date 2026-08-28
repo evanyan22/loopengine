@@ -653,14 +653,31 @@ export const playgroundHtml: string = `<!doctype html>
   // by run-agent.ts once execution actually finishes. Returns whether an
   // in-place update happened; the caller falls back to a fresh
   // appendToolCallCard when it didn't (a denied/skipped call, which never
-  // gets a 'tool:started' card in the first place — see run-agent.ts's
-  // own wasAskedInteractively-gated emission).
+  // gets a 'tool:started' card in the first place, or an interactively-
+  // asked call this handleFrame chose not to render one for at all —
+  // see wasAskedInteractively below).
   function updateToolCallCard(id, statusText) {
     var status = id && toolCallCardsById[id];
     if (!status) return false;
     delete toolCallCardsById[id];
     status.textContent = statusText;
     return true;
+  }
+
+  // run-agent.ts is a pure engine now: 'tool:started'/'tool:result' fire
+  // unconditionally for every call, whether or not a human was actually
+  // asked live via an approval card (see appendApprovalCard). Deciding
+  // whether that duplicates something already on screen is a rendering
+  // call, made here instead. actauth's own Gate only ever appends this
+  // exact suffix to a decision's reason when the rule it matched said
+  // 'ask' in the first place (see actauth's own gate.ts) - the one
+  // reliable way to tell "a human was actually asked, live" apart from a
+  // straight allow/deny rule that never asked anyone anything. Without
+  // this check, every interactively-approved or -denied call shows up
+  // twice: once as the approval card itself, once more as a redundant
+  // second "approval needed" card right under it.
+  function wasAskedInteractively(detailText) {
+    return !!detailText && (detailText.indexOf(' \\u2014 human approved') !== -1 || detailText.indexOf(' \\u2014 human denied') !== -1);
   }
 
   function showThinking() {
@@ -937,7 +954,15 @@ export const playgroundHtml: string = `<!doctype html>
     label.textContent = eventName;
     var pre = document.createElement('pre');
     pre.className = 'event-data';
-    pre.textContent = JSON.stringify(data, null, 2);
+    // Every LoopEvent's own 'type' field already duplicates eventName
+    // (the SSE event name above it) - stripped here so the JSON blob
+    // shows only what's specific to this event, not the label twice.
+    var displayData = data;
+    if (data && typeof data === 'object' && 'type' in data) {
+      displayData = Object.assign({}, data);
+      delete displayData.type;
+    }
+    pre.textContent = JSON.stringify(displayData, null, 2);
     div.appendChild(label);
     div.appendChild(pre);
     timelinePane.appendChild(div);
@@ -1087,32 +1112,44 @@ export const playgroundHtml: string = `<!doctype html>
       if (sessionId) updateSessionField(agentSelect.value, sessionId, 'pendingAssistantText', null);
     } else if (eventName === 'assistant:text') {
       removeThinking();
-      appendChatMessage('assistant', data);
+      appendChatMessage('assistant', data.text);
       showThinking();
-      if (sessionId) updateSessionField(agentSelect.value, sessionId, 'pendingAssistantText', data);
+      if (sessionId) updateSessionField(agentSelect.value, sessionId, 'pendingAssistantText', data.text);
     } else if (eventName === 'tool:started') {
-      // Fired the instant an auto-allowed call is decided (see
-      // run-agent.ts's own 'tool:started' log call) — before it's even
-      // started executing, let alone finished. Shows the card right away
-      // with a 'Running…' placeholder instead of leaving the chat pane
-      // silent for however long the call actually takes; the matching
-      // 'tool:result' below (same id) fills in the real outcome in place.
+      // Fired the instant any call is decided, auto-allowed or
+      // interactively asked alike (see run-agent.ts's own 'tool:started'
+      // log call - it emits this unconditionally now, no notion of
+      // "already shown elsewhere"). An interactively-asked call already
+      // has its own approval card showing this decision (see
+      // appendApprovalCard/wasAskedInteractively above) - no redundant
+      // 'Running…' card needed for it, unlike an auto-allowed call which
+      // had nothing shown until now.
       removeThinking();
-      appendToolCallCard(data.tool, data.args, data.detailText, 'Running\\u2026', data.id);
+      if (!wasAskedInteractively(data.detailText)) {
+        appendToolCallCard(data.tool, data.args, data.detailText, 'Running\\u2026', data.id);
+      }
       showThinking();
       appendTimelineEntry(eventName, data);
     } else if (eventName === 'tool:result') {
       // A tool call's own resolution (see run-agent.ts's own 'tool:result'
-      // log call) — auto-allowed, approved, denied, or skipped alike. A
-      // call that got its own 'tool:started' card above updates it in
-      // place (updateToolCallCard); one that didn't (denied/skipped, or
-      // an interactively-asked call whose own approval card already said
-      // "Approved."/"Denied.") gets a fresh card instead — same fallback
-      // renderHistoryMessage's replay of stored history already relies on
-      // for a resumed session, which never sees 'tool:started' at all.
+      // log call, also unconditional now) - auto-allowed, approved,
+      // denied, or skipped alike. An interactively-approved call that
+      // then executed successfully already has its own approval card
+      // saying "Approved." - redundant to show again. A rejected
+      // execution is new information that card never had (it only ever
+      // showed the *decision*, not what running the call actually did),
+      // so it still gets shown regardless.
       removeThinking();
-      if (!updateToolCallCard(data.id, data.statusText)) {
-        appendToolCallCard(data.tool, data.args, data.detailText, data.statusText, data.id);
+      if (!wasAskedInteractively(data.detailText) || data.statusText === 'Error.') {
+        // A call that got its own 'tool:started' card above updates it in
+        // place (updateToolCallCard); one that didn't (denied/skipped, or
+        // the rejected-after-interactive-approval case just above) gets a
+        // fresh card instead - same fallback renderHistoryMessage's replay
+        // of stored history already relies on for a resumed session, which
+        // never sees 'tool:started' at all.
+        if (!updateToolCallCard(data.id, data.statusText)) {
+          appendToolCallCard(data.tool, data.args, data.detailText, data.statusText, data.id);
+        }
       }
       showThinking();
       appendTimelineEntry(eventName, data);
