@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import type { ToolDefinition } from '#agent-config.js'
+import type { ToolDefinition } from '#core/agent-config.js'
 
 export const readFile: ToolDefinition = {
   name: 'read_file',

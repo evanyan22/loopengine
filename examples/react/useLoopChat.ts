@@ -39,7 +39,7 @@ type PendingItem = PendingApprovalEvent | PendingQuestionEvent
 export interface UseLoopChat {
   messages: ChatMessage[]
   /** Every LoopEvent this session has seen, raw — for a tool-call
-   * timeline/debug pane, same idea as adapters/playground.ts's own one. */
+   * timeline/debug pane, same idea as web/playground.ts's own one. */
   events: LoopEvent[]
   /** The one thing (an 'ask' tool call or a system_ask_user question) the
    * agent is currently blocked on, if any — only one is ever pending at a
@@ -121,7 +121,7 @@ export function useLoopChat({ baseUrl, agent, headers }: UseLoopChatOptions): Us
   // they unblock keep arriving on the *same* already-open stream `send`
   // started, not on a new connection, so there's nothing else to wire up
   // here beyond telling the server the decision and clearing `pending`
-  // optimistically (same as adapters/playground.ts's own decide()
+  // optimistically (same as web/playground.ts's own decide()
   // disabling its buttons immediately rather than waiting for a live
   // event to confirm what the user just clicked).
   const approve = useCallback(() => {

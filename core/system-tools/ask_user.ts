@@ -2,7 +2,7 @@
 // run-agent.ts's tools merge) — lets a model pause mid-turn and ask the
 // human operator a genuinely ambiguous question instead of guessing, the
 // same reasoning WebApprover exists for permission 'ask' decisions
-// (web-approver.ts), just generalized from a fixed allow/deny to an open
+// (web/web-approver.ts), just generalized from a fixed allow/deny to an open
 // answer. No companion skill the way read_file has
 // system-skills/composio-large-outputs — that skill exists to bridge an
 // *indirect* trigger (another tool's storedInFile result implying
@@ -14,7 +14,7 @@
 // it needs somewhere to register a pending question so a later
 // answerQuestion() call can find and resolve it, and its onPending hook
 // needs to close over that call's own onEvent — see createAskUserTool's
-// own doc comment, and web-approver.ts's createTrackedApprover for the
+// own doc comment, and web/web-approver.ts's createTrackedApprover for the
 // same reasoning applied to approvals.
 import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline/promises'
@@ -134,7 +134,7 @@ export function createAskUserTool(context: { agent: string; sessionId?: string }
   }
 }
 
-/** Oldest first, same ordering reasoning web-approver.ts's listApprovals
+/** Oldest first, same ordering reasoning web/web-approver.ts's listApprovals
  * uses — whichever question has been waiting longest surfaces first.
  * Unfiltered (both omitted) returns every question pending anywhere in
  * this process — real uses (an operator's own admin view, say) should
@@ -156,7 +156,7 @@ export function findQuestion(id: string): PendingQuestion | undefined {
 
 /** Returns false for an unknown/already-answered/timed-out id, so the
  * caller can report that distinctly (a 404) instead of silently
- * no-opping — same convention web-approver.ts's decideApproval uses. */
+ * no-opping — same convention web/web-approver.ts's decideApproval uses. */
 export function answerQuestion(id: string, answer: string): boolean {
   const pending = questionsById.get(id)
   if (!pending) return false

@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { systemTools } from '#system-tools/index.js'
+import { systemTools } from '#core/system-tools/index.js'
 
 const readFile = systemTools.find((t) => t.name === 'system_read_file')!
 

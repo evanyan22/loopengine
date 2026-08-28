@@ -11,8 +11,8 @@
 // every request, the same mechanism the /agents/gateway-tools admin page
 // writes to for any other agent. Nothing here needs to know mcpplug
 // exists anymore, or block module load on a CLI subprocess call.
-import type { AgentConfig } from '#agent-config.js'
-import type { ModelCall } from '#run-agent.js'
+import type { AgentConfig } from '#core/agent-config.js'
+import type { ModelCall } from '#core/run-agent.js'
 
 export const config: AgentConfig = {
   name: 'file-agent',

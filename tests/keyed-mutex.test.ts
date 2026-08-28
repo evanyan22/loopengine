@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { KeyedMutex } from '../session-store.js'
+import { KeyedMutex } from '../core/session-store.js'
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void

@@ -19,12 +19,13 @@ import type { ToolDefinition } from './agent-config.js'
 
 const execFileAsync = promisify(execFile)
 
-// Same "next to this file, not process.cwd()" reasoning run-agent.ts's
-// own agentsRootDir uses — real code (an actauth.yml write, a
-// gateway-tools.yml write) needs to land in the same place a built dist/
-// would look for it, not wherever the process happened to be launched
-// from.
-const agentsRootDir = join(dirname(fileURLToPath(import.meta.url)), 'agents')
+// Same "one level up from this file, not process.cwd()" reasoning
+// run-agent.ts's own agentsRootDir uses (this file lives in core/
+// alongside it, with agents/ one level up at repo root either way) — real
+// code (an actauth.yml write, a gateway-tools.yml write) needs to land in
+// the same place a built dist/ would look for it, not wherever the
+// process happened to be launched from.
+const agentsRootDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'agents')
 
 export interface ResolvedGatewayTool {
   name: string
@@ -769,7 +770,7 @@ export async function getComposioAuthStatus(cliCommand = 'composio'): Promise<Co
  * Composio's own documented path is plain, interactive `composio login`
  * (opens a browser) after installing the CLI — not something a web
  * request can drive, so the Gateways panel shows that as instructions
- * instead of a form; see its own comment in adapters/global-config-page.ts. */
+ * instead of a form; see its own comment in web/global-config-page.ts. */
 export async function disconnectComposioAccount(cliCommand = 'composio'): Promise<void> {
   await execFileAsync(cliCommand, ['logout'])
 }

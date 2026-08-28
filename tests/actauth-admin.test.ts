@@ -9,7 +9,7 @@ import {
   setDefaultDecision,
   ActauthRuleExistsError,
   ActauthRuleNotFoundError,
-} from '../actauth-admin.js'
+} from '../web/actauth-admin.js'
 
 // Same fixture-agent-under-the-real-agents-dir approach as
 // tests/gateway-tools.test.ts.

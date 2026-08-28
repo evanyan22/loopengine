@@ -1,6 +1,6 @@
 // A local dev page: a single self-contained HTML page (no build step, no
 // framework, no CDN) served by adapters/http.ts at GET /config — the
-// account-wide counterpart to adapters/agents-config-page.ts's per-agent
+// account-wide counterpart to web/agents-config-page.ts's per-agent
 // Overview/Skills/Tools/ActAuth tabs (served separately at
 // /agents/config, deliberately left untouched by this page). A left
 // sidebar picks between Models (which providers this deployment can
@@ -12,7 +12,7 @@
 // would just be two places for the same UI to drift apart.
 //
 // Embedded as a TS string (not a separate .html file), same reasoning as
-// adapters/playground.ts: tsc's ordinary compile emits it straight into
+// web/playground.ts: tsc's ordinary compile emits it straight into
 // dist/adapters/ alongside http.js, no asset-copy step needed. Plain
 // string concatenation, not a nested template literal, for the same
 // backtick/${}-escaping reason playground.ts's own header comment

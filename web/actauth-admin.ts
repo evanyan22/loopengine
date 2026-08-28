@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseDocument } from 'yaml'
 import type { Decision } from 'actauth'
-import { agentDir } from './gateway-tools.js'
+import { agentDir } from '../core/gateway-tools.js'
 
 export class ActauthRuleExistsError extends Error {}
 export class ActauthRuleNotFoundError extends Error {}

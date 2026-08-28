@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs'
-import type { ToolDefinition } from '#agent-config.js'
+import type { ToolDefinition } from '#core/agent-config.js'
 
 export const writeFile: ToolDefinition = {
   name: 'write_file',

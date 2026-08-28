@@ -4,7 +4,7 @@
 
 LoopEngine is a runtime for building AI agents: a persona, a set of tools,
 and permission rules, run through a transparent ReAct loop. No chain DSL,
-no hidden control flow — `run-agent.ts` is a single function you can read
+no hidden control flow — `core/run-agent.ts` is a single function you can read
 top to bottom. Run agents over a CLI, an HTTP API, or both.
 
 Once you define an agent, the loop turns it into something you can put in
@@ -96,7 +96,7 @@ working examples.
 
 ### 1. The Loop
 
-`run-agent.ts` is the whole engine — a single, readable ReAct loop with no
+`core/run-agent.ts` is the whole engine — a single, readable ReAct loop with no
 hidden control flow: call the model, act on what it asks for, repeat.
 
 1. Call the model with the conversation so far.

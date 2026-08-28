@@ -27,16 +27,16 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { getEntry, listAgents, projectDir, registerAgent, updateAgent, type RegistryEntry } from '../agent-registry.js'
-import { loadAgentModule, synthesizeCreateModelCall } from '#discover-agents.js'
-import { editAgentFile, AgentEditNotSupportedError, AgentFileNotFoundError, type AgentEditResult } from '#agent-file-admin.js'
-import { createSessionStore } from '../session-store.js'
-import { runAgent, loadRules, loadDefaultTools, loadSubagentAsTools, systemTools, systemSkillsDir } from '#run-agent.js'
-import type { AgentConfig } from '#agent-config.js'
+import { loadAgentModule, synthesizeCreateModelCall } from '#core/discover-agents.js'
+import { editAgentFile, AgentEditNotSupportedError, AgentFileNotFoundError, type AgentEditResult } from '#web/agent-file-admin.js'
+import { createSessionStore } from '../core/session-store.js'
+import { runAgent, loadRules, loadDefaultTools, loadSubagentAsTools, systemTools, systemSkillsDir } from '#core/run-agent.js'
+import type { AgentConfig } from '#core/agent-config.js'
 import { SkillGarden } from 'skillgarden'
-import { playgroundHtml } from './playground.js'
-import { agentsConfigPageHtml } from './agents-config-page.js'
-import { agentsListPageHtml } from './agents-list-page.js'
-import { globalConfigPageHtml } from './global-config-page.js'
+import { playgroundHtml } from '../web/playground.js'
+import { agentsConfigPageHtml } from '../web/agents-config-page.js'
+import { agentsListPageHtml } from '../web/agents-list-page.js'
+import { globalConfigPageHtml } from '../web/global-config-page.js'
 import {
   addGatewayTool,
   agentDir,
@@ -51,8 +51,8 @@ import {
   GatewayToolNotFoundError,
   type GatewayToolEntry,
   type GatewayToolDecision,
-} from '#gateway-tools.js'
-import { readSkill, writeSkill, deleteSkill, SkillInvalidIdError, SkillNotFoundError } from '#skills-admin.js'
+} from '#core/gateway-tools.js'
+import { readSkill, writeSkill, deleteSkill, SkillInvalidIdError, SkillNotFoundError } from '#web/skills-admin.js'
 import {
   readActauthConfig,
   addActauthRule,
@@ -61,13 +61,13 @@ import {
   setDefaultDecision,
   ActauthRuleExistsError,
   ActauthRuleNotFoundError,
-} from '#actauth-admin.js'
-import { describeModelProviders, describeGateways } from '#global-config.js'
+} from '#web/actauth-admin.js'
+import { describeModelProviders, describeGateways } from '#web/global-config.js'
 import { scaffoldAgent, AgentNameError, AgentExistsError, AgentModelError, type AgentTemplateOptions } from '#cli.js'
-import { createTrackedApprover, listApprovals, decideApproval, findApproval } from '#web-approver.js'
-import { listQuestions, answerQuestion, findQuestion, createAskUserTool, type PendingQuestion } from '#system-tools/index.js'
+import { createTrackedApprover, listApprovals, decideApproval, findApproval } from '#web/web-approver.js'
+import { listQuestions, answerQuestion, findQuestion, createAskUserTool, type PendingQuestion } from '#core/system-tools/index.js'
 import type { Decision, PendingApproval } from 'actauth'
-import type { LoopEvent } from '#loop-events.js'
+import type { LoopEvent } from '#core/loop-events.js'
 
 const sessions = createSessionStore()
 
@@ -381,7 +381,7 @@ async function handleGatewayToolSlugDelete(res: ServerResponse, agentName: strin
 // it's whatever Composio account is authenticated on this machine (via
 // `composio link <toolkit>`), the same one every agent's gateway tools
 // already draw from. These two back the add-a-source picker in
-// adapters/agents-config-page.ts's Gateway Tools section — see
+// web/agents-config-page.ts's Gateway Tools section — see
 // listComposioConnections/listComposioTools's own doc comments for why
 // this doesn't need any extra setup beyond that.
 async function handleComposioConnections(res: ServerResponse): Promise<void> {
@@ -1125,7 +1125,7 @@ const server = createServer(async (req, res) => {
 
     // Dev playground: a browser client on top of the two routes above,
     // rendering the same SSE events /messages/stream already emits — see
-    // adapters/playground.ts. GET, not POST, and an exact path match
+    // web/playground.ts. GET, not POST, and an exact path match
     // (neither has a :name segment), so no risk of colliding with the
     // regexes above (already partitioned by method).
     if (req.method === 'GET' && pathname === '/playground') {
@@ -1139,7 +1139,7 @@ const server = createServer(async (req, res) => {
     // so this is really just the plain-JSON escape hatch for the
     // non-streaming /messages route, or any other client that wants to
     // decide by hand. Scoped to one agent (exact) and, when given, one
-    // session (best-effort — see web-approver.ts's sessionByApprover for
+    // session (best-effort — see web/web-approver.ts's sessionByApprover for
     // why that's not always knowable) — never a blanket list across every
     // agent/tenant this process serves, which would leak one
     // conversation's pending approvals to any caller asking about a
@@ -1162,7 +1162,7 @@ const server = createServer(async (req, res) => {
       const id = decodeURIComponent(approvalDecisionMatch[1])
       const approved = approvalDecisionMatch[2] === 'approve'
       // Looked up *before* deciding — decideApproval below removes it (see
-      // web-approver.ts's own onSettled), so this is the last chance to
+      // web/web-approver.ts's own onSettled), so this is the last chance to
       // learn which agent/session it belonged to. No await in between, so
       // nothing else can race in and decide it out from under this lookup.
       const found = findApproval(id)
@@ -1286,7 +1286,7 @@ const server = createServer(async (req, res) => {
     // Models/Gateways (plus a plain link out to the per-agent Agents
     // page), neither of which is a property of any one agent (see
     // global-config.ts's own header comment for why those live in a
-    // separate module and page from adapters/agents-config-page.ts).
+    // separate module and page from web/agents-config-page.ts).
     if (req.method === 'GET' && pathname === '/config') {
       res.writeHead(200, { 'content-type': 'text/html' }).end(globalConfigPageHtml)
       return
@@ -1306,7 +1306,7 @@ const server = createServer(async (req, res) => {
 
     // Browser page: lists every registered agent and renders its full
     // config (tools, permissions, sessionIdFor, ...) via the JSON route
-    // below — see adapters/agents-config-page.ts. A fixed two-segment
+    // below — see web/agents-config-page.ts. A fixed two-segment
     // path, so it can't collide with the three-segment
     // /agents/:name/config regex right below it.
     if (req.method === 'GET' && pathname === '/agents/config') {
@@ -1343,7 +1343,7 @@ const server = createServer(async (req, res) => {
 
     // No standalone admin page for these — gateway-tools.ts's registry is
     // managed from a "Gateway tools" tab inside /agents/config now (see
-    // adapters/agents-config-page.ts), not its own page. These JSON
+    // web/agents-config-page.ts), not its own page. These JSON
     // routes are what that tab's script calls.
     // Three segments after gateway-tools/ (sourceName/slug) — checked
     // before the two-segment (sourceName only) route right below; the

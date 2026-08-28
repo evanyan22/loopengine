@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { VectorIndex, embed, cosineSimilarity } from '../vector-index.js'
+import { VectorIndex, embed, cosineSimilarity } from '../core/vector-index.js'
 
 describe('embed', () => {
   it('is deterministic', () => {

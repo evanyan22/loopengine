@@ -30,7 +30,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { Redis } from 'ioredis'
 import { SessionKnit, FileStorage, type Storage, type SessionEntry } from 'sessionknit'
-import type { Message } from '#run-agent.js'
+import type { Message } from '#core/run-agent.js'
 
 export interface SessionResult<T> {
   /** Exactly what this turn added — durably appended as-is, in order.
@@ -57,7 +57,8 @@ export interface SessionStore {
    * Deliberately *not* behind withSession's own per-sessionId exclusivity
    * — see the concrete implementation's own doc comment for why that's
    * safe, and why this needs to work *especially* while a turn is still
-   * in flight (blocked on a human — see web-approver.ts/ask_user.ts),
+   * in flight (blocked on a human — see web/web-approver.ts /
+   * system-tools/ask_user.ts),
    * not only once it's finished. */
   getHistory(sessionId: string): Promise<Message[]>
   close(): Promise<void>
@@ -157,7 +158,7 @@ class SessionKnitStore implements SessionStore {
   // Deliberately *not* behind this.lock the way withSession is — that
   // lock is held for withSession's *entire* fn(), which can now mean an
   // 'ask' decision or an ask_user question blocked on a human for
-  // minutes (see web-approver.ts/system-tools/ask_user.ts). Confirmed
+  // minutes (see web/web-approver.ts / system-tools/ask_user.ts). Confirmed
   // live: a session with a pending question hung this call indefinitely,
   // which is exactly backwards for what it's for — the playground's own
   // "resume a session" flow (see its own checkForPendingItems) needs this

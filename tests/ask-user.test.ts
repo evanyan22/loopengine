@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createAskUserTool, listQuestions, answerQuestion } from '#system-tools/index.js'
+import { createAskUserTool, listQuestions, answerQuestion } from '#core/system-tools/index.js'
 
 const CONTEXT = { agent: 'test-agent', sessionId: 'session-1' }
 

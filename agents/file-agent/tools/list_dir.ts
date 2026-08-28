@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '#agent-config.js'
+import type { ToolDefinition } from '#core/agent-config.js'
 
 export const listDir: ToolDefinition = {
   name: 'list_dir',

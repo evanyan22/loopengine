@@ -14,8 +14,8 @@
 // tool_result. This file's only job is translating between that shape and
 // the SDK's own param/response types — see message-to-param below.
 import Anthropic from '@anthropic-ai/sdk'
-import type { ToolSchema } from '#agent-config.js'
-import type { Message, ModelCall, ModelContentBlock, ModelResponse } from '#run-agent.js'
+import type { ToolSchema } from '#core/agent-config.js'
+import type { Message, ModelCall, ModelContentBlock, ModelResponse } from '#core/run-agent.js'
 
 export interface AnthropicModelCallOptions {
   /** Defaults to the ANTHROPIC_API_KEY env var, same as the SDK itself. */

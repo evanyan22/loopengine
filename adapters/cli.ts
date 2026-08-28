@@ -25,9 +25,9 @@
 // same --session.
 import { randomUUID } from 'node:crypto'
 import { getEntry, listAgents } from '../agent-registry.js'
-import { createSessionStore } from '../session-store.js'
-import { runAgent } from '#run-agent.js'
-import type { LoopEvent } from '#loop-events.js'
+import { createSessionStore } from '../core/session-store.js'
+import { runAgent } from '#core/run-agent.js'
+import type { LoopEvent } from '#core/loop-events.js'
 
 function parseArgs(argv: string[]) {
   let agent = ''

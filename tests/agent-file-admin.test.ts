@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { editAgentFile, AgentEditNotSupportedError, AgentFileNotFoundError } from '../agent-file-admin.js'
+import { editAgentFile, AgentEditNotSupportedError, AgentFileNotFoundError } from '../web/agent-file-admin.js'
 import { AgentModelError } from '../cli.js'
 
 // Same fixture-agent-under-the-real-agents-dir approach as

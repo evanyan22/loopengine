@@ -12,7 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { parseSkillFile } from 'skillgarden'
-import { agentDir } from './gateway-tools.js'
+import { agentDir } from '../core/gateway-tools.js'
 
 export class SkillInvalidIdError extends Error {}
 export class SkillNotFoundError extends Error {}

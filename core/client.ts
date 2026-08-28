@@ -1,17 +1,17 @@
 // A framework-agnostic browser client for adapters/http.ts's wire protocol
 // — the same POST /agents/:name/messages(/stream), /approvals/:id/
 // approve|deny, /questions/:id/answer, and /agents/:name/sessions/:id
-// routes adapters/playground.ts's own inline chat script already speaks,
+// routes web/playground.ts's own inline chat script already speaks,
 // extracted here as a standalone module with no DOM or UI-framework
 // dependency (only fetch/ReadableStream/TextDecoder, available in every
-// modern browser and in Node 18+). adapters/playground.ts is one UI on
+// modern browser and in Node 18+). web/playground.ts is one UI on
 // top of this protocol; this module is what makes building a *different*
 // one (a React hook, a Vue composable, anything else) a matter of calling
 // these functions and feeding the typed LoopEvent objects they produce
 // into that framework's own state, rather than re-deriving SSE frame
 // parsing and the approval/question REST calls from scratch.
 //
-// Kept in sync with adapters/playground.ts's own script by hand, the same
+// Kept in sync with web/playground.ts's own script by hand, the same
 // way that inline script and adapters/http.ts already are — there's no
 // build step connecting the two, so a wire-format change to either still
 // needs updating both.
@@ -122,7 +122,7 @@ export function answerQuestion(baseUrl: string, id: string, answer: string, opti
 
 /** GET /agents/:name/sessions/:id — rehydrates a conversation's stored
  * history, e.g. after a page reload lost whatever in-memory state a React/
- * Vue app was holding (mirrors adapters/playground.ts's own resumeSession). */
+ * Vue app was holding (mirrors web/playground.ts's own resumeSession). */
 export async function getSessionHistory(
   baseUrl: string,
   agent: string,

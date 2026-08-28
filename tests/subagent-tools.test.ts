@@ -1,8 +1,8 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { runAgent, type Message, type ModelCall, type ModelResponse } from '#run-agent.js'
-import type { AgentConfig } from '#agent-config.js'
+import { runAgent, type Message, type ModelCall, type ModelResponse } from '#core/run-agent.js'
+import type { AgentConfig } from '#core/agent-config.js'
 
 // agentsRootDir (run-agent.ts) is resolved next to run-agent.ts itself,
 // not process.cwd() — but in this test run they're the same directory,

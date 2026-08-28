@@ -215,7 +215,7 @@ export type AdapterLoopEvent = SessionEvent | ApprovalPendingEvent | QuestionPen
  * projection of: adapters/http.ts's SSE stream writes one of these per
  * frame; its plain /messages route collects the whole array into an
  * `events` response field; adapters/cli.ts's --json mode writes one per
- * NDJSON line; adapters/playground.ts is just a UI rendering whichever of
+ * NDJSON line; web/playground.ts is just a UI rendering whichever of
  * those two HTTP routes it's talking to. */
 export type LoopEvent = RunAgentLoopEvent | AdapterLoopEvent
 

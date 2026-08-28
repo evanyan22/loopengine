@@ -35,8 +35,8 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import ts from 'typescript'
-import { agentDir } from './gateway-tools.js'
-import { AgentModelError } from './cli.js'
+import { agentDir } from '../core/gateway-tools.js'
+import { AgentModelError } from '../cli.js'
 
 export class AgentEditNotSupportedError extends Error {}
 export class AgentFileNotFoundError extends Error {}

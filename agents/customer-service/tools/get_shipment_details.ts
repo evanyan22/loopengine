@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '#agent-config.js'
+import type { ToolDefinition } from '#core/agent-config.js'
 
 // `.example` is IANA-reserved for documentation (RFC 2606) — guaranteed
 // never to resolve to a real service. Point this at your real

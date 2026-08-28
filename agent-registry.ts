@@ -6,9 +6,9 @@
 // AgentConfig.name at import time, below.
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { discoverAgents, type AgentModule } from './discover-agents.js'
-import type { AgentConfig } from '#agent-config.js'
-import type { ModelCall } from '#run-agent.js'
+import { discoverAgents, type AgentModule } from './core/discover-agents.js'
+import type { AgentConfig } from '#core/agent-config.js'
+import type { ModelCall } from '#core/run-agent.js'
 
 export type RegistryEntry = AgentModule
 

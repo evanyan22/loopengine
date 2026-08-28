@@ -11,5 +11,5 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["*.ts", "adapters/*.ts", "agents/**/*.ts", "model-calls/*.ts", "scripts/*.ts"]
+  "include": ["*.ts", "adapters/*.ts", "core/*.ts", "core/model-calls/*.ts", "core/system-tools/*.ts", "web/*.ts", "agents/**/*.ts", "scripts/*.ts"]
 }

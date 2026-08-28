@@ -17,7 +17,7 @@ import {
   GatewayToolExistsError,
   GatewayToolNotFoundError,
   type ComposioGatewayToolEntry,
-} from '../gateway-tools.js'
+} from '../core/gateway-tools.js'
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-composio-cli.mjs')
 

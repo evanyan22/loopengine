@@ -3,7 +3,7 @@
 // page; a client fetching it programmatically (fetch()'s default
 // Accept: */*, same as playground.ts and agents-config-page.ts's own
 // fetch('/agents') calls) still gets the plain {agents: [...]} JSON body
-// that route always returned, unchanged. See adapters/dev-ui-styles.ts for
+// that route always returned, unchanged. See web/dev-ui-styles.ts for
 // why the look is a shared import rather than a third copy of the same CSS.
 import { devUiCss } from './dev-ui-styles.js'
 

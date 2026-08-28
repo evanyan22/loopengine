@@ -1,5 +1,5 @@
 // Backs the global /config page's Models and Gateways sections (see
-// adapters/agents-config-page.ts's left sidebar) — the account-wide,
+// web/agents-config-page.ts's left sidebar) — the account-wide,
 // not-scoped-to-one-agent counterpart to that page's existing per-agent
 // Overview/Skills/Tools/ActAuth tabs. "Global" here means: which model
 // providers this deployment can actually call (an API-key-in-env-vars
@@ -7,8 +7,8 @@
 // which gateway providers (Composio today) this machine's CLI session
 // is authenticated against — neither is a property of any one
 // AgentConfig.
-import { listAgents, getEntry } from './agent-registry.js'
-import { getComposioAuthStatus } from './gateway-tools.js'
+import { listAgents, getEntry } from '../agent-registry.js'
+import { getComposioAuthStatus } from '../core/gateway-tools.js'
 
 export interface ModelProviderInfo {
   provider: 'anthropic' | 'openai' | 'deepseek'

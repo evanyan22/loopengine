@@ -1,8 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
-import { createAnthropicModelCall } from '../model-calls/anthropic-model-call.js'
-import { runAgent, type ModelCall } from '#run-agent.js'
-import type { AgentConfig } from '#agent-config.js'
+import { createAnthropicModelCall } from '../core/model-calls/anthropic-model-call.js'
+import { runAgent, type ModelCall } from '#core/run-agent.js'
+import type { AgentConfig } from '#core/agent-config.js'
 
 /** Stubbed fetch, not a live call — captures the exact request body sent to
  * the Anthropic API and returns a scripted response, so the translation in

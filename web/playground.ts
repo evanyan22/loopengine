@@ -378,7 +378,7 @@ export const playgroundHtml: string = `<!doctype html>
 
   // A 'ask' decision arrived mid-turn (see run-agent.ts's gate.evaluate)
   // and the server's default approver is now a tracked WebApprover (see
-  // web-approver.ts's createTrackedApprover) instead of a blocking
+  // web/web-approver.ts's createTrackedApprover) instead of a blocking
   // terminal prompt — it parked this one and pushed it straight onto this
   // exact SSE connection via onPending, so it can be decided right here
   // instead of on a page

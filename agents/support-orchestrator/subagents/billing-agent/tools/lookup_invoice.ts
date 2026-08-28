@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '#agent-config.js'
+import type { ToolDefinition } from '#core/agent-config.js'
 
 const invoices: Record<string, { amount: number; description: string; paidOn: string }> = {
   'INV-1002': { amount: 49, description: 'Pro plan renewal', paidOn: '2026-08-01' },

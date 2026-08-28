@@ -12,7 +12,7 @@ import { SkillGarden } from 'skillgarden'
 import { ContextClipper, type Message as ContextClipMessage } from 'contextclip'
 import { ToolLane, type ToolCall as LaneCall, type SafetyClassifier } from 'toollane'
 import { Reflow } from 'reflowkit'
-import type { AgentConfig, ToolDefinition, ToolSchema } from '#agent-config.js'
+import type { AgentConfig, ToolDefinition, ToolSchema } from '#core/agent-config.js'
 import { loadAgentModule } from './discover-agents.js'
 import { agentAsTool } from './agent-as-tool.js'
 import { loadGatewayToolsFromDir } from './gateway-tools.js'
@@ -23,21 +23,23 @@ export type * from './loop-events.js'
 
 // Resolved relative to *this file's own location* (via import.meta.url),
 // not process.cwd() — the same reasoning agent-registry.ts's own
-// agentsDir uses. In dev (tsx), this file and agents/ are both source
-// .ts, side by side. In the built dist/, this file is dist/run-agent.js
-// and its sibling agents/ is dist/agents/**/*.js (tsc-compiled) — cwd is
-// irrelevant to either case, only "next to this module" is reliably
-// right in both. skillsDirs/rules don't need this: actauth.yml/SKILL.md
-// are plain data copied verbatim into the image (see Dockerfile), so
-// they exist at the same cwd-relative path either way; a tools/index.ts
-// is real code that only exists compiled, at a different relative
-// location, once dist/ is what's actually running.
-const agentsRootDir = join(dirname(fileURLToPath(import.meta.url)), 'agents')
+// agentsDir uses. In dev (tsx), this file lives in core/ with agents/ one
+// level up, at repo root. In the built dist/, this file is
+// dist/core/run-agent.js with dist/agents/**/*.js (tsc-compiled,
+// preserving the source tree's shape) one level up from *it* the same
+// way — cwd is irrelevant to either case, only "one level up from this
+// module" is reliably right in both. skillsDirs/rules don't need this:
+// actauth.yml/SKILL.md are plain data copied verbatim into the image (see
+// Dockerfile), so they exist at the same cwd-relative path either way; a
+// tools/index.ts is real code that only exists compiled, at a different
+// relative location, once dist/ is what's actually running.
+const agentsRootDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'agents')
 
-// Same "next to this file, not process.cwd()" resolution as
-// agentsRootDir above — system-skills/ ships alongside this module (see
-// package.json's own "files" list), so this is what makes it resolvable
-// from dist/run-agent.js the same way it is from source.
+// Same "resolved relative to this file's own location" reasoning as
+// agentsRootDir above, but system-skills/ is a same-level sibling of
+// run-agent.ts itself (both live directly under core/ — see package.json's
+// own "files" list), not one level up the way agents/ is, so this one
+// stays a direct join with no '..'.
 export const systemSkillsDir = join(dirname(fileURLToPath(import.meta.url)), 'system-skills')
 
 // Tools every agent gets (see systemTools' own doc comment) are merged
@@ -682,7 +684,7 @@ export async function runAgent(
         // not a human was actually asked live: run-agent.ts itself has no
         // notion of "already shown elsewhere" — that's a rendering
         // decision, and belongs to whichever channel adapter is actually
-        // presenting this turn (see adapters/playground.ts's own
+        // presenting this turn (see web/playground.ts's own
         // wasAskedInteractively, which decides whether this duplicates an
         // approval card already on screen), not to the engine loop.
         log({ type: 'tool:started', id: block.id!, tool: block.name!, args: block.input ?? {}, detailText: decision.reason })

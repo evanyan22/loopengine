@@ -7,8 +7,8 @@
 // agents/<name>/subagents/<child>/ folder auto-wraps `child` with this
 // and merges it into `name`'s tools — most callers want that, not this
 // function directly).
-import type { AgentConfig, ToolDefinition } from '#agent-config.js'
-import { runAgent, type ModelCall } from '#run-agent.js'
+import type { AgentConfig, ToolDefinition } from '#core/agent-config.js'
+import { runAgent, type ModelCall } from '#core/run-agent.js'
 
 /** `createModelCall` is a factory, not a shared instance — the same
  * `AgentModule.createModelCall` contract discover-agents.ts already

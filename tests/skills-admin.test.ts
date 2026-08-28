@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { readSkill, writeSkill, deleteSkill, SkillInvalidIdError, SkillNotFoundError } from '../skills-admin.js'
+import { readSkill, writeSkill, deleteSkill, SkillInvalidIdError, SkillNotFoundError } from '../web/skills-admin.js'
 
 // Same fixture-agent-under-the-real-agents-dir approach as
 // tests/gateway-tools.test.ts — skills-admin.ts resolves paths off

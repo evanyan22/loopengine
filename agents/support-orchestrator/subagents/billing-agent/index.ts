@@ -10,8 +10,8 @@
 // repo-root-relative) instead of '../../../../agent-config.js' — nesting
 // under subagents/ makes relative paths climb an extra level per level of
 // nesting, so this stays flat regardless of how deep an agent lives.
-import type { AgentConfig } from '#agent-config.js'
-import type { ModelCall } from '#run-agent.js'
+import type { AgentConfig } from '#core/agent-config.js'
+import type { ModelCall } from '#core/run-agent.js'
 
 export const config: AgentConfig = {
   name: 'billing-agent',

@@ -2,9 +2,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { runAgent, type Message, type ModelCall, type ModelResponse } from '#run-agent.js'
-import type { AgentConfig, ToolDefinition } from '#agent-config.js'
-import type { LoopEvent } from '#loop-events.js'
+import { runAgent, type Message, type ModelCall, type ModelResponse } from '#core/run-agent.js'
+import type { AgentConfig, ToolDefinition } from '#core/agent-config.js'
+import type { LoopEvent } from '#core/loop-events.js'
 
 function baseConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {

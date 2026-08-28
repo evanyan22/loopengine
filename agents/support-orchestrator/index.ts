@@ -3,8 +3,8 @@
 // run-agent.ts's loadSubagentAsTools and the README's "Subagents" section.
 // Nothing here imports or registers billing-agent by hand; the folder
 // alone is what wires it in.
-import type { AgentConfig } from '#agent-config.js'
-import type { ModelCall } from '#run-agent.js'
+import type { AgentConfig } from '#core/agent-config.js'
+import type { ModelCall } from '#core/run-agent.js'
 
 export const config: AgentConfig = {
   name: 'support-orchestrator',

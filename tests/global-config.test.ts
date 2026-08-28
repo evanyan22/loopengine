@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { describeModelProviders, describeGateways } from '../global-config.js'
+import { describeModelProviders, describeGateways } from '../web/global-config.js'
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-composio-cli.mjs')
 

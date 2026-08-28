@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { RedisSessionStore } from '../session-store.js'
+import { RedisSessionStore } from '../core/session-store.js'
 
 /** Just enough of ioredis's surface for RedisSessionStore: SET NX PX for
  * acquiring, EVAL for the two Lua scripts (unlock/renew, both "get, compare

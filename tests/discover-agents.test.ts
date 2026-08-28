@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { discoverAgents } from '../discover-agents.js'
+import { discoverAgents } from '../core/discover-agents.js'
 
 const dirs: string[] = []
 function tmpDir(): string {

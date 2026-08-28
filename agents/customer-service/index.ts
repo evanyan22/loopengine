@@ -10,7 +10,7 @@
 // since they're tied to this agent's own request-handling code
 // (tenantFor, sessionIdFor) in a way the rules themselves aren't.
 import { createHash } from 'node:crypto'
-import type { AgentConfig } from '#agent-config.js'
+import type { AgentConfig } from '#core/agent-config.js'
 
 // This agent's own session-key derivation — a customer's identity (their
 // email) is what "one conversation" means here, so that mapping lives on

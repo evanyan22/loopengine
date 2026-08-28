@@ -3,7 +3,7 @@
 // imports only this file, never reaching into individual tool files
 // directly, so adding or removing a tool here is the only place that
 // needs to change.
-import type { ToolDefinition } from '#agent-config.js'
+import type { ToolDefinition } from '#core/agent-config.js'
 import { lookupOrder } from './lookup_order.js'
 import { getShipmentDetails } from './get_shipment_details.js'
 import { issueRefund } from './issue_refund.js'

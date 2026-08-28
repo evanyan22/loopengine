@@ -21,7 +21,7 @@
 // paying for an agent whose gateway tools nobody looked at this visit.
 //
 // Embedded as a TS string (not a separate .html file), same reasoning as
-// adapters/playground.ts: tsc's ordinary compile emits it straight into
+// web/playground.ts: tsc's ordinary compile emits it straight into
 // dist/adapters/ alongside http.js, no asset-copy step needed. Plain string
 // concatenation, not a nested template literal, for the same
 // backtick/${}-escaping reason playground.ts's own header comment explains.
@@ -40,7 +40,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     height: 100vh;
   }
   /* Outer Agents/Models/Gateways section sidebar — matches
-     adapters/global-config-page.ts's own left nav, so this page (with
+     web/global-config-page.ts's own left nav, so this page (with
      Agents pre-selected) and /config (with Models pre-selected) read as
      two views of the same shell rather than unrelated pages. Models and
      Gateways are real links out to /config?section=..., not client-side
