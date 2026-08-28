@@ -11,7 +11,7 @@
     { "$ref": "#/$defs/toolStarted" },
     { "$ref": "#/$defs/toolResult" },
     { "$ref": "#/$defs/toollaneResult" },
-    { "$ref": "#/$defs/skillLoad" },
+    { "$ref": "#/$defs/skillLoaded" },
     { "$ref": "#/$defs/loopSkipped" },
     { "$ref": "#/$defs/loopMaxTurns" },
     { "$ref": "#/$defs/loopDenied" },
@@ -132,7 +132,7 @@
       "additionalProperties": false
     },
 
-    "skillLoad": {
+    "skillLoaded": {
       "type": "object",
       "description": "Engine. A Skill tool_use block was resolved to a real skill body via SkillGarden's own lazy load. Not gated by ActAuth — Skill invocation isn't a real tool call.",
       "required": ["type", "skill"],
