@@ -9,9 +9,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parse as parseYaml } from 'yaml'
 import { Gate, RuleSet, ConsoleApprover, type Approver, type Scope, type Decision, type Condition } from 'actauth'
 import { SkillGarden } from 'skillgarden'
-import { ContextClipper, type Message as ContextClipMessage } from 'contextclip'
+import { BudgetTracker, type Message as BudgetMessage } from './budget.js'
+import { Compactor } from './compaction.js'
 import { ToolLane, type ToolCall as LaneCall, type SafetyClassifier } from 'toollane'
-import { Reflow } from 'reflowkit'
+import { Recovery } from './recovery.js'
 import type { AgentConfig, ToolDefinition, ToolSchema } from '#core/agent-config.js'
 import { loadAgentModule } from './discover-agents.js'
 import { agentAsTool } from './agent-as-tool.js'
@@ -86,7 +87,7 @@ export interface ModelResponse {
 }
 
 /** loopengine's own conversation-message type — a superset of
- * ContextClip's `{role, content: string}`: `content` can also be a
+ * budget.ts's own `{role, content: string}`: `content` can also be a
  * `ModelContentBlock[]`, the same block shape `ModelResponse.content`
  * already used, so a model's tool_use requests and this loop's
  * tool_result replies round-trip with real per-call identity
@@ -163,7 +164,7 @@ export interface RunAgentResult {
    * the caller: store/transmit it, don't inspect or mutate it. */
   history: Message[]
   /** Exactly what this turn added — safe to durably append regardless of
-   * whether ContextClip recovery reshaped `history` mid-turn. A caller
+   * whether compaction.ts's own recovery reshaped `history` mid-turn. A caller
    * that persists conversations (see session-store.ts) should use this
    * instead of diffing `history` by length against what it loaded: that
    * only works if `history` only ever grows, which stops being true the
@@ -190,11 +191,11 @@ export interface RunAgentResult {
   stopReason?: 'max_turns' | 'denied'
 }
 
-/** ContextClip only ever needs a flat string per message to estimate
- * token usage — it doesn't need to understand tool_use/tool_result
+/** budget.ts/compaction.ts only ever need a flat string per message to
+ * estimate token usage — neither needs to understand tool_use/tool_result
  * structure, so this is a one-way, read-only projection, never something
  * that needs to be un-projected back. */
-function flattenForContextClip(message: Message): ContextClipMessage {
+function flattenForBudget(message: Message): BudgetMessage {
   if (typeof message.content === 'string') return { role: message.role, content: message.content }
   const text = message.content
     .map((block) => {
@@ -460,7 +461,14 @@ export async function runAgent(
   // Also the tail-preservation window recover() below relies on — kept as
   // one named constant so the two can never drift out of sync.
   const tailMessages = 4
-  const contextClip = new ContextClipper({ budgetTokens: config.contextBudgetTokens ?? 8000, tailMessages })
+  // Two separate objects, not one — budget.ts's BudgetTracker (read-only
+  // check) and compaction.ts's Compactor (the actual recovery) are
+  // deliberately distinct capabilities now, constructed with the same
+  // budgetTokens/softThreshold so a nudge firing and compaction's own
+  // recovery target agree — see budget.ts's own BudgetTrackerOptions doc
+  // comment.
+  const budgetTracker = new BudgetTracker({ budgetTokens: config.contextBudgetTokens ?? 8000 })
+  const compactor = new Compactor({ budgetTokens: config.contextBudgetTokens ?? 8000, softThreshold: budgetTracker.softThreshold, tailMessages })
   const rules = loadRules(config)
   const gate = new Gate(rules, config.approver ?? options.approver ?? new ConsoleApprover())
   // No explicit isSafeTool: fall back to each called tool's own `safe`
@@ -485,13 +493,13 @@ export async function runAgent(
     newMessages.push(message)
   }
 
-  const reflow = new Reflow<Message[]>({
+  const recovery = new Recovery<Message[]>({
     onPromptTooLong: async (currentMessages) => {
       // newMessages (this turn's own content — not durably stored
-      // anywhere else yet) must never be handed to ContextClip at all.
+      // anywhere else yet) must never be handed to the compactor at all.
       // An earlier version of this reconciliation tried to recover
-      // newMessages *after* compaction by reusing whatever ContextClip's
-      // synthetic head contained — that's unsound: ContextClip's cheap
+      // newMessages *after* compaction by reusing whatever the
+      // compactor's synthetic head contained — that's unsound: its cheap
       // "drain" stage doesn't produce a head at all, it just deletes old
       // messages outright, trusting there's a durable copy elsewhere.
       // That trust is only valid for the *prior* portion; only that
@@ -499,8 +507,8 @@ export async function runAgent(
       const priorCount = currentMessages.length - newMessages.length
       const priorPortion = currentMessages.slice(0, priorCount)
 
-      const result = await contextClip.recover(priorPortion.map(flattenForContextClip))
-      log({ type: 'reflow:recover', from: currentMessages.length, to: result.messages.length + newMessages.length })
+      const result = await compactor.recover(priorPortion.map(flattenForBudget))
+      log({ type: 'prompt:compaction', from: currentMessages.length, to: result.messages.length + newMessages.length })
       if (result.action === 'unchanged') return currentMessages
 
       // Same tail-preservation reuse as before, just scoped to
@@ -511,13 +519,13 @@ export async function runAgent(
       const newHead = result.messages.slice(0, result.messages.length - preservedTailCount)
       const recovered = [...newHead, ...structuredTail, ...newMessages]
 
-      // Reflow.call() only ever returns {value, recoveries, truncated} —
+      // Recovery.call() only ever returns {value, recoveries, truncated} —
       // it never hands back whatever `currentMessages` became after a
       // retry, so recovery would otherwise only ever affect the one
       // retried call. Reassigning the outer `messages` binding here (this
       // hook is the only place that has both the recovered array and a
       // reason to persist it) is what makes recovery durable: every
-      // subsequent contextClip.check() in this loop, and the `history`
+      // subsequent budgetTracker.check() in this loop, and the `history`
       // this function eventually returns, both see the compacted
       // conversation from this point on — not the original, ever-growing
       // one. newMessages itself needs no reconciliation at all — it was
@@ -591,15 +599,18 @@ export async function runAgent(
       return { text, history: messages, newMessages, stopReason: 'max_turns' }
     }
 
-    const budget = contextClip.check(messages.map(flattenForContextClip))
-    log({ type: 'contextclip:check', ...budget })
+    const budget = budgetTracker.check(messages.map(flattenForBudget))
+    log({ type: 'budget:check', ...budget })
     if (budget.action === 'nudge' && budget.nudge) pushMessage(budget.nudge)
 
-    const { value: response, recoveries } = await reflow.call(
-      (msgs) => modelCall(msgs, systemPrompt, toolSchemas),
-      messages,
-    )
-    if (recoveries.length > 0) log({ type: 'reflow:recoveries', recoveries })
+    // recovery.call()'s own return also includes `recoveries` (which of
+    // its three failure modes fired this call) and `truncated` — not
+    // used here: prompt:compaction above already reports the one
+    // recovery type that's actually wired to a real hook (onPromptTooLong),
+    // and there's no second type yet to justify a second, more generic
+    // event just to aggregate it (see PromptCompactionEvent's own doc
+    // comment for the removed 'recovery:summary').
+    const { value: response } = await recovery.call((msgs) => modelCall(msgs, systemPrompt, toolSchemas), messages)
 
     // The model's full response — text and tool_use blocks alike, with
     // real ids — becomes this turn's assistant message verbatim. Every
@@ -649,7 +660,7 @@ export async function runAgent(
       // so it still needs a tool_result to answer it, same as any other.
       if (block.name === 'Skill' && skillGarden) {
         const body = skillGarden.invoke(block.input!.skill as string, block.input?.args as string | undefined)
-        log({ type: 'skillgarden:invoke', skill: block.input!.skill as string })
+        log({ type: 'skill:loaded', skill: block.input!.skill as string })
         resultBlocks.push({ type: 'tool_result', tool_use_id: block.id!, content: body })
         continue
       }

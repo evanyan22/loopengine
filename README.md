@@ -403,6 +403,14 @@ into the playground and config page below.
 that same loop-step event stream render live instead of reading raw SSE
 frames. Same `/messages/stream` route underneath.
 
+**Building your own client:** the playground is one UI on top of a typed
+event protocol, not the only way to consume a turn — see
+[`PROTOCOL.md`](PROTOCOL.md) for the full `LoopEvent` catalog, the SSE/
+plain-HTTP/CLI transport bindings, and a JSON Schema
+(`protocol/loop-event.schema.json`) any language can validate against.
+`core/client.ts` and the `ui-examples/react`/`ui-examples/vue` hooks are
+reference implementations of it.
+
 **Agent config page:** open `http://localhost:8787/agents/config`
 (optionally `?agent=<name>`) to browse every registered agent's resolved
 config — system prompt, model, tools (with their JSON schemas and
@@ -433,8 +441,8 @@ testing), export your own `createModelCall(): ModelCall` instead.
 | Package | Responsibility |
 |---|---|
 | [`actauth`](https://www.npmjs.com/package/actauth) | Permission gating (allow/ask/deny) with human-approval hooks |
-| [`contextclip`](https://www.npmjs.com/package/contextclip) | Context-window budget tracking |
-| [`reflowkit`](https://www.npmjs.com/package/reflowkit) | Retries prompt-too-long / truncated-output failures |
+| `core/budget.ts` / `core/compaction.ts` | Context-window budget tracking and tail-preserving compaction (vendored in-repo, not an external dependency) |
+| `core/recovery.ts` | Retries prompt-too-long / truncated-output failures (vendored in-repo, not an external dependency) |
 | [`sessionknit`](https://www.npmjs.com/package/sessionknit) | Durable session log with crash-interruption detection |
 | [`skillgarden`](https://www.npmjs.com/package/skillgarden) | `SKILL.md` discovery and lazy loading |
 | [`toollane`](https://www.npmjs.com/package/toollane) | Parallel/solo tool-call scheduling |

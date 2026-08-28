@@ -1008,7 +1008,7 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   })
 
   const turnPromise = sessions.withSession(storageSessionId, async (history) => {
-    // onEvent already fires at every loop step (contextclip:check,
+    // onEvent already fires at every loop step (budget:check,
     // actauth:decision, toollane:result, ...) — streaming is just
     // forwarding those, not a separate code path through runAgent.
     // onQuestionPending is separate (see its own doc comment for why):

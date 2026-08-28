@@ -15,7 +15,7 @@
 // than just displaying whatever arrives) before doing so.
 //
 // Two families of variant:
-//  - Emitted directly by runAgent()'s own loop (contextclip:check through
+//  - Emitted directly by runAgent()'s own loop (budget:check through
 //    loop:done below) — one per meaningful step of the ReAct loop itself.
 //  - Synthesized by adapters/http.ts around a turn (session, approval:
 //    pending, question:pending, done, error) — not something runAgent()
@@ -23,34 +23,37 @@
 //    of the same lifecycle a caller observes, so they belong in the one
 //    union every consumer matches against rather than a second, parallel
 //    type living only in http.ts.
-import type { CheckResult } from 'contextclip'
-import type { RecoveryAction } from 'reflowkit'
+import type { CheckResult } from './budget.js'
 import type { Decision, PendingApproval } from 'actauth'
 import type { PendingQuestion } from './system-tools/index.js'
 
-/** ContextClipper's own read-only budget check, run once per loop turn
+/** BudgetTracker's own read-only budget check, run once per loop turn
  * before the model call — reported unchanged (spread, not renamed) so
- * this never drifts from whatever contextclip's own CheckResult actually
+ * this never drifts from whatever budget.ts's own CheckResult actually
  * contains. */
-export type ContextClipCheckEvent = { type: 'contextclip:check' } & CheckResult
+export type BudgetCheckEvent = { type: 'budget:check' } & CheckResult
 
-/** ContextClip recovery kicked in because the prompt was rejected as too
- * large — `from`/`to` are message-array lengths (this turn's own
+/** compaction.ts's own recovery kicked in because the prompt was rejected as
+ * too large — `from`/`to` are message-array lengths (this turn's own
  * newMessages included), not token counts; see run-agent.ts's own
- * reflow.call onPromptTooLong hook. */
-export interface ReflowRecoverEvent {
-  type: 'reflow:recover'
+ * recovery.call onPromptTooLong hook. Named after *what triggered it and
+ * what happened* (the prompt was too long, so it got compacted), not
+ * after which module did the work — "compaction:recover" still didn't
+ * say this only ever fires for the prompt-too-long case specifically,
+ * same problem contextclip:check's own rename from a package name was
+ * fixing in the first place.
+ *
+ * No sibling event for recovery.ts's other two failure modes
+ * (media-too-large, truncated output) — neither has an onMediaTooLarge/
+ * onTruncated hook actually wired up in run-agent.ts today, so neither
+ * can currently fire at all. A prior 'recovery:summary' aggregate event
+ * covering all three was removed for being ~100% redundant with this one
+ * while that's true; it can come back once a second real recovery type
+ * exists to aggregate. */
+export interface PromptCompactionEvent {
+  type: 'prompt:compaction'
   from: number
   to: number
-}
-
-/** Ordered log of whatever reflowkit's own Reflow.call had to do to get a
- * usable response this turn (prompt-too-long retries, truncation
- * retries, ...) — empty-array case never fires this event at all (see
- * run-agent.ts: only logged when recoveries.length > 0). */
-export interface ReflowRecoveriesEvent {
-  type: 'reflow:recoveries'
-  recoveries: RecoveryAction[]
 }
 
 /** The model's own "I'll do X" preamble alongside a tool_use request —
@@ -109,10 +112,13 @@ export interface ToolLaneResultEvent {
 }
 
 /** A `Skill` tool_use block was resolved to a real skill body via
- * SkillGarden — not gated by ActAuth (see run-agent.ts's own comment on
- * why Skill invocation isn't a real tool call). */
-export interface SkillGardenInvokeEvent {
-  type: 'skillgarden:invoke'
+ * SkillGarden's own lazy "index-now-load-later" design — not gated by
+ * ActAuth (see run-agent.ts's own comment on why Skill invocation isn't
+ * a real tool call). Named after what happened (the skill's full body
+ * got loaded), not after which library method was called — same
+ * reasoning budget:check's own rename from contextclip:check used. */
+export interface SkillLoadEvent {
+  type: 'skill:loaded'
   skill: string
 }
 
@@ -151,15 +157,14 @@ export interface LoopDoneEvent {
  * not the adapter-synthesized ones below, which no caller of runAgent()
  * itself ever produces. */
 export type RunAgentLoopEvent =
-  | ContextClipCheckEvent
-  | ReflowRecoverEvent
-  | ReflowRecoveriesEvent
+  | BudgetCheckEvent
+  | PromptCompactionEvent
   | AssistantTextEvent
   | ActauthDecisionEvent
   | ToolStartedEvent
   | ToolResultEvent
   | ToolLaneResultEvent
-  | SkillGardenInvokeEvent
+  | SkillLoadEvent
   | LoopSkippedEvent
   | LoopMaxTurnsEvent
   | LoopDeniedEvent

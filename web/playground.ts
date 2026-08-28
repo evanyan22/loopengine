@@ -203,9 +203,9 @@ export const playgroundHtml: string = `<!doctype html>
   }
   .event-actauth { border-left-color: #f59e0b; }
   .event-toollane { border-left-color: #3b82f6; }
-  .event-contextclip { border-left-color: #8b5cf6; }
-  .event-reflow { border-left-color: #ef4444; }
-  .event-skillgarden { border-left-color: #10b981; }
+  .event-budget { border-left-color: #8b5cf6; }
+  .event-prompt { border-left-color: #ef4444; }
+  .event-skill { border-left-color: #10b981; }
   .event-loop { border-left-color: #6b7280; }
   .event-approval { border-left-color: #eab308; }
   .event-question { border-left-color: #3b82f6; }

@@ -48,6 +48,8 @@
     "dist/core/gateway-tools.d.ts",
     "dist/core/system-tools",
     "core/system-skills",
+    "protocol/loop-event.schema.json",
+    "PROTOCOL.md",
     "LICENSE"
   ],
   "scripts": {
@@ -59,11 +61,9 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
     "actauth": "^0.0.7",
-    "contextclip": "^0.0.1",
     "ioredis": "^6.0.0",
     "mcpplug": "^0.0.1",
     "openai": "^7.4.0",
-    "reflowkit": "^0.0.1",
     "sessionknit": "^0.0.2",
     "skillgarden": "^0.0.5",
     "toollane": "^0.0.1",

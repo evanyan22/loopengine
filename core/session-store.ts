@@ -37,7 +37,7 @@ export interface SessionResult<T> {
    * This has to come from the caller explicitly (runAgent's own
    * RunAgentResult.newMessages) rather than being inferred by diffing a
    * returned `history` against what withSession loaded: that only works
-   * if history only ever grows, which isn't true once ContextClip
+   * if history only ever grows, which isn't true once compaction.ts's own
    * recovery can shrink/rewrite it mid-turn — see RunAgentResult's own
    * doc comment for the full reasoning. */
   newMessages: Message[]

@@ -11,22 +11,26 @@ import type { ModelCall } from '#core/run-agent.js'
 import { VectorIndex } from '../core/vector-index.js'
 
 // A tiny knowledge base — short excerpts from the sibling libraries'
-// READMEs, standing in for "your real document corpus." Swap the source
-// (a directory of docs chunked at load time, a database, a real vector
-// DB client) and search_docs works unchanged; the tool's shape is the
-// whole seam, same as ContextClip's Summarizer or ActAuth's Approver.
+// READMEs (plus loopengine's own vendored budget/compaction/recovery
+// trio, which used to be two of those sibling libraries — contextclip
+// and reflowkit — before they were folded in; see core/budget.ts's own
+// header comment), standing in for "your real document corpus." Swap the
+// source (a directory of docs chunked at load time, a database, a real
+// vector DB client) and search_docs works unchanged; the tool's shape is
+// the whole seam, same as compaction.ts's Summarizer or ActAuth's
+// Approver.
 const KNOWLEDGE_BASE: Array<{ id: string; text: string }> = [
   {
     id: 'actauth',
     text: 'ActAuth is a self-hosted policy gate for AI agent tool calls. A declarative rule set decides allow, ask, or deny per call, and ask routes to a human approver who must approve or deny before the tool runs. Every decision writes to an append-only audit log.',
   },
   {
-    id: 'contextclip',
-    text: 'ContextClip is a budget tracker and compaction engine for agent conversation history. It checks token usage against a soft and hard threshold, and recovers on overflow by draining old messages before falling back to summarization, always preserving the most recent tail messages untouched.',
+    id: 'budget',
+    text: "loopengine's own budget tracker and compaction pair (core/budget.ts, core/compaction.ts) checks token usage against a soft and hard threshold, and recovers on overflow by draining old messages before falling back to summarization, always preserving the most recent tail messages untouched.",
   },
   {
-    id: 'reflow',
-    text: 'Reflow wraps a model API call with reactive recovery: it compacts and retries when a prompt is too long, strips and retries when media is oversized, and retries with recovery when a response comes back truncated.',
+    id: 'recovery',
+    text: "loopengine's own Recovery (core/recovery.ts) wraps a model API call with reactive recovery: it compacts and retries when a prompt is too long, strips and retries when media is oversized, and retries with recovery when a response comes back truncated.",
   },
   {
     id: 'sessionknit',

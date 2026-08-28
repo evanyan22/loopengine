@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loopengine.co/protocol/loop-event.schema.json",
+  "title": "LoopEvent",
+  "description": "The full wire vocabulary of a loopengine turn — mirrors core/loop-events.ts exactly. One object per event; `type` is both the JSON discriminant and, on the SSE transport, the literal `event:` field name. See /PROTOCOL.md for transport bindings and stability guarantees.",
+  "oneOf": [
+    { "$ref": "#/$defs/budgetCheck" },
+    { "$ref": "#/$defs/promptCompaction" },
+    { "$ref": "#/$defs/assistantText" },
+    { "$ref": "#/$defs/actauthDecision" },
+    { "$ref": "#/$defs/toolStarted" },
+    { "$ref": "#/$defs/toolResult" },
+    { "$ref": "#/$defs/toollaneResult" },
+    { "$ref": "#/$defs/skillLoad" },
+    { "$ref": "#/$defs/loopSkipped" },
+    { "$ref": "#/$defs/loopMaxTurns" },
+    { "$ref": "#/$defs/loopDenied" },
+    { "$ref": "#/$defs/loopDone" },
+    { "$ref": "#/$defs/session" },
+    { "$ref": "#/$defs/approvalPending" },
+    { "$ref": "#/$defs/questionPending" },
+    { "$ref": "#/$defs/done" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "scope": {
+      "type": "object",
+      "description": "ActAuth's own Scope — which rules apply.",
+      "required": ["tenant", "environment", "agent"],
+      "properties": {
+        "tenant": { "type": "string" },
+        "environment": { "type": "string" },
+        "agent": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "budgetCheck": {
+      "type": "object",
+      "description": "Engine. Read-only context-budget check, run once per model call.",
+      "required": ["type", "action", "usedTokens", "budgetTokens", "ratio"],
+      "properties": {
+        "type": { "const": "budget:check" },
+        "action": { "enum": ["ok", "nudge", "over_hard_limit"] },
+        "usedTokens": { "type": "number" },
+        "budgetTokens": { "type": "number" },
+        "ratio": { "type": "number" },
+        "nudge": {
+          "type": "object",
+          "description": "Present only when action is 'nudge'.",
+          "required": ["role", "content"],
+          "properties": { "role": { "type": "string" }, "content": { "type": "string" } }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "promptCompaction": {
+      "type": "object",
+      "description": "Engine. The prompt was rejected as too long, so compaction.ts's own recovery kicked in. from/to are message-array lengths, not token counts. The only recovery type with a dedicated event today — recovery.ts's other two failure modes (media-too-large, truncated output) have no hook wired up in run-agent.ts yet, so neither can currently fire.",
+      "required": ["type", "from", "to"],
+      "properties": {
+        "type": { "const": "prompt:compaction" },
+        "from": { "type": "number" },
+        "to": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+
+    "assistantText": {
+      "type": "object",
+      "description": "Engine. The model's own preamble alongside a tool_use request — the only live glimpse of assistant text before the turn's final answer.",
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "assistant:text" },
+        "text": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "actauthDecision": {
+      "type": "object",
+      "description": "Engine. One ActAuth Gate.evaluate() outcome per requested tool call. decision:'allow' can still mean a human was asked and said yes — see approval:pending for the live ask itself.",
+      "required": ["type", "tool", "decision", "reason"],
+      "properties": {
+        "type": { "const": "actauth:decision" },
+        "tool": { "type": "string" },
+        "decision": { "enum": ["allow", "ask", "deny"] },
+        "reason": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "toolStarted": {
+      "type": "object",
+      "description": "Engine. Fired the instant a call is decided, before it runs. Matched to its later tool:result by id.",
+      "required": ["type", "id", "tool", "args", "detailText"],
+      "properties": {
+        "type": { "const": "tool:started" },
+        "id": { "type": "string" },
+        "tool": { "type": "string" },
+        "args": { "type": "object" },
+        "detailText": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "toolResult": {
+      "type": "object",
+      "description": "Engine. A tool call's resolution — auto-allowed, interactively approved, denied, or skipped alike. args/detailText are omitted on some denied/skipped paths.",
+      "required": ["type", "id", "tool", "statusText"],
+      "properties": {
+        "type": { "const": "tool:result" },
+        "id": { "type": "string" },
+        "tool": { "type": "string" },
+        "args": { "type": "object" },
+        "detailText": { "type": "string" },
+        "statusText": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "toollaneResult": {
+      "type": "object",
+      "description": "Engine. ToolLane's own raw fulfil/reject outcome, logged alongside (not instead of) tool:result.",
+      "required": ["type", "name", "summary"],
+      "properties": {
+        "type": { "const": "toollane:result" },
+        "name": { "type": "string" },
+        "summary": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "skillLoad": {
+      "type": "object",
+      "description": "Engine. A Skill tool_use block was resolved to a real skill body via SkillGarden's own lazy load. Not gated by ActAuth — Skill invocation isn't a real tool call.",
+      "required": ["type", "skill"],
+      "properties": {
+        "type": { "const": "skill:loaded" },
+        "skill": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "loopSkipped": {
+      "type": "object",
+      "description": "Engine. An approved call never ran because a sibling call in the same batch was denied — the whole batch cancels together.",
+      "required": ["type", "name", "deniedTools"],
+      "properties": {
+        "type": { "const": "loop:skipped" },
+        "name": { "type": "string" },
+        "deniedTools": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+
+    "loopMaxTurns": {
+      "type": "object",
+      "description": "Engine. Hit config.maxTurns without the model producing a final answer. Terminal for the turn — see 'done'.",
+      "required": ["type", "maxTurns"],
+      "properties": {
+        "type": { "const": "loop:max_turns" },
+        "maxTurns": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+
+    "loopDenied": {
+      "type": "object",
+      "description": "Engine. A human denied at least one requested tool call this turn — the whole turn stops right there. Terminal for the turn — see 'done'.",
+      "required": ["type", "deniedTools"],
+      "properties": {
+        "type": { "const": "loop:denied" },
+        "deniedTools": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+
+    "loopDone": {
+      "type": "object",
+      "description": "Engine. A genuine finish — the model produced text with no more tool_use blocks. Terminal for the turn — see 'done'.",
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "loop:done" },
+        "text": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "session": {
+      "type": "object",
+      "description": "Adapter. First event of every streamed turn — echoes back which session id this turn used.",
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "session" },
+        "sessionId": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "approvalPending": {
+      "type": "object",
+      "description": "Adapter. A tool call needs a live human 'ask' decision. Resolve via POST /approvals/:id/approve or /deny.",
+      "required": ["type", "id", "tool", "args", "scope", "reason", "requestedAt"],
+      "properties": {
+        "type": { "const": "approval:pending" },
+        "id": { "type": "string" },
+        "tool": { "type": "string" },
+        "args": { "type": "object" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "reason": { "type": "string" },
+        "requestedAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+
+    "questionPending": {
+      "type": "object",
+      "description": "Adapter. The system ask_user tool raised a genuinely ambiguous question. Resolve via POST /questions/:id/answer.",
+      "required": ["type", "id", "question", "agent", "requestedAt"],
+      "properties": {
+        "type": { "const": "question:pending" },
+        "id": { "type": "string" },
+        "question": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "agent": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "requestedAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+
+    "done": {
+      "type": "object",
+      "description": "Adapter. The turn is over — covers loop:done, loop:max_turns, and loop:denied alike. The one event every consumer can treat as 'nothing more is coming'.",
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "done" },
+        "text": { "type": "string" },
+        "stopReason": { "enum": ["max_turns", "denied"] }
+      },
+      "additionalProperties": false
+    },
+
+    "error": {
+      "type": "object",
+      "description": "Adapter. Something failed after the response was already committed — surfaced in-band since it's too late for an HTTP status code.",
+      "required": ["type", "error"],
+      "properties": {
+        "type": { "const": "error" },
+        "error": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

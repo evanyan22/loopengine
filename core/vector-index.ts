@@ -3,7 +3,7 @@
 // plus cosine-similarity search. Real technique (the "hashing trick"),
 // just not a learned one — good enough to prove the retrieval mechanics
 // end-to-end without wiring up a live embedding model. Swap embed() for a
-// real one and VectorIndex works unchanged: same seam as ContextClip's
+// real one and VectorIndex works unchanged: same seam as compaction.ts's
 // Summarizer or ActAuth's Approver — a working default the rest of the
 // pipeline can be built and tested against.
 // Higher dimensions mean fewer hash collisions between unrelated tokens,

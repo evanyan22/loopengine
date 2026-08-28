@@ -13,7 +13,7 @@
 //
 // stop_reason is normalized to the vocabulary anthropic-model-call.ts
 // already established ('end_turn' / 'tool_use' / 'max_tokens') rather than
-// passed through as OpenAI's own finish_reason strings — reflowkit's
+// passed through as OpenAI's own finish_reason strings — recovery.ts's
 // defaultIsTruncated checks a translated ModelResponse for stop_reason ===
 // 'max_tokens', so a provider-agnostic caller wiring up onTruncated later
 // gets the same behavior regardless of which ModelCall is plugged in.

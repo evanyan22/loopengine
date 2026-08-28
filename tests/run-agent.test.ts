@@ -338,7 +338,7 @@ describe('runAgent', () => {
     expect(results[0].tool_use_id).toBe('t1')
     expect(results[0].content).toContain('Summarize files')
 
-    expect(events.some((e) => e.type === 'skillgarden:invoke')).toBe(true)
+    expect(events.some((e) => e.type === 'skill:loaded')).toBe(true)
     expect(events.some((e) => e.type === 'actauth:decision')).toBe(false)
     expect(events.some((e) => e.type === 'toollane:result')).toBe(false)
 
@@ -607,7 +607,7 @@ describe('runAgent', () => {
     expect(events.some((e) => e.type === 'toollane:result')).toBe(true)
   })
 
-  it('recovers via reflow when the model call reports the prompt is too long', async () => {
+  it('recovers via compaction when the model call reports the prompt is too long', async () => {
     let call = 0
     const modelCall: ModelCall = vi.fn(async (messages) => {
       call++
@@ -625,7 +625,7 @@ describe('runAgent', () => {
     })
 
     expect(modelCall).toHaveBeenCalledTimes(2)
-    expect(events.some((e) => e.type === 'reflow:recover')).toBe(true)
+    expect(events.some((e) => e.type === 'prompt:compaction')).toBe(true)
     expect(result.text).toMatch(/^ok with \d+ messages$/)
   })
 
@@ -715,7 +715,7 @@ describe('runAgent', () => {
     // already pushed by the time the THIRD modelCall attempt throws —
     // past tailMessages (4), so a naive "reuse the synthetic head"
     // reconciliation would risk this turn's own earliest message getting
-    // silently dropped (ContextClip's drain stage deletes outright, no
+    // silently dropped (compaction.ts's drain stage deletes outright, no
     // synthetic replacement) instead of protected outright.
     let call = 0
     const modelCall: ModelCall = vi.fn(async () => {
