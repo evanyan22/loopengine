@@ -1,1 +1,0 @@
-Support ticket volume dropped 8% after the new onboarding flow shipped.
