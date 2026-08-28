@@ -9,7 +9,7 @@
 // these stay thin wrappers around those files rather than a built-in
 // runner/server this package hides inside itself.
 import { realpathSync } from 'node:fs'
-import { access, mkdir, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -43,6 +43,28 @@ function tsStringLiteral(value: string): string {
   return "'" + value.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'"
 }
 
+/** 'loopengine' for a real consumer project — the only thing that ever
+ * resolves once this package is genuinely installed as a dependency. A
+ * checkout of this repo itself has no such install (see this repo's own
+ * git history around the reverted self-link attempt: pointing
+ * node_modules/loopengine back at itself collides with tsc trying to
+ * write dist/ while also reading it as an input), so a file scaffolded
+ * *into this repo* — an agent created via `loopengine dev`'s admin UI
+ * while hacking on loopengine itself, say — needs the same internal
+ * alias every hand-maintained demo agent here already uses instead.
+ * Detected by baseDir's own package.json name rather than a flag the
+ * caller has to remember to pass, so this can never drift out of sync
+ * with which project is actually being scaffolded into. */
+async function configImportSpecifier(baseDir: string): Promise<string> {
+  try {
+    const raw = await readFile(path.join(baseDir, 'package.json'), 'utf8')
+    const pkg = JSON.parse(raw) as { name?: string }
+    return pkg.name === 'loopengine' ? '#core/agent-config.js' : 'loopengine'
+  } catch {
+    return 'loopengine'
+  }
+}
+
 /** Generates agents/<name>/index.ts's real content. `options` is
  * entirely optional and defaults to exactly what this template always
  * wrote before it existed ('You are ...', anthropic/claude-sonnet-5) —
@@ -51,11 +73,11 @@ function tsStringLiteral(value: string): string {
  * default model (only anthropic's is optional — see AgentModelConfig's
  * own doc comment), so scaffoldAgent validates a model name was given
  * for those rather than this function silently writing a wrong one. */
-export function agentIndexTemplate(name: string, options: AgentTemplateOptions = {}): string {
+export function agentIndexTemplate(name: string, options: AgentTemplateOptions = {}, importSpecifier = 'loopengine'): string {
   const systemPrompt = options.systemPrompt?.trim() || 'You are ...'
   const provider = options.model?.provider ?? 'anthropic'
   const modelName = options.model?.model?.trim() || (provider === 'anthropic' ? 'claude-sonnet-5' : '')
-  return `import type { AgentConfig } from 'loopengine'
+  return `import type { AgentConfig } from '${importSpecifier}'
 
 export const config: AgentConfig = {
   name: '${name}',
@@ -71,8 +93,8 @@ export const config: AgentConfig = {
  * without a real toolDescription: it's what the parent agent's model
  * reads to decide when to delegate here, and systemPrompt (instructions
  * for this agent itself) isn't a substitute. See agent-as-tool.ts. */
-export function subagentIndexTemplate(name: string): string {
-  return `import type { AgentConfig } from 'loopengine'
+export function subagentIndexTemplate(name: string, importSpecifier = 'loopengine'): string {
+  return `import type { AgentConfig } from '${importSpecifier}'
 
 export const config: AgentConfig = {
   name: '${name}',
@@ -106,7 +128,7 @@ export async function scaffoldAgent(baseDir: string, name: string, options: Agen
   }
 
   await mkdir(dir, { recursive: true })
-  await writeFile(indexPath, agentIndexTemplate(name, options))
+  await writeFile(indexPath, agentIndexTemplate(name, options, await configImportSpecifier(baseDir)))
   return indexPath
 }
 
@@ -158,7 +180,7 @@ export async function scaffoldSubagent(baseDir: string, parent: string, name: st
   }
 
   await mkdir(dir, { recursive: true })
-  await writeFile(indexPath, subagentIndexTemplate(name))
+  await writeFile(indexPath, subagentIndexTemplate(name, await configImportSpecifier(baseDir)))
   return indexPath
 }
 
