@@ -1,4 +1,4 @@
-import type { AgentConfig } from 'loopengine'
+import type { AgentConfig } from '#core/agent-config.js'
 
 export const config: AgentConfig = {
   name: 'web-agent',
