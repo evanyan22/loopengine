@@ -12,7 +12,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "loopengine": "dist/cli.js"
+    "loopengine": "dist/bin/cli.js"
   },
   "imports": {
     "#*": "./*"
@@ -20,8 +20,8 @@
   "files": [
     "dist/index.js",
     "dist/index.d.ts",
-    "dist/cli.js",
-    "dist/cli.d.ts",
+    "dist/bin/cli.js",
+    "dist/bin/cli.d.ts",
     "dist/core/run-agent.js",
     "dist/core/run-agent.d.ts",
     "dist/core/loop-events.js",
@@ -51,7 +51,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc && chmod +x dist/cli.js",
+    "build": "tsc; s=$?; chmod +x dist/bin/cli.js; exit $s",
     "prepublishOnly": "npm run build",
     "start": "node --env-file-if-exists=.env dist/adapters/http.js",
     "test": "vitest run"

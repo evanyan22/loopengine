@@ -172,7 +172,7 @@ export const agentsListPageHtml: string = `<!doctype html>
   // failed for some reason) — that case still needs a real restart,
   // same as before this existed; loopengine dev picks it up
   // automatically via its own --include 'agents/*/index.ts' (see
-  // cli.ts's own comment there).
+  // bin/cli.ts's own comment there).
   newAgentBtn.addEventListener('click', function () {
     newAgentBtn.style.display = 'none';
     newAgentForm.style.display = 'flex';

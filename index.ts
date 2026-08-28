@@ -1,5 +1,5 @@
 // The public API — everything a consumer building on loopengine needs to
-// define and run their own agent. `agents/*.ts`, `agent-registry.ts`,
+// define and run their own agent. `agents/*.ts`, `core/agent-registry.ts`,
 // `adapters/*.ts`, and the Dockerfile are this repo's own reference app
 // built on top of this surface, not part of it — see the README section
 // "Using loopengine as a library" for the boundary and why.

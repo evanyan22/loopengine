@@ -22,7 +22,7 @@ export { systemTools } from './system-tools/index.js'
 export type * from './loop-events.js'
 
 // Resolved relative to *this file's own location* (via import.meta.url),
-// not process.cwd() — the same reasoning agent-registry.ts's own
+// not process.cwd() — the same reasoning core/agent-registry.ts's own
 // agentsDir uses. In dev (tsx), this file lives in core/ with agents/ one
 // level up, at repo root. In the built dist/, this file is
 // dist/core/run-agent.js with dist/agents/**/*.js (tsc-compiled,

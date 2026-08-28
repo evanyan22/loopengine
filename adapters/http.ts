@@ -26,7 +26,7 @@
 // file's call — see AgentConfig.sessionIdFor and defaultSessionIdFor below.
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { getEntry, listAgents, projectDir, registerAgent, updateAgent, type RegistryEntry } from '../agent-registry.js'
+import { getEntry, listAgents, projectDir, registerAgent, updateAgent, type RegistryEntry } from '../core/agent-registry.js'
 import { loadAgentModule, synthesizeCreateModelCall } from '#core/discover-agents.js'
 import { editAgentFile, AgentEditNotSupportedError, AgentFileNotFoundError, type AgentEditResult } from '#web/agent-file-admin.js'
 import { createSessionStore } from '../core/session-store.js'
@@ -63,7 +63,7 @@ import {
   ActauthRuleNotFoundError,
 } from '#web/actauth-admin.js'
 import { describeModelProviders, describeGateways } from '#web/global-config.js'
-import { scaffoldAgent, AgentNameError, AgentExistsError, AgentModelError, type AgentTemplateOptions } from '#cli.js'
+import { scaffoldAgent, AgentNameError, AgentExistsError, AgentModelError, type AgentTemplateOptions } from '#bin/cli.js'
 import { createTrackedApprover, listApprovals, decideApproval, findApproval } from '#web/web-approver.js'
 import { listQuestions, answerQuestion, findQuestion, createAskUserTool, type PendingQuestion } from '#core/system-tools/index.js'
 import type { Decision, PendingApproval } from 'actauth'
@@ -424,16 +424,16 @@ async function handleComposioDisconnect(res: ServerResponse): Promise<void> {
 }
 
 // Backs the agents list page's "Create new agent" button — reuses
-// cli.ts's own scaffoldAgent rather than re-implementing the
+// bin/cli.ts's own scaffoldAgent rather than re-implementing the
 // agents/<name>/index.ts template here, so a web-created agent is
 // byte-for-byte the same stub `loopengine add-agent` would generate.
-// scaffoldAgent runs against agent-registry.ts's own projectDir(), not
+// scaffoldAgent runs against core/agent-registry.ts's own projectDir(), not
 // process.cwd() — they're usually the same directory, but only
 // projectDir() is guaranteed to match where this registry's own
 // discoverAgents call actually resolved agents/ against (see its own
 // doc comment), which is what matters here.
 //
-// Unlike agent-registry.ts's own discoverAgents (a one-shot directory
+// Unlike core/agent-registry.ts's own discoverAgents (a one-shot directory
 // scan at process startup — see that module's header comment), this
 // loads and registers the new agent into *this* running process
 // immediately: loadAgentModule imports just the one new file (the same
@@ -449,7 +449,7 @@ async function handleComposioDisconnect(res: ServerResponse): Promise<void> {
 // still there on disk — reported as `registered: false` rather than
 // treated as the whole request failing, since scaffolding did succeed;
 // a restart (or `loopengine dev`'s own auto-restart on new
-// agents/*/index.ts files — see cli.ts's own comment there) would still
+// agents/*/index.ts files — see bin/cli.ts's own comment there) would still
 // pick it up the normal way.
 // systemPrompt/model are both optional in the request body — see
 // AgentTemplateOptions' own doc comment (via agentIndexTemplate) for the
@@ -512,7 +512,7 @@ async function handleCreateAgent(req: IncomingMessage, res: ServerResponse): Pro
 // agent-file-admin.ts's editAgentFile (see its own doc comment for why
 // this is a surgical AST edit, not a full file regeneration), then
 // applies the exact same resolved values to *this* running process via
-// agent-registry.ts's updateAgent — a model change also needs a fresh
+// core/agent-registry.ts's updateAgent — a model change also needs a fresh
 // createModelCall (see synthesizeCreateModelCall's own doc comment for
 // why that's regenerable on its own, unlike the rest of an already-
 // imported module). No restart needed, same as every other admin edit
@@ -912,7 +912,7 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
     pushSignal(state, { type: 'approval', entry: approval })
   })
 
-  // Fresh modelCall per request — see agent-registry.ts. Not awaited
+  // Fresh modelCall per request — see core/agent-registry.ts. Not awaited
   // directly below — see raceAndRespond's own Promise.race for why.
   const turnPromise = sessions.withSession(storageSessionId, async (history) => {
     const result = await runAgent(entry.config, entry.createModelCall(), message, history, {

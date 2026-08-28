@@ -5,7 +5,7 @@
 // re-deriving SSE parsing or the approval/question REST calls.
 //
 // Illustrative only: this file lives outside tsconfig.json's own
-// `include` globs (examples/** isn't listed) so it isn't type-checked as
+// `include` globs (ui-examples/** isn't listed) so it isn't type-checked as
 // part of this package's build, since 'react' isn't a dependency here. In
 // a real consumer app, everything below imports from the bare 'loopengine'
 // package specifier — this package has no "exports" map, so index.ts is

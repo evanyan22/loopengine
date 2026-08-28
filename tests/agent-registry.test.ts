@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { getEntry, listAgents, projectDir, registerAgent } from '../agent-registry.js'
+import { getEntry, listAgents, projectDir, registerAgent } from '../core/agent-registry.js'
 
 describe('projectDir', () => {
   it("resolves to this repo's own root — the same base discoverAgents resolved agents/ against at import time", () => {
@@ -14,7 +14,7 @@ describe('projectDir', () => {
 
 describe('registerAgent', () => {
   // No disk fixture needed — registerAgent takes an already-loaded
-  // AgentModule directly (see agent-registry.ts's own doc comment: it's
+  // AgentModule directly (see core/agent-registry.ts's own doc comment: it's
   // for a caller, like adapters/http.ts's handleCreateAgent, that's
   // already run loadAgentModule itself). Mutates the module's real,
   // shared in-memory registry — same "no unregister, matches the no-

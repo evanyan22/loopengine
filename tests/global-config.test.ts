@@ -34,7 +34,7 @@ describe('describeModelProviders', () => {
 
   it('lists every registered agent with a resolved model config, from the real agents/ registry', () => {
     const { agents } = describeModelProviders()
-    // agent-registry.ts discovers the repo's own real agents/ directory
+    // core/agent-registry.ts discovers the repo's own real agents/ directory
     // at import time (see its own top-level await) — customer-service is
     // one of this repo's real demo agents, with a known, hand-set model.
     expect(agents).toContainEqual({ agent: 'customer-service', provider: 'deepseek', model: 'deepseek-v4-pro' })

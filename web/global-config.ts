@@ -7,7 +7,7 @@
 // which gateway providers (Composio today) this machine's CLI session
 // is authenticated against — neither is a property of any one
 // AgentConfig.
-import { listAgents, getEntry } from '../agent-registry.js'
+import { listAgents, getEntry } from '../core/agent-registry.js'
 import { getComposioAuthStatus } from '../core/gateway-tools.js'
 
 export interface ModelProviderInfo {

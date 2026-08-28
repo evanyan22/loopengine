@@ -23,7 +23,7 @@ COPY --from=build /app/dist ./dist
 # hold only a README.md each right now — pure dev docs, nothing a
 # runtime import ever reaches, so they're deliberately not copied here.
 COPY --from=build /app/agents ./agents
-COPY --from=build /app/examples ./examples
+COPY --from=build /app/ui-examples ./ui-examples
 
 EXPOSE 8787
 CMD ["node", "dist/adapters/http.js"]

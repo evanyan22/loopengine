@@ -19,9 +19,9 @@
 // systemPrompt, a custom createModelCall instead of config.model, ...)
 // is exactly the case this must never touch blindly.
 //
-// Deliberately lives outside cli.ts, even though it reuses cli.ts's own
-// AgentModelError/Provider shape: cli.ts is published as loopengine's
-// own CLI binary (dist/cli.js — see package.json's own "files" list),
+// Deliberately lives outside bin/cli.ts, even though it reuses bin/cli.ts's own
+// AgentModelError/Provider shape: bin/cli.ts is published as loopengine's
+// own CLI binary (dist/bin/cli.js — see package.json's own "files" list),
 // and this module's use of the `typescript` package (a devDependency,
 // not a real dependency, of this package) would risk breaking
 // `npx loopengine <command>` for any consumer whose own project doesn't
@@ -36,7 +36,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import ts from 'typescript'
 import { agentDir } from '../core/gateway-tools.js'
-import { AgentModelError } from '../cli.js'
+import { AgentModelError } from '../bin/cli.js'
 
 export class AgentEditNotSupportedError extends Error {}
 export class AgentFileNotFoundError extends Error {}
@@ -49,7 +49,7 @@ const MODEL_ENV_VAR: Record<Provider, string> = {
   deepseek: 'DEEPSEEK_API_KEY',
 }
 
-// The exact shape agentIndexTemplate (cli.ts) always generates for the
+// The exact shape agentIndexTemplate (bin/cli.ts) always generates for the
 // model field's trailing comment — used to recognize a comment this
 // tooling itself wrote (safe to correct) versus anything else an
 // operator might have hand-written there (left alone — see
@@ -68,8 +68,8 @@ export interface AgentEditResult {
 
 // Escapes a value for safe interpolation into a single-quoted TS string
 // literal in generated code — same reasoning (and same escaping) as
-// cli.ts's own tsStringLiteral, duplicated rather than imported since
-// cli.ts's copy is a private, unexported helper and this is the only
+// bin/cli.ts's own tsStringLiteral, duplicated rather than imported since
+// bin/cli.ts's copy is a private, unexported helper and this is the only
 // other place that needs it.
 function tsStringLiteral(value: string): string {
   return "'" + value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n') + "'"
@@ -117,7 +117,7 @@ interface TextEdit {
  * shape. Returns the values actually written (model's own default
  * resolution included), so the caller (adapters/http.ts's
  * handleEditAgent) can apply the exact same values to the *live*
- * registry entry — see agent-registry.ts's own updateAgent — without
+ * registry entry — see core/agent-registry.ts's own updateAgent — without
  * needing to re-derive them. A field omitted from `fields` entirely is
  * left completely untouched, both on disk and in the return value. */
 export function editAgentFile(agentName: string, fields: AgentEditableFields): AgentEditResult {

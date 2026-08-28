@@ -24,7 +24,7 @@
 // otherwise — either way, safe for concurrent invocations against the
 // same --session.
 import { randomUUID } from 'node:crypto'
-import { getEntry, listAgents } from '../agent-registry.js'
+import { getEntry, listAgents } from '../core/agent-registry.js'
 import { createSessionStore } from '../core/session-store.js'
 import { runAgent } from '#core/run-agent.js'
 import type { LoopEvent } from '#core/loop-events.js'

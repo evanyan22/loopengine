@@ -348,7 +348,7 @@ async function main(): Promise<void> {
   // 'agents/**' — tsx watch on its own only tracks the actual ES module
   // graph, so a *new* agents/<name>/index.ts (e.g. from the admin UI's
   // "Create new agent," or from `loopengine add-agent`) wouldn't
-  // otherwise trigger a restart at all: agent-registry.ts discovers
+  // otherwise trigger a restart at all: core/agent-registry.ts discovers
   // agents once via a top-level `readdirSync` (see discover-agents.ts),
   // not an import, so tsx's watcher has no static edge to that new file
   // until this flag adds one. A wider 'agents/**' would also match

@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { AgentExistsError, AgentModelError, AgentNameError, AgentNotFoundError, scaffoldAgent, scaffoldSubagent } from '../cli.js'
+import { AgentExistsError, AgentModelError, AgentNameError, AgentNotFoundError, scaffoldAgent, scaffoldSubagent } from '../bin/cli.js'
 
-const cliSourcePath = join(dirname(fileURLToPath(import.meta.url)), '..', 'cli.ts')
+const cliSourcePath = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cli.ts')
 
 const dirs: string[] = []
 function tmpDir(): string {
@@ -132,10 +132,10 @@ describe('scaffoldSubagent', () => {
 })
 
 // run/serve/dev delegate to the *project's* own adapters/cli.ts and
-// adapters/http.ts (create-loopengine's own scaffold — see cli.ts's own
+// adapters/http.ts (create-loopengine's own scaffold — see bin/cli.ts's own
 // header comment) via a real `npx tsx` subprocess, not something
 // importable/mockable directly — so these are exercised the same way as
-// the symlink test below, running the real cli.ts source against a real
+// the symlink test below, running the real bin/cli.ts source against a real
 // tmp cwd. `dev` only gets its error-path tested here, not a full happy
 // path: it runs via `tsx watch`, which never exits on its own, so an
 // execFileSync-based happy-path test would just hang.

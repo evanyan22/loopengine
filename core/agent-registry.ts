@@ -6,13 +6,19 @@
 // AgentConfig.name at import time, below.
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { discoverAgents, type AgentModule } from './core/discover-agents.js'
-import type { AgentConfig } from '#core/agent-config.js'
-import type { ModelCall } from '#core/run-agent.js'
+import { discoverAgents, type AgentModule } from './discover-agents.js'
+import type { AgentConfig } from './agent-config.js'
+import type { ModelCall } from './run-agent.js'
 
 export type RegistryEntry = AgentModule
 
-const projectRoot = dirname(fileURLToPath(import.meta.url))
+// One level up from this file's own location — this file lives in core/
+// alongside discover-agents.ts/agent-config.ts/run-agent.ts, but agents/
+// itself is a repo-root folder, a sibling of core/, not something nested
+// inside it (same "resolved relative to this module, not process.cwd()"
+// reasoning run-agent.ts's own agentsRootDir uses, and the same '..' it
+// needs for the same reason).
+const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const agentsDir = join(projectRoot, 'agents')
 
 // Top-level await: ESM guarantees an importer's own evaluation (adapters/

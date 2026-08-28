@@ -18,7 +18,7 @@ export class SkillInvalidIdError extends Error {}
 export class SkillNotFoundError extends Error {}
 
 // Same character set agent/subagent names are already validated against
-// elsewhere in this repo (cli.ts's NAME_PATTERN) — a skill id becomes a
+// elsewhere in this repo (bin/cli.ts's NAME_PATTERN) — a skill id becomes a
 // directory name on disk, so this is what keeps it from ever containing
 // '/', '..', or anything else that could resolve outside its own
 // skills/ folder.

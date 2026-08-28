@@ -1,7 +1,7 @@
 // Scans a directory for agent modules and builds a name -> module map from
 // it — the thing that makes "drop a new file in agents/" enough to
 // register an agent, no hand-written import-and-add-one-line edit needed
-// anywhere else. See agent-registry.ts for the one place this repo's own
+// anywhere else. See core/agent-registry.ts for the one place this repo's own
 // reference app actually calls it.
 //
 // Keyed by AgentConfig.name, not the filename — that's the same identity
@@ -47,7 +47,7 @@ function isRawAgentModule(mod: unknown): mod is RawAgentModule {
  *
  * Exported so a caller updating an *already-registered* agent's model
  * (see agent-file-admin.ts's editAgentFile, applied live via
- * agent-registry.ts's updateAgent) can rebuild just this one closure
+ * core/agent-registry.ts's updateAgent) can rebuild just this one closure
  * without re-importing the whole module — Node's ESM loader caches an
  * already-imported module forever, so there's no supported way to
  * re-import a changed agent file's own createModelCall directly; this is
