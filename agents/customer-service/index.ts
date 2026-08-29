@@ -134,7 +134,7 @@ export const config: AgentConfig = {
   // which scope resolution governs it) lives as data there, not a
   // TypeScript array literal.
   approvers: { cli: demoApprover, http: httpApprover, http_stream: demoApprover },
-  questionHandlers: httpQuestionHandler ? { http: httpQuestionHandler } : undefined,
+  questionHandlers: { http: httpQuestionHandler },
   sessionIdFor,
   // Resolved per request by tenantFor above, since who's calling can vary
   // request to request. Only adapters/http.ts can actually call this (see
