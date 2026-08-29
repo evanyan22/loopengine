@@ -22,10 +22,27 @@ rules:
     tool: get_shipment_details
     decision: allow
 
-  - name: send-email-always-allowed
+  # Content-conditional on send_email's own `intent` field (see
+  # tools/send_email.ts) — checked in this order deliberately: both rules
+  # share the same "*/*" scope (specificity 0), and RuleSet.resolve keeps
+  # same-specificity rules in declaration order, so the specific
+  # tracking-info match is always tried before the catch-all below.
+  # Positive-match-to-allow, default-to-ask: anything that isn't an exact
+  # tracking_info match — a refund reply, or a malformed/missing intent —
+  # falls through to asking a human, not the reverse.
+  - name: send-email-tracking-info-allowed
     scope: "*/*"
     tool: send_email
+    when:
+      field: intent
+      op: eq
+      value: tracking_info
     decision: allow
+
+  - name: send-email-needs-approval
+    scope: "*/*"
+    tool: send_email
+    decision: ask
 
   # issue_refund depends on both dimensions:
   #  - environment: staging never moves real money, so every tenant can

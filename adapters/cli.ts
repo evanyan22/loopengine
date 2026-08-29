@@ -81,6 +81,7 @@ async function main() {
     // by agent name here is what actually keeps them isolated.
     const text = await sessions.withSession(`${agent}:${sessionId}`, async (history) => {
       const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
+        channel: 'cli',
         onEvent: json
           ? printJsonEvent
           : (event) => {

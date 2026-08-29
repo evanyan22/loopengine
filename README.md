@@ -102,8 +102,10 @@ hidden control flow: call the model, act on what it asks for, repeat.
 1. Call the model with the conversation so far.
 2. If it responds with tool calls, each one is checked against
    `AgentConfig.rules` — allowed calls run, denied calls are refused,
-   "ask" calls wait on `AgentConfig.approver` (see "Tool permission and
-   multi-tenancy" below).
+   "ask" calls go to whichever `AgentConfig.approvers` entry matches the
+   call's own channel (see "Tool permission and multi-tenancy" below) — a
+   live approver is awaited right there; a durable one returns instantly
+   and the call is resolved later instead.
 3. Approved calls execute and their results feed back into the
    conversation.
 4. Repeat from step 1 — until the model stops requesting tools
@@ -293,9 +295,23 @@ adding a source (or use the page's permission dropdown) to seed an
 Every tool call is gated by [`actauth`](https://www.npmjs.com/package/actauth):
 each rule in `AgentConfig.rules` maps a `scope` (tenant/environment) + tool
 name to `allow` / `ask` / `deny`. Anything not covered falls through to
-`defaultDecision`. An `ask` decision routes to `AgentConfig.approver`
-(defaults to blocking on stdin — swap in a real one, e.g. Slack-backed,
-for production).
+`defaultDecision`. An `ask` decision routes to `AgentConfig.approvers`,
+keyed by channel (`cli` / `http` / `http_stream`) — each channel can have
+its own approver, and an unset one falls back to whatever the adapter
+itself defaults to for that channel (`ConsoleApprover`, blocking on
+stdin, for `cli`; a live approval popup for `http_stream`; a durable one
+for `http` if configured — see below). Swap in a real one per channel
+(Slack-backed for live chat, say) for production.
+
+`ask` approvers come in two shapes. A **live** one (`WebApprover`,
+`SlackApprover`, `ConsoleApprover`) is awaited directly — the turn stays
+suspended until a human decides, which only makes sense when someone's
+actually there right now (a terminal, an open chat connection). A
+**durable** one (`DurableWebApprover`) fires a signed webhook and returns
+instantly instead — the turn ends with `stopReason: 'pending_approval'`,
+durably resumable minutes or days later via
+`POST /pending-approvals/:pendingId/resolve`, without holding any
+process open in between. See `DURABLE_APPROVALS.md` for the full design.
 
 A real agent's rules live in `agents/<name>/actauth.yml`:
 
@@ -416,8 +432,9 @@ reference implementations of it.
 config — system prompt, model, tools (with their JSON schemas and
 parallel-safety), the actual ActAuth rules that would be enforced (source,
 default decision, per-rule scope/tool/decision/`when`), and whether
-`sessionIdFor`/`tenantFor`/`isSafeTool`/`approver` are custom or
-defaulted. Backed by `GET /agents/:name/config`, which reuses the same
+`sessionIdFor`/`tenantFor`/`isSafeTool`/each of `approvers.cli`/
+`approvers.http`/`approvers.http_stream` are custom or defaulted. Backed
+by `GET /agents/:name/config`, which reuses the same
 rule/tool resolution `runAgent()` itself uses, so it can't drift out of
 sync with what a real request actually gets. Never returns
 `AgentModelConfig.apiKey`.
@@ -440,9 +457,10 @@ testing), export your own `createModelCall(): ModelCall` instead.
 
 | Package | Responsibility |
 |---|---|
-| [`actauth`](https://www.npmjs.com/package/actauth) | Permission gating (allow/ask/deny) with human-approval hooks |
+| [`actauth`](https://www.npmjs.com/package/actauth) | Permission gating (allow/ask/deny/pending) with live and durable human-approval hooks |
 | `core/budget.ts` / `core/compaction.ts` | Context-window budget tracking and tail-preserving compaction (vendored in-repo, not an external dependency) |
 | `core/recovery.ts` | Retries prompt-too-long / truncated-output failures (vendored in-repo, not an external dependency) |
+| `core/durable-approvals.ts` | `TurnCheckpoint`/`CheckpointStore` (file/Redis) backing durable, resumable `ask` decisions — see `DURABLE_APPROVALS.md` |
 | [`sessionknit`](https://www.npmjs.com/package/sessionknit) | Durable session log with crash-interruption detection |
 | [`skillgarden`](https://www.npmjs.com/package/skillgarden) | `SKILL.md` discovery and lazy loading |
 | [`toollane`](https://www.npmjs.com/package/toollane) | Parallel/solo tool-call scheduling |

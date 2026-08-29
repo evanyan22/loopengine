@@ -11,6 +11,19 @@
 // (tenantFor, sessionIdFor) in a way the rules themselves aren't.
 import { createHash } from 'node:crypto'
 import type { AgentConfig } from '#core/agent-config.js'
+import type { LiveApprover } from 'actauth'
+
+// One shared instance across every channel below — this demo auto-
+// approves regardless of how the agent was invoked, so the same object
+// goes under all three keys rather than three separately-constructed
+// (but behaviorally identical) ones.
+const demoApprover: LiveApprover = {
+  async requestApproval(tool, args, _scope, reason) {
+    console.log(`  [actauth] approval requested for ${tool}(${JSON.stringify(args)}) — ${reason}`)
+    console.log('  [actauth] auto-approved for this demo (swap in SlackApprover to page a human for real refunds)')
+    return true
+  },
+}
 
 // This agent's own session-key derivation — a customer's identity (their
 // email) is what "one conversation" means here, so that mapping lives on
@@ -84,13 +97,7 @@ export const config: AgentConfig = {
   // to set explicitly. The permission story (which tool, which rule,
   // which scope resolution governs it) lives as data there, not a
   // TypeScript array literal.
-  approver: {
-    async requestApproval(tool, args, _scope, reason) {
-      console.log(`  [actauth] approval requested for ${tool}(${JSON.stringify(args)}) — ${reason}`)
-      console.log('  [actauth] auto-approved for this demo (swap in SlackApprover to page a human for real refunds)')
-      return true
-    },
-  },
+  approvers: { cli: demoApprover, http: demoApprover, http_stream: demoApprover },
   sessionIdFor,
   // Resolved per request by tenantFor above, since who's calling can vary
   // request to request. Only adapters/http.ts can actually call this (see

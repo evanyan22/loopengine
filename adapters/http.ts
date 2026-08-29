@@ -30,8 +30,10 @@ import { getEntry, listAgents, projectDir, registerAgent, updateAgent, type Regi
 import { loadAgentModule, synthesizeCreateModelCall } from '#core/discover-agents.js'
 import { editAgentFile, AgentEditNotSupportedError, AgentFileNotFoundError, type AgentEditResult } from '#web/agent-file-admin.js'
 import { createSessionStore } from '../core/session-store.js'
-import { runAgent, loadRules, loadDefaultTools, loadSubagentAsTools, systemTools, systemSkillsDir } from '#core/run-agent.js'
-import type { AgentConfig } from '#core/agent-config.js'
+import { createCheckpointStore, type TurnCheckpoint } from '#core/durable-approvals.js'
+import { runAgent, resumeAgent, loadRules, loadDefaultTools, loadSubagentAsTools, systemTools, systemSkillsDir } from '#core/run-agent.js'
+import type { AgentConfig, ToolDefinition } from '#core/agent-config.js'
+import type { ModelContentBlock, RunAgentResult } from '#core/run-agent.js'
 import { SkillGarden } from 'skillgarden'
 import { playgroundHtml } from '../web/playground.js'
 import { agentsConfigPageHtml } from '../web/agents-config-page.js'
@@ -66,10 +68,29 @@ import { describeModelProviders, describeGateways } from '#web/global-config.js'
 import { scaffoldAgent, AgentNameError, AgentExistsError, AgentModelError, type AgentTemplateOptions } from '#bin/cli.js'
 import { createTrackedApprover, listApprovals, decideApproval, findApproval } from '#web/web-approver.js'
 import { listQuestions, answerQuestion, findQuestion, createAskUserTool, type PendingQuestion } from '#core/system-tools/index.js'
+import { DurableWebApprover } from 'actauth'
 import type { Decision, PendingApproval } from 'actauth'
 import type { LoopEvent } from '#core/loop-events.js'
 
 const sessions = createSessionStore()
+const checkpoints = createCheckpointStore()
+
+// The plain (non-streaming) POST /messages route's own built-in default
+// for the 'http' channel — durable when configured, since that route
+// already has no live connection of its own to hold open (see
+// handleMessages' own header comment). One shared instance, not
+// per-request: unlike WebApprover, nothing about DurableWebApprover
+// needs to be scoped to a specific turn/connection. Deployment-wide env
+// vars, same pattern REDIS_URL/LOOPENGINE_ADMIN_AUTH already use — there's
+// no sensible webhook target to invent without one configured, so this
+// is undefined (handleMessages falls back to today's live WebApprover
+// instead, not all the way to ConsoleApprover) rather than guessed.
+const defaultHttpWebhookUrl = process.env.LOOPENGINE_DEFAULT_WEBHOOK_URL
+const defaultHttpWebhookSecret = process.env.LOOPENGINE_DEFAULT_WEBHOOK_SECRET
+const defaultDurableHttpApprover =
+  defaultHttpWebhookUrl && defaultHttpWebhookSecret
+    ? new DurableWebApprover({ webhookUrl: defaultHttpWebhookUrl, signingSecret: defaultHttpWebhookSecret })
+    : undefined
 
 // Used when an AgentConfig doesn't define its own sessionIdFor — a plain
 // client-supplied key, same shape adapters/cli.ts's --session flag
@@ -274,7 +295,11 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
     isSafeTool: config.isSafeTool ? 'custom' : "default (each tool's own `safe` flag)",
     sessionIdFor: config.sessionIdFor ? 'custom' : 'default (client-supplied `sessionId` field)',
     tenantFor: config.tenantFor ? 'custom' : "none (every request is the 'default' tenant)",
-    approver: config.approver ? 'custom' : 'default (web — approvals pop up inline in the playground)',
+    approvers: {
+      cli: config.approvers?.cli ? 'custom' : 'default (blocks on stdin)',
+      http: config.approvers?.http ? 'custom' : 'default (durable webhook, if configured — see LOOPENGINE_DEFAULT_WEBHOOK_URL)',
+      http_stream: config.approvers?.http_stream ? 'custom' : 'default (web — approvals pop up inline in the playground)',
+    },
   }
 }
 
@@ -745,7 +770,7 @@ async function handleSessionGet(req: IncomingMessage, res: ServerResponse, agent
 }
 
 type PendingSignal = { type: 'question'; entry: PendingQuestion } | { type: 'approval'; entry: PendingApproval }
-type FinishedTurn = { text: string; stopReason?: 'max_turns' | 'denied' }
+type FinishedTurn = { text: string; stopReason?: 'max_turns' | 'denied' | 'pending_approval' }
 
 // One entry per turn currently in flight for the plain (non-streaming)
 // /messages route, keyed by "<agentName>:<rawSessionId>" — the same
@@ -894,10 +919,14 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
 
   // This route has no live channel of its own — no SSE connection to push
   // a pending question/approval onto the way the streaming route does.
-  // Blocking indefinitely until a human answers (what this used to do)
-  // gives the caller zero signal that's even happening; confirmed live
-  // that a caller with no way to guess a pending id in advance has
-  // genuinely no way to discover, let alone resolve, it. So instead: race
+  // For a tool-call approval, that's exactly why its channel default is
+  // durable (see defaultDurableHttpApprover above): the turn just returns
+  // stopReason 'pending_approval' and this responds with that directly,
+  // no live wait at all. question:pending has no durable equivalent yet
+  // (see DURABLE_APPROVALS.md's own open questions) — and an agent that
+  // explicitly opts into a live approver for this channel still needs
+  // this too — so the race-the-whole-turn-against-the-first-pending-
+  // signal machinery below stays fully in place for both of those: race
   // the whole turn against the *first* moment anything in it needs a
   // human — and every *subsequent* moment too (see raceAndRespond, called
   // again from POST .../approve|deny|answer below), not just the first —
@@ -907,10 +936,19 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
   const state: SessionTurnState = { turnPromise: null, bufferedSignal: null, waiter: null, events: [{ type: 'session', sessionId: rawSessionId }] }
   sessionTurns.set(key, state)
 
-  const approver = createTrackedApprover(rawSessionId, (approval) => {
-    state.events.push({ type: 'approval:pending', ...approval })
-    pushSignal(state, { type: 'approval', entry: approval })
-  })
+  // Durable when LOOPENGINE_DEFAULT_WEBHOOK_URL/_SECRET are configured
+  // (see this module's own defaultDurableHttpApprover) — otherwise falls
+  // back to today's live WebApprover, tracked so a decide() call routes
+  // back to this exact instance (see createTrackedApprover's own doc
+  // comment). Either way, config.approvers.http (if the agent sets its
+  // own, for this channel specifically) still wins outright over this —
+  // see RunAgentOptions.approver's own doc comment.
+  const approver =
+    defaultDurableHttpApprover ??
+    createTrackedApprover(rawSessionId, (approval) => {
+      state.events.push({ type: 'approval:pending', ...approval })
+      pushSignal(state, { type: 'approval', entry: approval })
+    })
 
   // Fresh modelCall per request — see core/agent-registry.ts. Not awaited
   // directly below — see raceAndRespond's own Promise.race for why.
@@ -918,6 +956,7 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
     const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
       tenant,
       sessionId: rawSessionId,
+      channel: 'http',
       approver,
       onEvent: (event) => state.events.push(event),
       onQuestionPending: (question) => {
@@ -925,6 +964,9 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
         pushSignal(state, { type: 'question', entry: question })
       },
     })
+    if (result.stopReason === 'pending_approval' && result.pendingApproval) {
+      await createCheckpointFromPendingApproval(agentName, tenant, rawSessionId, result.pendingApproval)
+    }
     // No SSE connection to write this to (see this route's own header
     // comment) — pushed straight onto state.events instead, same event
     // shape the streaming route's own 'done' SSE frame uses, so the final
@@ -997,9 +1039,9 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   // SSE connection, so the approve/deny popup shows up inline in the
   // conversation that's actually blocked on it, not on some separate page
   // an operator has to remember to check. Passed unconditionally — same
-  // as the shared one above, entry.config.approver (if the agent sets its
-  // own) still wins outright over this; see RunAgentOptions.approver's
-  // own doc comment.
+  // as the plain route's own default, entry.config.approvers.http_stream
+  // (if the agent sets its own, for this channel specifically) still wins
+  // outright over this; see RunAgentOptions.approver's own doc comment.
   const streamApprover = createTrackedApprover(rawSessionId, (approval) => {
     const event: LoopEvent = { type: 'approval:pending', ...approval }
     writeSseEvent(res, event)
@@ -1017,6 +1059,7 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
     const result = await runAgent(entry.config, entry.createModelCall(), message, history, {
       tenant,
       sessionId: rawSessionId,
+      channel: 'http_stream',
       approver: streamApprover,
       onEvent: (event) => {
         writeSseEvent(res, event)
@@ -1029,6 +1072,9 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
         pushSignal(state, { type: 'question', entry: question })
       },
     })
+    if (result.stopReason === 'pending_approval' && result.pendingApproval) {
+      await createCheckpointFromPendingApproval(agentName, tenant, rawSessionId, result.pendingApproval)
+    }
     const doneEvent: LoopEvent = { type: 'done', text: result.text, ...(result.stopReason ? { stopReason: result.stopReason } : {}) }
     writeSseEvent(res, doneEvent)
     state.events.push(doneEvent)
@@ -1085,6 +1131,198 @@ function isAuthorized(req: IncomingMessage): boolean {
   const provided = Buffer.from(header.slice('Basic '.length), 'base64')
   const expected = Buffer.from(adminAuth)
   return provided.length === expected.length && timingSafeEqual(provided, expected)
+}
+
+// Same tool-resolution shape describeAgent above already uses
+// (localTools/agentAsTools/gatewayTools) — reused here rather than
+// re-derived, so a resolved approval always executes the exact tool
+// implementation the paused turn itself would have called, not a second
+// guess at it. Deliberately doesn't include systemTools/askUserTool: a
+// DurableApprover's own pendingId only ever names a real, gated business
+// tool call (see run-agent.ts's own pendingCalls — system tools bypass
+// the gate entirely and can never end up 'pending').
+async function resolveAgentTool(config: AgentConfig, toolName: string): Promise<ToolDefinition | undefined> {
+  const localTools = config.tools ?? (await loadDefaultTools(config))
+  const agentAsTools = await loadSubagentAsTools(config)
+  const gatewayTools = await loadGatewayToolsFromDir(agentDir(config.name))
+  return [...localTools, ...agentAsTools, ...gatewayTools].find((t) => t.name === toolName)
+}
+
+/** Deliberately not full JSON Schema validation — this project has no
+ * ajv dependency, and one field-presence check is enough to stop an
+ * approver's edited args from being obviously wrong (missing a field the
+ * tool genuinely needs) without adding one just for this. See
+ * DURABLE_APPROVALS.md's own "Approve-with-edit" section. */
+function validateEditedArgs(args: unknown, schema: Record<string, unknown>): string | undefined {
+  if (typeof args !== 'object' || args === null || Array.isArray(args)) return 'must be an object'
+  const required = Array.isArray(schema.required) ? schema.required : []
+  for (const field of required) {
+    if (typeof field === 'string' && !(field in args)) return `missing required field '${field}'`
+  }
+  return undefined
+}
+
+// Called from both handleMessages and handleMessagesStream right after a
+// runAgent() call returns stopReason 'pending_approval' — turns its
+// pendingApproval into the durable TurnCheckpoint a later resolve call
+// looks up by pendingId. One real ordering caveat, not solved here: a
+// DurableApprover's own notification (e.g. DurableWebApprover's webhook)
+// fires from inside runAgent() itself, before it returns — an
+// improbably fast responder could in principle hit /pending-approvals/
+// before this has run and get an 'alreadyResolved' false negative. Not
+// worth restructuring around for a race that needs a human to click a
+// link in under the time it takes this call to return.
+async function createCheckpointFromPendingApproval(
+  agent: string,
+  tenant: string,
+  sessionId: string,
+  pendingApproval: NonNullable<RunAgentResult['pendingApproval']>,
+): Promise<void> {
+  const outstanding: TurnCheckpoint['outstanding'] = {}
+  for (const item of pendingApproval.outstanding) {
+    outstanding[item.pendingId] = { toolUseId: item.toolUseId, tool: item.tool, args: item.args, reason: item.reason }
+  }
+  await checkpoints.create({ sessionId, agent, tenant, resultsSoFar: pendingApproval.resultsSoFar, outstanding })
+}
+
+/** Resolves one outstanding item on a durable checkpoint (see
+ * DURABLE_APPROVALS.md) — approve (optionally with editedArgs) or deny —
+ * and, once nothing's left outstanding, resumes the turn via
+ * resumeAgent(). Has no live sessionTurns entry to fall back on the way
+ * /approvals/:id/approve|deny does: the whole point of durable is that
+ * the process (or even the request) that started this turn may be long
+ * gone by the time this fires, so the response here is authoritative on
+ * its own, not a fallback for some other channel. */
+async function handlePendingApprovalResolve(req: IncomingMessage, res: ServerResponse, pendingId: string): Promise<void> {
+  const body = await readJsonBody(req)
+  const decision = body.decision === 'approve' || body.decision === 'deny' ? body.decision : undefined
+  if (!decision) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: "decision must be 'approve' or 'deny'" }))
+    return
+  }
+  const editedArgs = body.editedArgs as Record<string, unknown> | undefined
+
+  type ResolveOutcome =
+    | { kind: 'unknown' }
+    | { kind: 'validation-error'; error: string }
+    | { kind: 'resolved'; checkpoint: TurnCheckpoint }
+
+  const outcome = await checkpoints.withCheckpoint(pendingId, async (checkpoint): Promise<{ checkpoint: TurnCheckpoint | undefined; result: ResolveOutcome }> => {
+    if (!checkpoint) return { checkpoint: undefined, result: { kind: 'unknown' } }
+    const item = checkpoint.outstanding[pendingId]
+
+    let resultBlock: ModelContentBlock
+    if (decision === 'deny') {
+      resultBlock = { type: 'tool_result', tool_use_id: item.toolUseId, content: `denied: ${item.reason}`, is_error: true }
+    } else {
+      const entry = getEntry(checkpoint.agent)
+      const tool = entry && (await resolveAgentTool(entry.config, item.tool))
+      if (!entry) {
+        resultBlock = { type: 'tool_result', tool_use_id: item.toolUseId, content: `error: agent '${checkpoint.agent}' no longer registered`, is_error: true }
+      } else if (!tool) {
+        resultBlock = { type: 'tool_result', tool_use_id: item.toolUseId, content: `error: tool '${item.tool}' no longer exists`, is_error: true }
+      } else {
+        const validationError = editedArgs ? validateEditedArgs(editedArgs, tool.input_schema) : undefined
+        if (validationError) {
+          // Leave the checkpoint completely untouched — persisting the
+          // *same* object back is a harmless no-op write, not a real
+          // update. This pendingId stays open so the approver can retry
+          // with corrected args, instead of a typo burning the one
+          // chance to resolve this call.
+          return { checkpoint, result: { kind: 'validation-error', error: validationError } }
+        }
+        try {
+          const output = await tool.execute(editedArgs ?? item.args)
+          resultBlock = { type: 'tool_result', tool_use_id: item.toolUseId, content: JSON.stringify(output), is_error: false }
+        } catch (err) {
+          resultBlock = { type: 'tool_result', tool_use_id: item.toolUseId, content: `ERROR: ${err}`, is_error: true }
+        }
+      }
+    }
+
+    const { [pendingId]: _resolvedItem, ...remainingOutstanding } = checkpoint.outstanding
+    const resultsSoFar = [...checkpoint.resultsSoFar, resultBlock]
+    let outstanding = remainingOutstanding
+    // A denial closes the *whole* checkpoint immediately, same as
+    // run-agent.ts's own synchronous denial path — any other still-
+    // outstanding item in this batch gets a synthesized skip, it never
+    // gets left dangling for someone to resolve later.
+    if (decision === 'deny') {
+      for (const otherItem of Object.values(remainingOutstanding)) {
+        resultsSoFar.push({
+          type: 'tool_result',
+          tool_use_id: otherItem.toolUseId,
+          content: `skipped: a sibling tool call in this turn (${item.tool}) was denied`,
+          is_error: true,
+        })
+      }
+      outstanding = {}
+    }
+
+    const updated: TurnCheckpoint = { ...checkpoint, resultsSoFar, outstanding, closed: Object.keys(outstanding).length === 0 }
+    return { checkpoint: updated, result: { kind: 'resolved', checkpoint: updated } }
+  })
+
+  if (outcome.kind === 'unknown') {
+    // Unknown pendingId, or its checkpoint was already closed — a
+    // sibling denial got there first, or this exact pendingId was
+    // already resolved. Graceful no-op, not an error (see
+    // DURABLE_APPROVALS.md's own worked example for why this has to be).
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ alreadyResolved: true }))
+    return
+  }
+
+  if (outcome.kind === 'validation-error') {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `editedArgs invalid — ${outcome.error}` }))
+    return
+  }
+
+  const finalCheckpoint = outcome.checkpoint
+
+  if (Object.keys(finalCheckpoint.outstanding).length > 0) {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(
+      JSON.stringify({ resolved: true, outstanding: Object.keys(finalCheckpoint.outstanding).length }),
+    )
+    return
+  }
+
+  // Nothing left outstanding — resume the turn for real, through the same
+  // durable sessions.withSession append path any other turn goes through.
+  const entry = getEntry(finalCheckpoint.agent)
+  if (!entry) {
+    res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `agent '${finalCheckpoint.agent}' no longer registered` }))
+    return
+  }
+  const environment = process.env.LOOPENGINE_ENV ?? 'production'
+  const storageSessionId = `${finalCheckpoint.tenant}:${environment}:${finalCheckpoint.agent}:${finalCheckpoint.sessionId}`
+
+  const responseBody = await sessions.withSession(storageSessionId, async (history) => {
+    // Same channel/approver fallback the original (now-resolved) call
+    // used — a chained second pending call should behave identically to
+    // the first, not fall through further just because it's mid-resume.
+    // No live connection to wire an onPending push onto here (unlike
+    // handleMessages' own WebApprover) — still tracked, so
+    // GET /agents/:name/approvals and POST /approvals/:id/approve|deny
+    // can find and resolve it, and its own 5-minute timeout still applies
+    // rather than this hanging forever.
+    const result = await resumeAgent(entry.config, entry.createModelCall(), history, finalCheckpoint.resultsSoFar, {
+      tenant: finalCheckpoint.tenant,
+      sessionId: finalCheckpoint.sessionId,
+      channel: 'http',
+      approver: defaultDurableHttpApprover ?? createTrackedApprover(finalCheckpoint.sessionId),
+    })
+    // The resumed turn can itself hit another durably-gated call — same
+    // wiring as the two fresh-turn call sites above, or its own new
+    // pendingId(s) would have nowhere indexed to be resolved against.
+    if (result.stopReason === 'pending_approval' && result.pendingApproval) {
+      await createCheckpointFromPendingApproval(finalCheckpoint.agent, finalCheckpoint.tenant, finalCheckpoint.sessionId, result.pendingApproval)
+    }
+    return { newMessages: result.newMessages, result: { text: result.text, stopReason: result.stopReason } }
+  })
+
+  res.writeHead(200, { 'content-type': 'application/json' }).end(
+    JSON.stringify({ text: responseBody.text, sessionId: finalCheckpoint.sessionId, ...(responseBody.stopReason ? { stopReason: responseBody.stopReason } : {}) }),
+  )
 }
 
 const server = createServer(async (req, res) => {
@@ -1206,6 +1444,19 @@ const server = createServer(async (req, res) => {
         return
       }
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))
+      return
+    }
+
+    // A DurableApprover's own pending decision — see DURABLE_APPROVALS.md.
+    // Unlike /approvals/:id/approve|deny above, this doesn't assume a live
+    // sessionTurns entry exists at all (the whole point of durable is that
+    // the process that started the turn may be long gone) — resolving one
+    // just updates the checkpoint and, once nothing's left outstanding,
+    // resumes the turn fresh via resumeAgent + sessions.withSession, the
+    // same durable append path any other turn goes through.
+    const pendingApprovalResolveMatch = req.method === 'POST' && pathname.match(/^\/pending-approvals\/([^/]+)\/resolve$/)
+    if (pendingApprovalResolveMatch) {
+      await handlePendingApprovalResolve(req, res, decodeURIComponent(pendingApprovalResolveMatch[1]))
       return
     }
 

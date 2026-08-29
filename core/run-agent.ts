@@ -13,7 +13,7 @@ import { BudgetTracker, type Message as BudgetMessage } from './budget.js'
 import { Compactor } from './compaction.js'
 import { ToolLane, type ToolCall as LaneCall, type SafetyClassifier } from 'toollane'
 import { Recovery } from './recovery.js'
-import type { AgentConfig, ToolDefinition, ToolSchema } from '#core/agent-config.js'
+import type { AgentConfig, ApproverChannel, ToolDefinition, ToolSchema } from '#core/agent-config.js'
 import { loadAgentModule } from './discover-agents.js'
 import { agentAsTool } from './agent-as-tool.js'
 import { loadGatewayToolsFromDir } from './gateway-tools.js'
@@ -127,15 +127,30 @@ export interface RunAgentOptions {
    * pending question can't be session-scoped — still fine, it's still
    * agent-scoped either way. */
   sessionId?: string
-  /** Default Approver for this call's 'ask' decisions, when
-   * AgentConfig.approver isn't set — the seam an adapter uses to pick
-   * whichever approver actually fits its own channel (ConsoleApprover for
-   * a real terminal, a web-based one for an HTTP-served conversation,
+  /** Which channel this call is on — the key AgentConfig.approvers is
+   * checked against below (see approver's own doc comment for the full
+   * precedence). Omitted (a standalone script, a bespoke dispatcher with
+   * no fixed channel identity) means AgentConfig.approvers is never
+   * consulted at all — approver below is the only thing that applies. */
+  channel?: ApproverChannel
+  /** This channel's own default Approver for 'ask' decisions, when
+   * AgentConfig.approvers[channel] isn't set for it — the seam an adapter
+   * uses to pick whichever approver actually fits its own channel
+   * (ConsoleApprover for a real terminal, a fresh WebApprover per
+   * streamed turn, a DurableWebApprover for a background dispatcher,
    * ...) without every agent needing to hardcode one itself. An explicit
-   * AgentConfig.approver still wins outright over this when the agent
-   * author set one on purpose — same as it always has (see Gate
-   * construction below) — this only fills in when that's absent. Default,
-   * if neither is given: actauth's own ConsoleApprover, same as always. */
+   * AgentConfig.approvers[channel] still wins outright over this when the
+   * agent author set one on purpose *for that channel* — same precedent
+   * this field always had, just scoped per channel now instead of
+   * clobbering every channel at once (see Gate construction below).
+   * Default, if neither is given: actauth's own ConsoleApprover, same as
+   * always.
+   *
+   * Can be a DurableApprover (DurableWebApprover, ...) instead of a live
+   * one — see DURABLE_APPROVALS.md. A background/cron dispatcher calling
+   * runAgent() directly is exactly this same kind of caller, and should
+   * pass its own durable default here the same way adapters/http.ts's
+   * stream route passes a fresh WebApprover. */
   approver?: Approver
   /** Fired the instant the system ask_user tool registers a new pending
    * question — this is the seam that decides between a real, answerable
@@ -187,8 +202,38 @@ export interface RunAgentResult {
    * model requested in the same turn, even one already approved, never
    * runs either (see the loop's own body); it gets a "skipped", not a
    * "denied", tool_result, since it was never evaluated against its own
-   * rule. */
-  stopReason?: 'max_turns' | 'denied'
+   * rule.
+   *
+   * 'pending_approval': at least one requested tool call is durably
+   * pending a DurableApprover decision (see DURABLE_APPROVALS.md) — same
+   * "the whole batch stops here" shape as 'denied', except this isn't a
+   * rejection: any already-approved sibling call in the same batch still
+   * ran (see the loop's own bucket-then-execute), captured in
+   * `pendingApproval.resultsSoFar`, and the turn resumes later via
+   * resumeAgent() once every pendingId in `pendingApproval.outstanding`
+   * is resolved — not by sending another message the way 'denied'
+   * recovers. `newMessages` ends at the dangling assistant tool_use
+   * message, same crash-recovery shape session-store.ts's own
+   * hasUnresolvedToolCall already detects — entered on purpose here,
+   * not by accident. runAgent() does no I/O (see this module's own
+   * header comment): turning `pendingApproval` into a durable
+   * TurnCheckpoint (core/durable-approvals.ts) is the caller's job. */
+  stopReason?: 'max_turns' | 'denied' | 'pending_approval'
+  /** Set only when stopReason is 'pending_approval'. */
+  pendingApproval?: {
+    /** tool_result blocks already computed this batch — safely
+     * auto-allowed calls that ran immediately despite a gated sibling
+     * still being outstanding. Not yet pushed into `newMessages`/
+     * `history`: incomplete until every outstanding item below is
+     * resolved too, and a real model API expects one complete
+     * tool_result message per assistant tool_use message, not a partial
+     * one now and a follow-up later. */
+    resultsSoFar: ModelContentBlock[]
+    /** One entry per tool call still awaiting a durable decision, keyed
+     * by the pendingId its DurableApprover handed out — what an
+     * incoming resolution actually names. */
+    outstanding: { toolUseId: string; tool: string; args: Record<string, unknown>; pendingId: string; reason: string }[]
+  }
 }
 
 /** budget.ts/compaction.ts only ever need a flat string per message to
@@ -400,13 +445,29 @@ export async function loadSubagentAsTools(config: AgentConfig): Promise<ToolDefi
   return tools
 }
 
-export async function runAgent(
-  config: AgentConfig,
-  modelCall: ModelCall,
-  userMessage: string,
-  history: Message[] = [],
-  options: RunAgentOptions = {},
-): Promise<RunAgentResult> {
+/** Everything a turn needs that depends only on `config`/`options`, not on
+ * this specific call's messages — shared, unchanged, between a fresh
+ * runAgent() call and a resumeAgent() one, which is exactly why it's
+ * split out: both build one of these once, then hand it to runLoop below
+ * along with whatever messages/starter message is actually theirs. */
+interface TurnContext {
+  modelCall: ModelCall
+  log: (event: LoopEvent) => void
+  scope: Scope
+  skillGarden: SkillGarden
+  toolsByName: Map<string, ToolDefinition>
+  systemToolInstances: Set<ToolDefinition>
+  toolSchemas: ToolSchema[]
+  systemPrompt: string
+  budgetTracker: BudgetTracker
+  compactor: Compactor
+  gate: Gate
+  toolLane: ToolLane
+  maxTurns: number
+  tailMessages: number
+}
+
+async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, options: RunAgentOptions): Promise<TurnContext> {
   const log = options.onEvent ?? (() => {})
   // tenant: resolved by the caller (adapters/http.ts calls
   // AgentConfig.tenantFor with the request's headers/body; every other
@@ -470,7 +531,8 @@ export async function runAgent(
   const budgetTracker = new BudgetTracker({ budgetTokens: config.contextBudgetTokens ?? 8000 })
   const compactor = new Compactor({ budgetTokens: config.contextBudgetTokens ?? 8000, softThreshold: budgetTracker.softThreshold, tailMessages })
   const rules = loadRules(config)
-  const gate = new Gate(rules, config.approver ?? options.approver ?? new ConsoleApprover())
+  const approver = (options.channel && config.approvers?.[options.channel]) ?? options.approver ?? new ConsoleApprover()
+  const gate = new Gate(rules, approver)
   // No explicit isSafeTool: fall back to each called tool's own `safe`
   // flag (looked up by name) rather than defaulting every tool to unsafe
   // outright — see ToolDefinition.safe's own doc comment for why this is
@@ -478,62 +540,6 @@ export async function runAgent(
   const isSafeTool: SafetyClassifier =
     config.isSafeTool ?? ((call) => tools.some((t) => t.name === call.name && t.safe === true))
   const toolLane = new ToolLane({ isSafe: isSafeTool })
-
-  let messages: Message[] = [...history, { role: 'user', content: userMessage }]
-
-  // Tracked in parallel with `messages`, but never rewritten wholesale by
-  // recovery the way `messages` is — this is the actual, authoritative
-  // answer to "what did this turn add," independent of how many times (if
-  // any) the head of `messages` got drained/summarized along the way. See
-  // pushMessage() below and the reconciliation inside onPromptTooLong.
-  let newMessages: Message[] = [{ role: 'user', content: userMessage }]
-
-  function pushMessage(message: Message): void {
-    messages.push(message)
-    newMessages.push(message)
-  }
-
-  const recovery = new Recovery<Message[]>({
-    onPromptTooLong: async (currentMessages) => {
-      // newMessages (this turn's own content — not durably stored
-      // anywhere else yet) must never be handed to the compactor at all.
-      // An earlier version of this reconciliation tried to recover
-      // newMessages *after* compaction by reusing whatever the
-      // compactor's synthetic head contained — that's unsound: its cheap
-      // "drain" stage doesn't produce a head at all, it just deletes old
-      // messages outright, trusting there's a durable copy elsewhere.
-      // That trust is only valid for the *prior* portion; only that
-      // portion is safe to compact at all.
-      const priorCount = currentMessages.length - newMessages.length
-      const priorPortion = currentMessages.slice(0, priorCount)
-
-      const result = await compactor.recover(priorPortion.map(flattenForBudget))
-      log({ type: 'prompt:compaction', from: currentMessages.length, to: result.messages.length + newMessages.length })
-      if (result.action === 'unchanged') return currentMessages
-
-      // Same tail-preservation reuse as before, just scoped to
-      // priorPortion alone now — newMessages is appended back whole,
-      // always, regardless of how large it's grown this turn.
-      const preservedTailCount = Math.min(tailMessages, priorPortion.length)
-      const structuredTail = priorPortion.slice(priorPortion.length - preservedTailCount)
-      const newHead = result.messages.slice(0, result.messages.length - preservedTailCount)
-      const recovered = [...newHead, ...structuredTail, ...newMessages]
-
-      // Recovery.call() only ever returns {value, recoveries, truncated} —
-      // it never hands back whatever `currentMessages` became after a
-      // retry, so recovery would otherwise only ever affect the one
-      // retried call. Reassigning the outer `messages` binding here (this
-      // hook is the only place that has both the recovered array and a
-      // reason to persist it) is what makes recovery durable: every
-      // subsequent budgetTracker.check() in this loop, and the `history`
-      // this function eventually returns, both see the compacted
-      // conversation from this point on — not the original, ever-growing
-      // one. newMessages itself needs no reconciliation at all — it was
-      // never part of what could be compacted away.
-      messages = recovered
-      return recovered
-    },
-  })
 
   const toolsByName = new Map(tools.map((t) => [t.name, t]))
   // Object identity, not name — an agent that overrides a system tool's
@@ -588,6 +594,85 @@ export async function runAgent(
   // (or ping-ponging) tool calls forever — checked before spending a model
   // call on the (maxTurns + 1)-th turn, not after.
   const maxTurns = config.maxTurns ?? 25
+
+  return {
+    modelCall,
+    log,
+    scope,
+    skillGarden,
+    toolsByName,
+    systemToolInstances,
+    toolSchemas,
+    systemPrompt,
+    budgetTracker,
+    compactor,
+    gate,
+    toolLane,
+    maxTurns,
+    tailMessages,
+  }
+}
+
+/** The turn's actual ReAct loop — shared by runAgent (a fresh turn, its
+ * own starterMessage is the user's own message) and resumeAgent (a
+ * paused turn's completing tool_result message as starterMessage,
+ * picking up right where run-agent.ts's own bucket-then-execute left
+ * off — see RunAgentResult.stopReason's own 'pending_approval' doc
+ * comment). `messages`/`newMessages` are owned by the caller (built
+ * fresh in each case) but mutated here via pushMessage, same as the
+ * single function this was split out of always did. */
+async function runLoop(ctx: TurnContext, messages: Message[], newMessages: Message[], starterMessage: Message): Promise<RunAgentResult> {
+  const { modelCall, log, scope, skillGarden, toolsByName, systemToolInstances, toolSchemas, systemPrompt, budgetTracker, compactor, gate, toolLane, maxTurns, tailMessages } = ctx
+
+  function pushMessage(message: Message): void {
+    messages.push(message)
+    newMessages.push(message)
+  }
+
+  const recovery = new Recovery<Message[]>({
+    onPromptTooLong: async (currentMessages) => {
+      // newMessages (this turn's own content — not durably stored
+      // anywhere else yet) must never be handed to the compactor at all.
+      // An earlier version of this reconciliation tried to recover
+      // newMessages *after* compaction by reusing whatever the
+      // compactor's synthetic head contained — that's unsound: its cheap
+      // "drain" stage doesn't produce a head at all, it just deletes old
+      // messages outright, trusting there's a durable copy elsewhere.
+      // That trust is only valid for the *prior* portion; only that
+      // portion is safe to compact at all.
+      const priorCount = currentMessages.length - newMessages.length
+      const priorPortion = currentMessages.slice(0, priorCount)
+
+      const result = await compactor.recover(priorPortion.map(flattenForBudget))
+      log({ type: 'prompt:compaction', from: currentMessages.length, to: result.messages.length + newMessages.length })
+      if (result.action === 'unchanged') return currentMessages
+
+      // Same tail-preservation reuse as before, just scoped to
+      // priorPortion alone now — newMessages is appended back whole,
+      // always, regardless of how large it's grown this turn.
+      const preservedTailCount = Math.min(tailMessages, priorPortion.length)
+      const structuredTail = priorPortion.slice(priorPortion.length - preservedTailCount)
+      const newHead = result.messages.slice(0, result.messages.length - preservedTailCount)
+      const recovered = [...newHead, ...structuredTail, ...newMessages]
+
+      // Recovery.call() only ever returns {value, recoveries, truncated} —
+      // it never hands back whatever `currentMessages` became after a
+      // retry, so recovery would otherwise only ever affect the one
+      // retried call. Reassigning the outer `messages` binding here (this
+      // hook is the only place that has both the recovered array and a
+      // reason to persist it) is what makes recovery durable: every
+      // subsequent budgetTracker.check() in this loop, and the `history`
+      // this function eventually returns, both see the compacted
+      // conversation from this point on — not the original, ever-growing
+      // one. newMessages itself needs no reconciliation at all — it was
+      // never part of what could be compacted away.
+      messages = recovered
+      return recovered
+    },
+  })
+
+  pushMessage(starterMessage)
+
   let turn = 0
 
   for (;;) {
@@ -642,6 +727,12 @@ export async function runAgent(
     const resultBlocks: ModelContentBlock[] = []
     const approvedCalls: LaneCall[] = []
     const deniedTools: string[] = []
+    // A DurableApprover deferred this call to a durable record instead of
+    // resolving it inline (see DURABLE_APPROVALS.md) — collected
+    // separately from approvedCalls/deniedTools since it's neither run
+    // now nor denied now. No tool_result is pushed for these yet; the
+    // batch's post-loop handling below decides what happens to them.
+    const pendingCalls: { toolUseId: string; tool: string; args: Record<string, unknown>; pendingId: string; reason: string }[] = []
     // Keyed by tool_use id — approvedCalls (a toollane LaneCall) has no
     // room for extra fields of its own, and toolLane.run's own results
     // only carry `id`/`name`/status, not anything about the *decision*
@@ -704,6 +795,14 @@ export async function runAgent(
           name: block.name!,
           execute: () => toolsByName.get(block.name!)!.execute(block.input ?? {}),
         })
+      } else if (decision.decision === 'pending') {
+        // No 'tool:started'/'tool:result' here — unlike a live 'ask',
+        // this call isn't running and isn't decided yet; it genuinely
+        // has nothing to report until a resolve call answers it, later,
+        // possibly in a different process. See 'loop:pending_approval'
+        // below (once every block in the batch is known) for the live
+        // signal this batch needed a durable decision.
+        pendingCalls.push({ toolUseId: block.id!, tool: block.name!, args: block.input ?? {}, pendingId: decision.pendingId!, reason: decision.reason })
       } else {
         // Every requested tool gets exactly one tool_result back — a
         // denied call is not simply dropped, or the model has no way to
@@ -754,6 +853,25 @@ export async function runAgent(
         // just above.
         log({ type: 'tool:result', id: call.id, tool: call.name, args: approvedMetaById.get(call.id)?.args, detailText: skipReason, statusText: 'Skipped.' })
       }
+      // A pending call closes exactly the same way an approved-but-never-run
+      // one does above — see DURABLE_APPROVALS.md's own "denial closes the
+      // checkpoint immediately" semantics: since this never actually
+      // becomes a checkpoint (the batch is resolved synchronously right
+      // here), there's nothing durable left dangling — only the
+      // DurableApprover's own pendingId record, orphaned but harmless: a
+      // resolve call against it later finds no checkpoint at all (never
+      // created) and no-ops, same as any other unknown pendingId.
+      for (const pendingCall of pendingCalls) {
+        log({ type: 'loop:skipped', name: pendingCall.tool, deniedTools })
+        const skipReason = `a sibling tool call in this turn (${deniedTools.join(', ')}) was denied`
+        resultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: pendingCall.toolUseId,
+          content: `skipped: ${skipReason}`,
+          is_error: true,
+        })
+        log({ type: 'tool:result', id: pendingCall.toolUseId, tool: pendingCall.tool, args: pendingCall.args, detailText: skipReason, statusText: 'Skipped.' })
+      }
     } else {
       // result.id is the same id LaneCall.id was given above — the exact
       // per-call identity that makes it possible to link a result back
@@ -788,6 +906,28 @@ export async function runAgent(
           statusText: result.status === 'fulfilled' ? 'Approved.' : 'Error.',
         })
       }
+
+      // At least one call this batch is durably pending — resultBlocks is
+      // incomplete (missing an entry for every pendingCalls item) and must
+      // NOT be pushed as the completing tool_result message: a real model
+      // API expects exactly one, complete, tool_result per tool_use
+      // message, not a partial one now and a follow-up later. Stop here
+      // instead — newMessages already ends at the dangling assistant
+      // tool_use message pushed above, the same crash-recovery shape
+      // session-store.ts's own hasUnresolvedToolCall already detects (see
+      // RunAgentResult.stopReason's own 'pending_approval' doc comment).
+      // Turning this into a durable TurnCheckpoint is the caller's job —
+      // this loop does no I/O.
+      if (pendingCalls.length > 0) {
+        log({ type: 'loop:pending_approval', pendingIds: pendingCalls.map((p) => p.pendingId) })
+        return {
+          text: `Stopped — awaiting durable approval for: ${pendingCalls.map((p) => p.tool).join(', ')}.`,
+          history: messages,
+          newMessages,
+          stopReason: 'pending_approval',
+          pendingApproval: { resultsSoFar: resultBlocks, outstanding: pendingCalls },
+        }
+      }
     }
 
     pushMessage({ role: 'user', content: resultBlocks })
@@ -805,4 +945,47 @@ export async function runAgent(
       return { text, history: messages, newMessages, stopReason: 'denied' }
     }
   }
+}
+
+export async function runAgent(
+  config: AgentConfig,
+  modelCall: ModelCall,
+  userMessage: string,
+  history: Message[] = [],
+  options: RunAgentOptions = {},
+): Promise<RunAgentResult> {
+  const ctx = await buildTurnContext(config, modelCall, options)
+  return runLoop(ctx, [...history], [], { role: 'user', content: userMessage })
+}
+
+/** Continues a turn durably paused on RunAgentResult.stopReason ===
+ * 'pending_approval' — see DURABLE_APPROVALS.md for the full design.
+ * `history` is durable session history including the dangling assistant
+ * tool_use message the pause left behind (exactly what a caller's
+ * SessionStore.getHistory/withSession already returns — this needs no
+ * special resumed-session handling, since that message is real, already
+ * on disk). `resolution` is the *complete* set of tool_result blocks
+ * answering that message — every entry from a resolved TurnCheckpoint's
+ * own resultsSoFar, once its outstanding is empty; assembling that is the
+ * caller's job (core/durable-approvals.ts's own CheckpointStore only
+ * stores it, it doesn't execute tools or know when a batch is complete —
+ * see that module's own doc comment), not something this function
+ * derives on its own.
+ *
+ * Pushes `resolution` as the completing message and picks the loop back
+ * up from there — a fresh model call, now with the full picture, exactly
+ * like a synchronous 'ask' would have continued if it hadn't needed to
+ * pause at all. Can itself return with stopReason 'pending_approval'
+ * again (the model's next round of tool calls hits another durably-gated
+ * one), 'denied', 'max_turns', or a genuine finish — runLoop handles all
+ * of those uniformly regardless of how this turn started. */
+export async function resumeAgent(
+  config: AgentConfig,
+  modelCall: ModelCall,
+  history: Message[],
+  resolution: ModelContentBlock[],
+  options: RunAgentOptions = {},
+): Promise<RunAgentResult> {
+  const ctx = await buildTurnContext(config, modelCall, options)
+  return runLoop(ctx, [...history], [], { role: 'user', content: resolution })
 }

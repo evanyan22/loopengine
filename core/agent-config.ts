@@ -3,6 +3,12 @@
 import type { Rule, Decision, Approver } from 'actauth'
 import type { SafetyClassifier } from 'toollane'
 
+/** Which channel a runAgent() call is on — the key RunAgentOptions.channel
+ * and AgentConfig.approvers below are both keyed by. See
+ * AgentConfig.approvers' own doc comment for why this exists instead of
+ * one blanket approver value. */
+export type ApproverChannel = 'cli' | 'http' | 'http_stream'
+
 /** Declares which real ModelCall an agent module wants built for it, so
  * the module doesn't have to export its own `createModelCall` —
  * `discoverAgents` synthesizes one instead (see `discover-agents.ts`),
@@ -104,8 +110,18 @@ export interface AgentConfig {
   /** Decision when no rule matches, for the inline-array `rules` form only.
    * Default 'ask' — new tools are opt-in, not silently allowed. */
   defaultDecision?: Decision
-  /** Default ConsoleApprover (blocks on stdin) — pass e.g. a Slack-backed Approver for unattended agents. */
-  approver?: Approver
+  /** Per-channel override — an agent author's explicit choice for *that*
+   * channel wins outright over whatever the adapter itself would
+   * otherwise default to (see RunAgentOptions.approver's own doc
+   * comment), same precedent 'approver' (singular) always had — just now
+   * scoped to one channel, not all three at once. Before this existed, a
+   * single blanket override meant setting one for background/http use
+   * silently broke this same agent's live chat too, since there was no
+   * way to say "just for this channel." Default, for any channel left
+   * unset here: actauth's own ConsoleApprover (blocks on stdin) — the
+   * adapter's own per-call `approver` default fills in first, if it
+   * has one. */
+  approvers?: Partial<Record<ApproverChannel, Approver>>
   /** Resolves the ActAuth tenant for a request, from headers (never the
    * body: tenant feeds permission decisions directly, so it has to come
    * from something verified — an Authorization/API-key header checked

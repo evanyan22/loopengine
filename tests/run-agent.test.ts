@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { runAgent, type Message, type ModelCall, type ModelResponse } from '#core/run-agent.js'
+import { runAgent, resumeAgent, type Message, type ModelCall, type ModelResponse, type ModelContentBlock } from '#core/run-agent.js'
 import type { AgentConfig, ToolDefinition } from '#core/agent-config.js'
 import type { LoopEvent } from '#core/loop-events.js'
 
@@ -204,10 +204,10 @@ describe('runAgent', () => {
     const config = baseConfig({
       tools: [echo],
       rules: [{ scopePattern: 'default/production/test-agent', tool: 'echo', decision: 'ask' }],
-      approver: { requestApproval },
+      approvers: { http: { requestApproval } },
     })
 
-    const result = await runAgent(config, modelCall, 'say hi')
+    const result = await runAgent(config, modelCall, 'say hi', [], { channel: 'http' })
 
     expect(requestApproval).toHaveBeenCalledTimes(1)
     expect(toolResults(result.history)).toEqual([
@@ -881,5 +881,205 @@ describe('runAgent system tools/skills', () => {
 
     const systemPrompt = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0][1]
     expect(systemPrompt).toContain('composio-large-outputs')
+  })
+})
+
+describe('runAgent durable approvals', () => {
+  it('runs an already-approved sibling immediately even when another call in the same batch is durably pending, and stops with pendingApproval', async () => {
+    const modelCall: ModelCall = vi.fn(async () =>
+      toolUseResponse({ id: 't1', name: 'safe', input: {} }, { id: 't2', name: 'gated', input: { amount: 900 } }),
+    )
+    const safe: ToolDefinition = {
+      name: 'safe',
+      description: 'Fine to run',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'ran fine'),
+    }
+    const gated: ToolDefinition = {
+      name: 'gated',
+      description: 'Needs durable approval',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'should not run yet'),
+    }
+    const requestDurableApproval = vi.fn(() => ({ pendingId: 'pending-1' }))
+    const config = baseConfig({
+      tools: [safe, gated],
+      rules: [
+        { scopePattern: 'default/production/test-agent', tool: 'safe', decision: 'allow' },
+        { scopePattern: 'default/production/test-agent', tool: 'gated', decision: 'ask' },
+      ],
+      approvers: { http: { requestDurableApproval } },
+    })
+
+    const result = await runAgent(config, modelCall, 'do both', [], { channel: 'http' })
+
+    expect(requestDurableApproval).toHaveBeenCalledTimes(1)
+    expect(safe.execute).toHaveBeenCalledTimes(1)
+    expect(gated.execute).not.toHaveBeenCalled()
+    expect(modelCall).toHaveBeenCalledTimes(1) // no second model call — the turn paused, it didn't continue
+    expect(result.stopReason).toBe('pending_approval')
+    expect(result.pendingApproval?.resultsSoFar).toEqual([
+      { type: 'tool_result', tool_use_id: 't1', content: '"ran fine"', is_error: false, reason: "matched rule 'default/production/test-agent'" },
+    ])
+    expect(result.pendingApproval?.outstanding).toEqual([
+      { toolUseId: 't2', tool: 'gated', args: { amount: 900 }, pendingId: 'pending-1', reason: expect.stringContaining('awaiting durable approval') },
+    ])
+    // The dangling assistant tool_use message is durable (the same
+    // crash-recovery shape session-store.ts's own hasUnresolvedToolCall
+    // detects), but no completing tool_result message was ever pushed —
+    // resultBlocks was incomplete while gated's own decision was pending.
+    const last = result.history[result.history.length - 1]
+    expect(last.role).toBe('assistant')
+  })
+
+  it('skips a durably-pending sibling with a synthesized result when another call in the same batch is denied, and never returns pendingApproval', async () => {
+    const modelCall: ModelCall = vi.fn(async () =>
+      toolUseResponse({ id: 't1', name: 'gated', input: {} }, { id: 't2', name: 'dangerous', input: {} }),
+    )
+    const gated: ToolDefinition = {
+      name: 'gated',
+      description: 'Needs durable approval',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'should not run'),
+    }
+    const dangerous: ToolDefinition = {
+      name: 'dangerous',
+      description: 'Should never run',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'should not run either'),
+    }
+    const requestDurableApproval = vi.fn(() => ({ pendingId: 'pending-2' }))
+    const config = baseConfig({
+      tools: [gated, dangerous],
+      rules: [
+        { scopePattern: 'default/production/test-agent', tool: 'gated', decision: 'ask' },
+        { scopePattern: 'default/production/test-agent', tool: 'dangerous', decision: 'deny' },
+      ],
+      approvers: { http: { requestDurableApproval } },
+    })
+
+    const result = await runAgent(config, modelCall, 'do both', [], { channel: 'http' })
+
+    // The DurableApprover still got called — the batch is evaluated
+    // fully, order-independently, before any denial short-circuits it —
+    // but the resulting checkpoint (if the caller had created one) is
+    // immediately moot: run-agent.ts never emits pendingApproval at all
+    // for a batch that resolves synchronously.
+    expect(requestDurableApproval).toHaveBeenCalledTimes(1)
+    expect(gated.execute).not.toHaveBeenCalled()
+    expect(result.stopReason).toBe('denied')
+    expect(result.pendingApproval).toBeUndefined()
+    const results = toolResults(result.history)
+    const gatedResult = results.find((r) => r.tool_use_id === 't1')
+    expect(gatedResult?.content).toMatch(/^skipped: /)
+    expect(gatedResult?.is_error).toBe(true)
+  })
+})
+
+describe('resumeAgent', () => {
+  it('pushes the resolution as the completing message and continues the loop with a fresh model call', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('all done now'))
+    const config = baseConfig()
+    const history: Message[] = [
+      { role: 'user', content: 'do the gated thing' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'gated', input: {} }] },
+    ]
+    const resolution: ModelContentBlock[] = [{ type: 'tool_result', tool_use_id: 't1', content: '"approved and ran"', is_error: false }]
+
+    const result = await resumeAgent(config, modelCall, history, resolution)
+
+    expect(modelCall).toHaveBeenCalledTimes(1)
+    // Index 2, not messagesArg.length - 1: `messages` is mutated in place
+    // by later pushMessage calls, and vi.fn() captures the array by
+    // reference — by the time this assertion runs, the assistant's own
+    // reply has already been appended too. Index 2 (history's 2 messages,
+    // then the resolution) is the one slot this call's own model request
+    // actually saw and that never gets overwritten by a later append.
+    const [messagesArg] = (modelCall as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(messagesArg[2]).toEqual({ role: 'user', content: resolution })
+    expect(result.text).toBe('all done now')
+    expect(result.newMessages).toEqual([
+      { role: 'user', content: resolution },
+      { role: 'assistant', content: [{ type: 'text', text: 'all done now' }] },
+    ])
+    expect(result.history).toEqual([...history, ...result.newMessages])
+  })
+
+  it('can itself return pendingApproval again if the model requests another durably-gated call', async () => {
+    const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't2', name: 'gated-again', input: {} }))
+    const gatedAgain: ToolDefinition = {
+      name: 'gated-again',
+      description: 'Also needs durable approval',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'should not run'),
+    }
+    const requestDurableApproval = vi.fn(() => ({ pendingId: 'pending-3' }))
+    const config = baseConfig({
+      tools: [gatedAgain],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'gated-again', decision: 'ask' }],
+      approvers: { http: { requestDurableApproval } },
+    })
+    const history: Message[] = [
+      { role: 'user', content: 'do the gated thing' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'gated', input: {} }] },
+    ]
+    const resolution: ModelContentBlock[] = [{ type: 'tool_result', tool_use_id: 't1', content: '"approved and ran"', is_error: false }]
+
+    const result = await resumeAgent(config, modelCall, history, resolution, { channel: 'http' })
+
+    expect(result.stopReason).toBe('pending_approval')
+    expect(result.pendingApproval?.outstanding).toEqual([
+      { toolUseId: 't2', tool: 'gated-again', args: {}, pendingId: 'pending-3', reason: expect.stringContaining('awaiting durable approval') },
+    ])
+  })
+})
+
+describe('per-channel approver scoping', () => {
+  // The exact bug the config.approver -> config.approvers restructure
+  // fixes: a single blanket approver used to win outright over every
+  // channel at once, so setting a durable one for background/http use
+  // silently broke this same agent's live cli/http_stream chat too.
+  // config.approvers is keyed per channel specifically so this can't
+  // happen anymore — this proves it, not just the type shape.
+  it('a config.approvers.http override does not leak into a call on a different channel', async () => {
+    // Re-derived from conversation content each call, not closure state —
+    // this modelCall is reused across two separate runAgent() invocations
+    // below, and a fixed-count script would misbehave across both.
+    const modelCall: ModelCall = vi.fn(async (messages) => {
+      const last = messages[messages.length - 1]
+      const resolved = Array.isArray(last?.content) && last.content.some((b) => b.type === 'tool_result' && b.tool_use_id === 't1')
+      if (resolved) return textResponse('done')
+      return toolUseResponse({ id: 't1', name: 'gated', input: {} })
+    })
+    const gated: ToolDefinition = {
+      name: 'gated',
+      description: 'Needs approval',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'ran for real'),
+    }
+    const requestDurableApproval = vi.fn(() => ({ pendingId: 'http-only-pending' }))
+    const liveApprove = vi.fn(async () => true)
+    const config = baseConfig({
+      tools: [gated],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'gated', decision: 'ask' }],
+      approvers: { http: { requestDurableApproval } },
+    })
+
+    // channel: 'cli', with no config.approvers.cli set — must fall
+    // through to options.approver (the adapter's own live default for
+    // *this* channel), never to config.approvers.http.
+    const cliResult = await runAgent(config, modelCall, 'do it', [], { channel: 'cli', approver: { requestApproval: liveApprove } })
+    expect(requestDurableApproval).not.toHaveBeenCalled()
+    expect(liveApprove).toHaveBeenCalledTimes(1)
+    expect(gated.execute).toHaveBeenCalledTimes(1)
+    expect(cliResult.stopReason).toBeUndefined()
+
+    // channel: 'http' on the exact same config — config.approvers.http
+    // now applies, and wins outright over whatever options.approver this
+    // call also happens to supply.
+    const httpResult = await runAgent(config, modelCall, 'do it', [], { channel: 'http', approver: { requestApproval: liveApprove } })
+    expect(requestDurableApproval).toHaveBeenCalledTimes(1)
+    expect(liveApprove).toHaveBeenCalledTimes(1) // still 1 — not called again for the http case
+    expect(httpResult.stopReason).toBe('pending_approval')
   })
 })

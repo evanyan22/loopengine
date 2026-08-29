@@ -144,6 +144,17 @@ export interface LoopDeniedEvent {
   deniedTools: string[]
 }
 
+/** At least one requested tool call is durably pending a DurableApprover
+ * decision — the turn stops right there too, but unlike loop:denied this
+ * isn't a rejection: any already-approved sibling call in the same batch
+ * still ran (see run-agent.ts's own bucket-then-execute), and the turn
+ * resumes (via resumeAgent) once every pendingId here is resolved. See
+ * DURABLE_APPROVALS.md for the full design. */
+export interface PendingApprovalEvent {
+  type: 'loop:pending_approval'
+  pendingIds: string[]
+}
+
 /** The loop's own final answer — the model produced text with no more
  * tool_use blocks. Distinct from the adapter-level 'done' below: this
  * only ever means a genuine finish, never a synthetic max_turns/denied
@@ -168,6 +179,7 @@ export type RunAgentLoopEvent =
   | LoopSkippedEvent
   | LoopMaxTurnsEvent
   | LoopDeniedEvent
+  | PendingApprovalEvent
   | LoopDoneEvent
 
 /** adapters/http.ts echoing back which session id this turn used — first
@@ -191,14 +203,17 @@ export type ApprovalPendingEvent = { type: 'approval:pending' } & PendingApprova
  * system-tools/ask_user.ts's own PendingQuestion. */
 export type QuestionPendingEvent = { type: 'question:pending' } & PendingQuestion
 
-/** The turn is over — covers a genuine finish and both synthetic
- * stopReasons (max_turns/denied) alike, the one event every caller can
- * treat as "nothing more is coming" regardless of which of the three it
- * was (see RunAgentResult.stopReason's own doc comment). */
+/** This turn/request is over — covers a genuine finish and all three
+ * synthetic stopReasons (max_turns/denied/pending_approval) alike, the
+ * one event every caller can treat as "nothing more is coming on this
+ * response" regardless of which it was (see RunAgentResult.stopReason's
+ * own doc comment). pending_approval, like denied, doesn't mean the
+ * conversation itself is over — only this turn; it resumes later via a
+ * separate resolve call, not by continuing to read this same response. */
 export interface DoneEvent {
   type: 'done'
   text: string
-  stopReason?: 'max_turns' | 'denied'
+  stopReason?: 'max_turns' | 'denied' | 'pending_approval'
 }
 
 /** Something failed after the response was already committed (SSE
