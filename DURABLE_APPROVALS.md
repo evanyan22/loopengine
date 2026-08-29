@@ -388,7 +388,24 @@ posting to Slack today isn't a step bolted onto `requestApproval()`, it
 this needs nothing beyond `fetch` and `node:crypto`'s `createHmac`.
 `DurableSlackApprover` (reusing `SlackApprover`'s existing
 `chat.postMessage`-with-buttons mechanics) would fit the same shape but
-**hasn't been built** — still just a plausible next one, not implemented.
+**hasn't been built into `actauth` itself** — still just a plausible next
+one there, not implemented. A host-owned reference implementation
+(exactly the same "no built-in class, build it as a `DurableApprover`
+yourself" shape `database-durable-approver.ts`/`redis-durable-approver.ts`
+already use) does exist now, in `examples/approver/slack-durable-approver.ts`
+and its question-side sibling `examples/question-handler/slack-durable-question-handler.ts`
+— chat.postMessage with Approve/Deny buttons (or, for a question,
+suggested-answer buttons plus a modal for free text), a signed-request
+verification function, and a handler for whatever route you wire up as
+your Slack app's own Interactivity Request URL, which calls loopengine's
+own `POST /pending-approvals/:id/resolve` / `POST /pending-questions/:id/answer`
+once the click/submission is verified. A Lark/Feishu pair
+(`examples/approver/lark-durable-approver.ts`,
+`examples/question-handler/lark-durable-question-handler.ts`) follows the
+identical shape, swapped to Lark's own API — its free-text answer uses a
+form card rather than a modal (Lark has no modal-from-card-click
+equivalent used here), flagged with lower confidence in that file's own
+header comment since Lark's card schema has changed across API versions.
 `DurableEmailApprover` doesn't fit that shape at all — real email needs
 an SMTP client or provider SDK, a genuinely new kind of dependency — so
 that one is better left for a host to build on top of
@@ -752,5 +769,10 @@ specific is loopengine's own code instead:
   `options.approver` with per agent. Treated above as ordinary
   application wiring rather than a new protocol concept — no dispatcher
   has actually been built yet to test that assumption against.
-- `DurableSlackApprover` (and any other `Durable*Approver` beyond the
-  one that shipped) — plausible, same shape, not built.
+- `DurableSlackApprover` as a real `actauth` package class (rather than a
+  host-owned example) — see the "Notification" section above for why
+  that's `actauth`'s own call, not loopengine's; the reference
+  implementation in `examples/approver/slack-durable-approver.ts` (and
+  its Lark pair) hasn't been exercised against a real Slack/Lark app end
+  to end, only reasoned through against each platform's documented API
+  shape.
