@@ -4,7 +4,7 @@
   like in Vue." Renders `pending` as one of two card shapes depending on
   its own `type` discriminant, same narrowing the composable's own
   approve/deny/answer already rely on. Same structure as
-  ui-examples/react/ChatView.tsx, template `v-if`/`v-else-if` standing in for
+  examples/chatbox/react/ChatView.tsx, template `v-if`/`v-else-if` standing in for
   JSX's `&&` branches.
 
   Illustrative only — see useLoopChat.ts's own header comment for why this

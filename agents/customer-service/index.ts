@@ -11,12 +11,10 @@
 // (tenantFor, sessionIdFor) in a way the rules themselves aren't.
 import { createHash } from 'node:crypto'
 import type { AgentConfig } from '#core/agent-config.js'
-import type { LiveApprover } from 'actauth'
+import { DurableWebApprover, type LiveApprover } from 'actauth'
 
-// One shared instance across every channel below — this demo auto-
-// approves regardless of how the agent was invoked, so the same object
-// goes under all three keys rather than three separately-constructed
-// (but behaviorally identical) ones.
+// cli and http_stream (a real human, live, right now) keep auto-
+// approving for this demo — see below for why http is different.
 const demoApprover: LiveApprover = {
   async requestApproval(tool, args, _scope, reason) {
     console.log(`  [actauth] approval requested for ${tool}(${JSON.stringify(args)}) — ${reason}`)
@@ -24,6 +22,21 @@ const demoApprover: LiveApprover = {
     return true
   },
 }
+
+// http specifically goes durable instead: a plain POST /messages caller
+// (a webhook, another backend, anything that isn't a human watching this
+// exact response) is exactly the case DurableWebApprover exists for —
+// see DURABLE_APPROVALS.md. Only constructed when this agent's own
+// webhook is actually configured, same "don't invent a target" reasoning
+// adapters/http.ts's own LOOPENGINE_DEFAULT_WEBHOOK_URL fallback uses —
+// falls back to the same demoApprover above otherwise, so this agent
+// still runs out of the box with nothing configured.
+const httpWebhookUrl = process.env.CUSTOMER_SERVICE_WEBHOOK_URL
+const httpWebhookSecret = process.env.CUSTOMER_SERVICE_WEBHOOK_SECRET
+const httpApprover =
+  httpWebhookUrl && httpWebhookSecret
+    ? new DurableWebApprover({ webhookUrl: httpWebhookUrl, signingSecret: httpWebhookSecret })
+    : demoApprover
 
 // This agent's own session-key derivation — a customer's identity (their
 // email) is what "one conversation" means here, so that mapping lives on
@@ -97,7 +110,7 @@ export const config: AgentConfig = {
   // to set explicitly. The permission story (which tool, which rule,
   // which scope resolution governs it) lives as data there, not a
   // TypeScript array literal.
-  approvers: { cli: demoApprover, http: demoApprover, http_stream: demoApprover },
+  approvers: { cli: demoApprover, http: httpApprover, http_stream: demoApprover },
   sessionIdFor,
   // Resolved per request by tenantFor above, since who's calling can vary
   // request to request. Only adapters/http.ts can actually call this (see

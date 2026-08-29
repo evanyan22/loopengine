@@ -235,9 +235,9 @@ language with a validator, not just JavaScript.
 - **`core/client.ts`** — the framework-agnostic TypeScript client this
   spec was extracted from: SSE parsing, the plain-request helpers,
   approve/deny/answer. Re-exported through the package's own entry point.
-- **`ui-examples/react/`**, **`ui-examples/vue/`** — a hook/composable
-  and a chat component each, built on `core/client.ts`, rendering
-  `approval:pending`/`question:pending` as real UI.
+- **`examples/chatbox/react/`**, **`examples/chatbox/vue/`** — a
+  hook/composable and a chat component each, built on `core/client.ts`,
+  rendering `approval:pending`/`question:pending` as real UI.
 
 Implementing this protocol in another language means reproducing what
 `core/client.ts` does: parse whichever transport you chose into

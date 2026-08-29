@@ -424,8 +424,8 @@ event protocol, not the only way to consume a turn — see
 [`PROTOCOL.md`](PROTOCOL.md) for the full `LoopEvent` catalog, the SSE/
 plain-HTTP/CLI transport bindings, and a JSON Schema
 (`protocol/loop-event.schema.json`) any language can validate against.
-`core/client.ts` and the `ui-examples/react`/`ui-examples/vue` hooks are
-reference implementations of it.
+`core/client.ts` and the `examples/chatbox/react`/`examples/chatbox/vue`
+hooks are reference implementations of it.
 
 **Agent config page:** open `http://localhost:8787/agents/config`
 (optionally `?agent=<name>`) to browse every registered agent's resolved
