@@ -313,6 +313,15 @@ durably resumable minutes or days later via
 `POST /pending-approvals/:pendingId/resolve`, without holding any
 process open in between. See `DURABLE_APPROVALS.md` for the full design.
 
+The system `ask_user` tool (a model asking a human a genuinely ambiguous
+clarifying question mid-turn) gets the same live/durable split, via
+`AgentConfig.questionHandlers`/`RunAgentOptions.questionHandler`: live
+by default (blocks on the channel it's raised on), or durable — set a
+`DurableWebQuestionHandler` (`core/system-tools/ask_user.ts`) for a
+channel and the turn instead ends with `stopReason: 'pending_question'`,
+resumable via `POST /pending-questions/:pendingId/answer`. See
+`DURABLE_APPROVALS.md`'s own "Durable questions" section.
+
 A real agent's rules live in `agents/<name>/actauth.yml`:
 
 ```yaml

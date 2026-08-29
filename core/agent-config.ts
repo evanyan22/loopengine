@@ -9,6 +9,64 @@ import type { SafetyClassifier } from 'toollane'
  * one blanket approver value. */
 export type ApproverChannel = 'cli' | 'http' | 'http_stream'
 
+/** A pending system_ask_user question — defined here, not in
+ * core/system-tools/ask_user.ts, purely so LiveQuestionHandler/
+ * DurableQuestionHandler below (and AgentConfig.questionHandlers) can
+ * reference it without a circular import (ask_user.ts already imports
+ * from this file for ToolDefinition/DurableQuestionHandler); ask_user.ts
+ * re-exports this same type for its own module's callers. */
+export interface PendingQuestion {
+  id: string
+  question: string
+  /** Suggested answers, if the model gave any — never the only allowed
+   * answer, a human can still respond with free text either way. */
+  options?: string[]
+  /** Which agent raised this — always known (config.name), so listing can
+   * always at least be scoped per-agent even without a session id. */
+  agent: string
+  /** Which conversation raised this, if the caller has one (see
+   * RunAgentOptions.sessionId's own doc comment for when it doesn't). */
+  sessionId?: string
+  requestedAt: string
+}
+
+/** The question-side sibling of actauth's own `DurableApprover` — fires a
+ * notification and returns a `pendingId` immediately, never awaited for
+ * the actual answer (see DURABLE_APPROVALS.md's "Durable questions"
+ * section). Lives here, in loopengine, rather than in actauth: unlike a
+ * tool-call approval, `system_ask_user` (core/system-tools/ask_user.ts)
+ * is loopengine's own system tool — it never goes through actauth's
+ * `Gate` at all (see that file's own doc comment on why it can't be
+ * gated), so actauth has no reason to know it exists. Positional args,
+ * mirroring `DurableApprover.requestDurableApproval(tool, args, scope,
+ * reason)`'s own shape. The one built-in implementation is
+ * `DurableWebQuestionHandler` (core/system-tools/ask_user.ts). */
+export interface DurableQuestionHandler {
+  notifyPendingQuestion(question: string, options: string[] | undefined, agent: string, sessionId: string | undefined): { pendingId: string }
+}
+
+/** The question-side sibling of actauth's own `LiveApprover` — awaited
+ * directly for the human's actual answer, same call shape
+ * `DurableQuestionHandler.notifyPendingQuestion` has except this one
+ * blocks and returns the real answer instead of a `pendingId`. `onPending`
+ * mirrors `WebApprover`'s own notification hook, but stays a per-call
+ * argument here rather than a constructor option — see
+ * `WebQuestionHandler`'s own doc comment (core/system-tools/ask_user.ts)
+ * for why a question, unlike an approval, only ever needs one shared
+ * registry, not a fresh instance per turn. The two built-in
+ * implementations are `WebQuestionHandler` and `CliQuestionHandler`
+ * (both core/system-tools/ask_user.ts). */
+export interface LiveQuestionHandler {
+  requestQuestion(question: string, options: string[] | undefined, agent: string, sessionId: string | undefined, onPending?: (question: PendingQuestion) => void): Promise<string>
+}
+
+/** `RunAgentOptions.questionHandler`/`AgentConfig.questionHandlers`' own
+ * type — mirrors actauth's own `Approver = LiveApprover | DurableApprover`
+ * union exactly, resolved the identical channel-keyed way and duck-typed
+ * (`core/system-tools/ask_user.ts`'s `isDurableQuestionHandler`) the
+ * identical way `Gate` distinguishes a live from a durable `Approver`. */
+export type QuestionHandler = LiveQuestionHandler | DurableQuestionHandler
+
 /** Declares which real ModelCall an agent module wants built for it, so
  * the module doesn't have to export its own `createModelCall` —
  * `discoverAgents` synthesizes one instead (see `discover-agents.ts`),
@@ -122,6 +180,31 @@ export interface AgentConfig {
    * adapter's own per-call `approver` default fills in first, if it
    * has one. */
   approvers?: Partial<Record<ApproverChannel, Approver>>
+  /** Per-channel override for `system_ask_user` notification —
+   * question-side sibling of `approvers` just above, same channel-keyed
+   * precedence and the same `QuestionHandler = LiveQuestionHandler |
+   * DurableQuestionHandler` union `approvers` itself uses (`Approver =
+   * LiveApprover | DurableApprover`). Default, for any channel left unset
+   * here: `run-agent.ts`'s own hard fallback, `new CliQuestionHandler()`
+   * — same role `new ConsoleApprover()` plays for `approvers`.
+   *
+   * Setting a `DurableQuestionHandler` here (the one built-in
+   * implementation is `DurableWebQuestionHandler`) makes a question
+   * raised on that channel durable: the turn ends with `stopReason:
+   * 'pending_question'`, notified via whatever this does (a signed
+   * webhook), and resumable later via `POST /pending-questions/:pendingId/answer`
+   * — surviving a restart the same way a durable approval does.
+   *
+   * One real, current gap versus `approvers`: setting a *live*
+   * `QuestionHandler` here (a custom `LiveQuestionHandler`, or even
+   * `WebQuestionHandler`/`CliQuestionHandler` themselves) is accepted by
+   * the type but has **no runtime effect** yet — `run-agent.ts`'s loop
+   * only ever consults this field to decide live-vs-durable (via
+   * `isDurableQuestionHandler`); the live case still always falls
+   * through to `createAskUserTool`'s own independent resolution (keyed off
+   * `RunAgentOptions.onQuestionPending`'s presence, not this field). Only
+   * the durable half of this union is actually wired end to end today. */
+  questionHandlers?: Partial<Record<ApproverChannel, QuestionHandler>>
   /** Resolves the ActAuth tenant for a request, from headers (never the
    * body: tenant feeds permission decisions directly, so it has to come
    * from something verified — an Authorization/API-key header checked

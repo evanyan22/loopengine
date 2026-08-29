@@ -16,27 +16,17 @@
 // needs to close over that call's own onEvent — see createAskUserTool's
 // own doc comment, and web/web-approver.ts's createTrackedApprover for the
 // same reasoning applied to approvals.
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline/promises'
-import type { ToolDefinition } from '../agent-config.js'
+import type { DurableQuestionHandler, LiveQuestionHandler, PendingQuestion, QuestionHandler, ToolDefinition } from '../agent-config.js'
 
-export interface PendingQuestion {
-  id: string
-  question: string
-  /** Suggested answers, if the model gave any — never the only allowed
-   * answer, a human can still type free text either way (see
-   * answerQuestion, which takes any string). */
-  options?: string[]
-  /** Which agent raised this — always known (config.name), so listing can
-   * always at least be scoped per-agent even without a session id. */
-  agent: string
-  /** Which conversation raised this, if the caller has one (see
-   * RunAgentOptions.sessionId's own doc comment for when it doesn't) —
-   * lets listQuestions scope down to exactly one conversation instead of
-   * every question raised by this agent, or this whole process. */
-  sessionId?: string
-  requestedAt: string
-}
+// Re-exported for this module's own callers (system-tools/index.ts, and
+// everything that imports it from there) — PendingQuestion is defined in
+// agent-config.ts now, not here, purely to let LiveQuestionHandler/
+// DurableQuestionHandler reference it without a circular import (this
+// file already imports ToolDefinition from there); nothing about its
+// meaning or shape changed.
+export type { PendingQuestion } from '../agent-config.js'
 
 interface PendingEntry {
   entry: PendingQuestion
@@ -44,30 +34,132 @@ interface PendingEntry {
   timer: ReturnType<typeof setTimeout>
 }
 
-// One shared, global registry — unlike WebApprover's pending approvals
-// (split across a shared instance and a fresh one per streamed turn, so
-// each turn's onPending can target its own SSE connection), a question
-// only ever needs *one* place to live: onPending here is just an optional
-// extra notification layered on top, not a routing key, so every
-// question — from any call, streamed or not — is always answerable via
-// answerQuestion()/listQuestions() below regardless of how it was raised.
-const questionsById = new Map<string, PendingEntry>()
-
 const DEFAULT_TIMEOUT_MS = 5 * 60_000
 
-/** Blocking terminal prompt — the same fallback actauth's own
- * ConsoleApprover uses for a permission ask with nowhere else to go
- * (see createAskUserTool below for when this applies). */
-async function promptOnConsole(question: string, options?: string[]): Promise<string> {
-  console.log(`\n[ask_user] ${question}`)
-  if (options?.length) console.log(`  options: ${options.join(', ')}`)
-  const rl = createInterface({ input: process.stdin, output: process.stdout })
-  try {
-    return (await rl.question('> ')).trim()
-  } finally {
-    rl.close()
+/** The live-side sibling of `DurableWebQuestionHandler` below — same
+ * relationship actauth's own `WebApprover` has to `DurableWebApprover`:
+ * this one holds the actual `Promise` open and resolves it directly, no
+ * webhook, no `pendingId` handed back to a durable resolve route. Named
+ * to match `WebApprover`'s own shape (a `pending` map, `requestX()`,
+ * `list()`, `decide()`) even though the underlying registration/timeout
+ * logic already existed here before this class did — this just gives it
+ * an instantiable, testable home instead of leaving it as bare
+ * module-level state.
+ *
+ * One real, deliberate difference from `WebApprover`: `onPending` is
+ * taken per-call (an argument to `requestQuestion`), not baked in at
+ * construction. `WebApprover` gets a *fresh instance per turn* precisely
+ * so each one's constructor-time `onPending` can target that turn's own
+ * SSE connection (see web/web-approver.ts's createTrackedApprover) — but
+ * a question only ever needs *one* registry, unlike approvals (see the
+ * default instance below): `onPending` here is just an optional extra
+ * notification layered on top of registration, not a routing key, so
+ * every question is answerable via `decide()`/`list()` on this same
+ * instance regardless of whether anything was listening for `onPending`
+ * when it was raised. A caller that genuinely wants per-turn isolation
+ * (its own registry, not sharing the default one) can still construct
+ * its own `WebQuestionHandler` instance directly. */
+export class WebQuestionHandler implements LiveQuestionHandler {
+  private readonly pending = new Map<string, PendingEntry>()
+  private readonly timeoutMs: number
+
+  constructor(options: { timeoutMs?: number } = {}) {
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  }
+
+  /** Registers a pending question and returns a Promise that resolves
+   * once `decide()` is called with its id (or the timeout sentinel, if
+   * nobody does). `onPending`, when given, fires synchronously with the
+   * full entry — see this class's own doc comment for why that's a
+   * per-call argument, not a constructor option. */
+  requestQuestion(question: string, options: string[] | undefined, agent: string, sessionId: string | undefined, onPending?: (question: PendingQuestion) => void): Promise<string> {
+    const id = randomUUID()
+    const entry: PendingQuestion = { id, question, options, agent, sessionId, requestedAt: new Date().toISOString() }
+    return new Promise<string>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        resolve('(no answer — timed out)')
+      }, this.timeoutMs)
+      this.pending.set(id, { entry, resolve, timer })
+      onPending?.(entry)
+    })
+  }
+
+  /** Oldest first, same ordering reasoning web/web-approver.ts's
+   * listApprovals uses. Unfiltered (both omitted) returns every question
+   * pending on this instance — real uses (an operator's own admin view,
+   * say) should filter, since that's every conversation's questions
+   * mixed together. */
+  list(filter?: { agent?: string; sessionId?: string }): PendingQuestion[] {
+    return [...this.pending.values()]
+      .map((p) => p.entry)
+      .filter((q) => (!filter?.agent || q.agent === filter.agent) && (!filter?.sessionId || q.sessionId === filter.sessionId))
+      .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt))
+  }
+
+  /** Peek at a pending question's own entry without answering it — same
+   * "look before you decide" reasoning web/web-approver.ts's findApproval
+   * exists for. */
+  find(id: string): PendingQuestion | undefined {
+    return this.pending.get(id)?.entry
+  }
+
+  /** Returns false for an unknown/already-answered/timed-out id, so the
+   * caller can report that distinctly (a 404) instead of silently
+   * no-opping — same convention web/web-approver.ts's decideApproval
+   * uses. */
+  decide(id: string, answer: string): boolean {
+    const entry = this.pending.get(id)
+    if (!entry) return false
+    clearTimeout(entry.timer)
+    this.pending.delete(id)
+    entry.resolve(answer)
+    return true
   }
 }
+
+// One shared, global instance — unlike WebApprover's pending approvals
+// (split across a shared instance and a fresh one per streamed turn),
+// createAskUserTool below always registers into this same one regardless
+// of which call raised it, so every question is always answerable via
+// the module-level listQuestions()/answerQuestion()/findQuestion()
+// functions below, whether it came from a streamed turn, the plain
+// route's fallback, or anywhere else — see WebQuestionHandler's own doc
+// comment for the full reasoning.
+const defaultQuestionHandler = new WebQuestionHandler()
+
+/** The cli-channel default — blocks on the terminal it's already attached
+ * to, same fallback actauth's own `ConsoleApprover` is for a permission
+ * ask with nowhere else to go. Unlike `WebQuestionHandler`, this needs
+ * no `pending` map, no `list()`/`decide()`: nothing outside this one call
+ * ever answers it — the terminal that asked is the terminal that
+ * answers, synchronously, in the same `rl.question()`. `agent`/
+ * `sessionId`/`onPending` are accepted (not just `question`/`options`)
+ * purely so this has the same call shape `WebQuestionHandler.requestQuestion`
+ * does — a caller (createAskUserTool below) doesn't need to know which
+ * kind of questionHandler it's holding, it just calls `requestQuestion` either
+ * way — but none of the three do anything here: there's no registry to
+ * tag with `agent`/`sessionId`, and no separate channel to push
+ * `onPending` onto besides the prompt itself. */
+export class CliQuestionHandler implements LiveQuestionHandler {
+  async requestQuestion(question: string, options: string[] | undefined): Promise<string> {
+    console.log(`\n[ask_user] ${question}`)
+    if (options?.length) console.log(`  options: ${options.join(', ')}`)
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    try {
+      return (await rl.question('> ')).trim()
+    } finally {
+      rl.close()
+    }
+  }
+}
+
+// The two live-channel defaults — cli gets a blocking prompt, http/
+// http_stream share one live registry — both single, shared instances
+// for the same reason defaultQuestionHandler above is: neither needs
+// per-turn isolation the way WebApprover's fresh-instance-per-turn does
+// (see WebQuestionHandler's own doc comment).
+const defaultCliQuestionHandler = new CliQuestionHandler()
 
 /** Builds the ask_user ToolDefinition for one runAgent() call.
  *
@@ -81,14 +173,21 @@ async function promptOnConsole(question: string, options?: string[]): Promise<st
  * onEvent forwards straight onto that turn's SSE connection — see
  * playground.ts's own inline card for it) finds out immediately instead
  * of having to poll listQuestions(). It's a notification only, not a
- * routing key: the question is registered in the same shared
- * questionsById either way, so answerQuestion() works regardless of
- * whether anything was listening for onPending in the first place.
+ * routing key: the question is registered on the same shared
+ * WebQuestionHandler instance either way, so answerQuestion() works
+ * regardless of whether anything was listening for onPending in the
+ * first place.
  *
  * Omitted entirely (a plain CLI run, or any caller with no live channel
- * of its own) falls back to a blocking terminal prompt instead of a
- * pending entry nothing could ever answer — same reasoning
- * ConsoleApprover exists for permission asks with nowhere else to go.
+ * of its own) falls back to CliQuestionHandler's blocking terminal
+ * prompt instead of a pending entry nothing could ever answer — same
+ * reasoning ConsoleApprover exists for permission asks with nowhere else
+ * to go. adapters/cli.ts passing `channel: 'cli'` but no `onQuestionPending`
+ * is exactly this case — the cli channel's real default, in other words,
+ * even though nothing threads `options.channel` through to this
+ * function directly (it doesn't need to: the *presence* of `onPending`
+ * already is that signal, one level up in run-agent.ts's own
+ * RunAgentOptions.onQuestionPending doc comment).
  *
  * Named `system_ask_user`, not the bare `ask_user` an agent author would
  * naturally reach for on their own — see system-tools/read_file.ts's own
@@ -118,32 +217,18 @@ export function createAskUserTool(context: { agent: string; sessionId?: string }
       const question = String(input.question)
       const options = Array.isArray(input.options) ? input.options.map(String) : undefined
 
-      if (!onPending) return promptOnConsole(question, options)
+      if (!onPending) return defaultCliQuestionHandler.requestQuestion(question, options)
 
-      const id = randomUUID()
-      const entry: PendingQuestion = { id, question, options, agent: context.agent, sessionId: context.sessionId, requestedAt: new Date().toISOString() }
-      return new Promise<string>((resolve) => {
-        const timer = setTimeout(() => {
-          questionsById.delete(id)
-          resolve('(no answer — timed out)')
-        }, DEFAULT_TIMEOUT_MS)
-        questionsById.set(id, { entry, resolve, timer })
-        onPending(entry)
-      })
+      return defaultQuestionHandler.requestQuestion(question, options, context.agent, context.sessionId, onPending)
     },
   }
 }
 
-/** Oldest first, same ordering reasoning web/web-approver.ts's listApprovals
- * uses — whichever question has been waiting longest surfaces first.
- * Unfiltered (both omitted) returns every question pending anywhere in
- * this process — real uses (an operator's own admin view, say) should
- * filter, since that's every conversation's questions mixed together. */
+/** Thin wrapper over the default WebQuestionHandler's own list() — see
+ * that class's own doc comment for why one shared instance, not a fresh
+ * one per call, is the right default for questions. */
 export function listQuestions(filter?: { agent?: string; sessionId?: string }): PendingQuestion[] {
-  return [...questionsById.values()]
-    .map((p) => p.entry)
-    .filter((q) => (!filter?.agent || q.agent === filter.agent) && (!filter?.sessionId || q.sessionId === filter.sessionId))
-    .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt))
+  return defaultQuestionHandler.list(filter)
 }
 
 /** Peek at a pending question's own entry (its agent/sessionId, in
@@ -151,17 +236,64 @@ export function listQuestions(filter?: { agent?: string; sessionId?: string }): 
  * calling answerQuestion() below, to know which turn's early-return race
  * (see its own sessionTurns) to resume once this one's answered. */
 export function findQuestion(id: string): PendingQuestion | undefined {
-  return questionsById.get(id)?.entry
+  return defaultQuestionHandler.find(id)
 }
 
-/** Returns false for an unknown/already-answered/timed-out id, so the
- * caller can report that distinctly (a 404) instead of silently
- * no-opping — same convention web/web-approver.ts's decideApproval uses. */
+/** Thin wrapper over the default WebQuestionHandler's own decide(). */
 export function answerQuestion(id: string, answer: string): boolean {
-  const pending = questionsById.get(id)
-  if (!pending) return false
-  clearTimeout(pending.timer)
-  questionsById.delete(id)
-  pending.resolve(answer)
-  return true
+  return defaultQuestionHandler.decide(id, answer)
+}
+
+/** Duck-types on the one method DurableQuestionHandler actually needs —
+ * same "no eval, just an explicit structural check" spirit as actauth's
+ * own isDurableApprover, which this mirrors: run-agent.ts's loop calls
+ * this on the resolved QuestionHandler (see AgentConfig.questionHandlers'
+ * own doc comment) to decide which branch a system_ask_user call takes,
+ * the same way Gate uses isDurableApprover to decide which branch a
+ * gated tool call takes. */
+export function isDurableQuestionHandler(questionHandler: QuestionHandler): questionHandler is DurableQuestionHandler {
+  return typeof (questionHandler as DurableQuestionHandler).notifyPendingQuestion === 'function'
+}
+
+/** Fires a signed webhook POST instead of holding anything open — the
+ * question-side sibling of actauth's own `DurableWebApprover` (see
+ * DURABLE_APPROVALS.md's "Durable questions" section), same shape: a
+ * signed HMAC body, a fire-and-forget `fetch`, never a promise or timer
+ * since nothing here is actually blocked. `notifyPendingQuestion` is
+ * called directly by run-agent.ts's loop, not by this tool's own
+ * `execute()` — a durable question never runs through `questionsById` at
+ * all, so `answerQuestion`/`findQuestion`/`listQuestions` above never see
+ * it either; resolving it is entirely `core/durable-approvals.ts`'s
+ * `CheckpointStore` + `adapters/http.ts`'s `POST
+ * /pending-questions/:pendingId/answer`. */
+export class DurableWebQuestionHandler implements DurableQuestionHandler {
+  private readonly webhookUrl: string
+  private readonly signingSecret: string
+
+  constructor(options: { webhookUrl: string; signingSecret: string }) {
+    this.webhookUrl = options.webhookUrl
+    this.signingSecret = options.signingSecret
+  }
+
+  notifyPendingQuestion(question: string, options: string[] | undefined, agent: string, sessionId: string | undefined): { pendingId: string } {
+    const pendingId = randomUUID()
+    const requestedAt = new Date().toISOString()
+    const body = JSON.stringify({ pendingId, question, options, agent, sessionId, requestedAt })
+    const hmac = createHmac('sha256', this.signingSecret)
+    hmac.update(body)
+    const signature = `sha256=${hmac.digest('hex')}`
+    // Not awaited — notifyPendingQuestion returns immediately, by
+    // contract (see DurableQuestionHandler's own doc comment). A
+    // delivery failure here has no synchronous way to surface to the
+    // caller; logged instead of thrown, since throwing would blow up a
+    // decision that has already, correctly, been recorded as pending.
+    fetch(this.webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-loopengine-signature': signature },
+      body,
+    }).catch((err) => {
+      console.error(`[loopengine] DurableWebQuestionHandler: webhook delivery failed for pendingId '${pendingId}':`, err)
+    })
+    return { pendingId }
+  }
 }

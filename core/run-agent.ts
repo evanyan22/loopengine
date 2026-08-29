@@ -13,11 +13,11 @@ import { BudgetTracker, type Message as BudgetMessage } from './budget.js'
 import { Compactor } from './compaction.js'
 import { ToolLane, type ToolCall as LaneCall, type SafetyClassifier } from 'toollane'
 import { Recovery } from './recovery.js'
-import type { AgentConfig, ApproverChannel, ToolDefinition, ToolSchema } from '#core/agent-config.js'
+import type { AgentConfig, ApproverChannel, QuestionHandler, ToolDefinition, ToolSchema } from '#core/agent-config.js'
 import { loadAgentModule } from './discover-agents.js'
 import { agentAsTool } from './agent-as-tool.js'
 import { loadGatewayToolsFromDir } from './gateway-tools.js'
-import { systemTools, createAskUserTool, type PendingQuestion } from './system-tools/index.js'
+import { systemTools, createAskUserTool, CliQuestionHandler, isDurableQuestionHandler, type PendingQuestion } from './system-tools/index.js'
 import type { LoopEvent } from './loop-events.js'
 export { systemTools } from './system-tools/index.js'
 export type * from './loop-events.js'
@@ -169,6 +169,30 @@ export interface RunAgentOptions {
    * that genuinely has an answering mechanism (adapters/http.ts, for both
    * its routes) should pass this. */
   onQuestionPending?: (question: PendingQuestion) => void
+  /** This channel's own default QuestionHandler — question-side sibling
+   * of `approver` above, same precedence (`AgentConfig.
+   * questionHandlers[channel]` still wins outright over this) and now
+   * the same `LiveQuestionHandler | DurableQuestionHandler` union
+   * `approver` itself is, duck-typed the same way (see
+   * `isDurableQuestionHandler`). Default, if neither this nor
+   * `config.questionHandlers[channel]` is set: `new CliQuestionHandler()`
+   * — same role `new ConsoleApprover()` plays for `approver`.
+   *
+   * One real, current asymmetry versus `approver`: only the *durable*
+   * half of this union is actually wired into the loop below — a
+   * `system_ask_user` call only ever consults this field to decide
+   * live-vs-durable; the live case still always falls through to
+   * `onQuestionPending`/the tool's own independent live resolution
+   * (unchanged from before this field existed), never actually calling
+   * a live `QuestionHandler` resolved here. See DURABLE_APPROVALS.md's
+   * "Durable questions" section for why: fully wiring the live half too
+   * would mean moving system_ask_user's answer-collection inline into
+   * this loop (changing today's batching semantics — right now a
+   * pending question is deferred past the whole tool_use batch scan,
+   * unlike a live approval) and a breaking change to createAskUserTool's
+   * own signature — deliberately deferred rather than done half-carefully
+   * here. */
+  questionHandler?: QuestionHandler
 }
 
 export interface RunAgentResult {
@@ -204,36 +228,61 @@ export interface RunAgentResult {
    * "denied", tool_result, since it was never evaluated against its own
    * rule.
    *
-   * 'pending_approval': at least one requested tool call is durably
-   * pending a DurableApprover decision (see DURABLE_APPROVALS.md) — same
-   * "the whole batch stops here" shape as 'denied', except this isn't a
-   * rejection: any already-approved sibling call in the same batch still
-   * ran (see the loop's own bucket-then-execute), captured in
-   * `pendingApproval.resultsSoFar`, and the turn resumes later via
-   * resumeAgent() once every pendingId in `pendingApproval.outstanding`
-   * is resolved — not by sending another message the way 'denied'
-   * recovers. `newMessages` ends at the dangling assistant tool_use
-   * message, same crash-recovery shape session-store.ts's own
+   * 'pending_approval' / 'pending_question': at least one requested tool
+   * call is durably pending a DurableApprover decision, or at least one
+   * `system_ask_user` call is durably pending a DurableQuestionHandler
+   * answer (see DURABLE_APPROVALS.md) — same "the whole batch stops here"
+   * shape as 'denied', except this isn't a rejection: any already-run
+   * sibling call in the same batch still ran (see the loop's own
+   * bucket-then-execute), captured in `pending.resultsSoFar`, and the
+   * turn resumes later via resumeAgent() once every pendingId in
+   * `pending.outstanding` is resolved — not by sending another message
+   * the way 'denied' recovers. A batch can mix both kinds (a gated tool
+   * call and an `system_ask_user` call in the same model response) — both
+   * land in the same `pending.outstanding`, since the one dangling
+   * assistant tool_use message can only ever get one completing
+   * tool_result message; `stopReason` reports 'pending_approval' for that
+   * mixed case too (only a batch with *no* approval items at all reports
+   * 'pending_question'). `newMessages` ends at the dangling assistant
+   * tool_use message, same crash-recovery shape session-store.ts's own
    * hasUnresolvedToolCall already detects — entered on purpose here,
    * not by accident. runAgent() does no I/O (see this module's own
-   * header comment): turning `pendingApproval` into a durable
-   * TurnCheckpoint (core/durable-approvals.ts) is the caller's job. */
-  stopReason?: 'max_turns' | 'denied' | 'pending_approval'
-  /** Set only when stopReason is 'pending_approval'. */
-  pendingApproval?: {
+   * header comment): turning `pending` into a durable TurnCheckpoint
+   * (core/durable-approvals.ts) is the caller's job. */
+  stopReason?: 'max_turns' | 'denied' | 'pending_approval' | 'pending_question'
+  /** Set only when stopReason is 'pending_approval' or 'pending_question'. */
+  pending?: {
     /** tool_result blocks already computed this batch — safely
-     * auto-allowed calls that ran immediately despite a gated sibling
-     * still being outstanding. Not yet pushed into `newMessages`/
+     * auto-allowed calls that ran immediately despite a gated/asked
+     * sibling still being outstanding. Not yet pushed into `newMessages`/
      * `history`: incomplete until every outstanding item below is
      * resolved too, and a real model API expects one complete
      * tool_result message per assistant tool_use message, not a partial
      * one now and a follow-up later. */
     resultsSoFar: ModelContentBlock[]
     /** One entry per tool call still awaiting a durable decision, keyed
-     * by the pendingId its DurableApprover handed out — what an
-     * incoming resolution actually names. */
-    outstanding: { toolUseId: string; tool: string; args: Record<string, unknown>; pendingId: string; reason: string }[]
+     * by the pendingId its DurableApprover/DurableQuestionHandler handed
+     * out — what an incoming resolution actually names. `kind`
+     * distinguishes which of the two this is — for 'question', `args` is
+     * `{ question, options }` and `reason` is the question text itself
+     * (there's no separate ActAuth "reason" for a question the way there
+     * is for a gated tool call's decision). */
+    outstanding: PendingItem[]
   }
+}
+
+/** One requested call still awaiting a durable decision — either a gated
+ * tool call (`kind: 'approval'`) or a `system_ask_user` call (`kind:
+ * 'question'`), unified into one array so a batch mixing both shares
+ * exactly one checkpoint (see RunAgentResult.stopReason's own doc
+ * comment for why that has to be true). */
+export interface PendingItem {
+  kind: 'approval' | 'question'
+  toolUseId: string
+  tool: string
+  args: Record<string, unknown>
+  pendingId: string
+  reason: string
 }
 
 /** budget.ts/compaction.ts only ever need a flat string per message to
@@ -454,6 +503,7 @@ interface TurnContext {
   modelCall: ModelCall
   log: (event: LoopEvent) => void
   scope: Scope
+  sessionId: string | undefined
   skillGarden: SkillGarden
   toolsByName: Map<string, ToolDefinition>
   systemToolInstances: Set<ToolDefinition>
@@ -465,6 +515,27 @@ interface TurnContext {
   toolLane: ToolLane
   maxTurns: number
   tailMessages: number
+  /** The real, unmodified ask_user ToolDefinition this call built (see
+   * systemToolInstances' own doc comment on why identity, not name,
+   * is what makes a same-named override a deliberate opt-out) — the
+   * durable-question branch in the loop below checks
+   * `toolsByName.get(block.name!) === askUserTool`, not
+   * `block.name === 'system_ask_user'`, for exactly that reason: an
+   * agent that overrode the name with its own ToolDefinition must still
+   * fall through to gate.evaluate() like any other tool, not get silently
+   * swallowed into the durable-question bucket just because the name
+   * matches. */
+  askUserTool: ToolDefinition
+  /** Resolved the same channel-keyed way `approver` (fed into `gate`
+   * above) is, with the same real hard default (`new CliQuestionHandler()`,
+   * playing `new ConsoleApprover()`'s role) — see
+   * RunAgentOptions.questionHandler's own doc comment. Never undefined,
+   * unlike `approver` needing none: duck-typed via `isDurableQuestionHandler`
+   * in the loop below the same way Gate distinguishes a live from a
+   * durable Approver — see that same doc comment for the one real gap
+   * versus `approver` (only the durable branch is actually wired to this
+   * resolved value; the live branch still ignores it). */
+  questionHandler: QuestionHandler
 }
 
 async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, options: RunAgentOptions): Promise<TurnContext> {
@@ -533,6 +604,13 @@ async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, optio
   const rules = loadRules(config)
   const approver = (options.channel && config.approvers?.[options.channel]) ?? options.approver ?? new ConsoleApprover()
   const gate = new Gate(rules, approver)
+  // Same channel-keyed precedence as approver above, now with the same
+  // kind of real hard default too — see RunAgentOptions.questionHandler's
+  // own doc comment for the one place this still isn't a full mirror of
+  // approver (only the durable branch below actually reads this; the live
+  // branch keeps resolving independently, via onQuestionPending).
+  const questionHandler: QuestionHandler =
+    (options.channel && config.questionHandlers?.[options.channel]) ?? options.questionHandler ?? new CliQuestionHandler()
   // No explicit isSafeTool: fall back to each called tool's own `safe`
   // flag (looked up by name) rather than defaulting every tool to unsafe
   // outright — see ToolDefinition.safe's own doc comment for why this is
@@ -599,6 +677,7 @@ async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, optio
     modelCall,
     log,
     scope,
+    sessionId: options.sessionId,
     skillGarden,
     toolsByName,
     systemToolInstances,
@@ -610,6 +689,8 @@ async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, optio
     toolLane,
     maxTurns,
     tailMessages,
+    askUserTool,
+    questionHandler,
   }
 }
 
@@ -622,7 +703,7 @@ async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, optio
  * fresh in each case) but mutated here via pushMessage, same as the
  * single function this was split out of always did. */
 async function runLoop(ctx: TurnContext, messages: Message[], newMessages: Message[], starterMessage: Message): Promise<RunAgentResult> {
-  const { modelCall, log, scope, skillGarden, toolsByName, systemToolInstances, toolSchemas, systemPrompt, budgetTracker, compactor, gate, toolLane, maxTurns, tailMessages } = ctx
+  const { modelCall, log, scope, sessionId, skillGarden, toolsByName, systemToolInstances, toolSchemas, systemPrompt, budgetTracker, compactor, gate, toolLane, maxTurns, tailMessages, askUserTool, questionHandler } = ctx
 
   function pushMessage(message: Message): void {
     messages.push(message)
@@ -727,12 +808,15 @@ async function runLoop(ctx: TurnContext, messages: Message[], newMessages: Messa
     const resultBlocks: ModelContentBlock[] = []
     const approvedCalls: LaneCall[] = []
     const deniedTools: string[] = []
-    // A DurableApprover deferred this call to a durable record instead of
-    // resolving it inline (see DURABLE_APPROVALS.md) — collected
-    // separately from approvedCalls/deniedTools since it's neither run
-    // now nor denied now. No tool_result is pushed for these yet; the
-    // batch's post-loop handling below decides what happens to them.
-    const pendingCalls: { toolUseId: string; tool: string; args: Record<string, unknown>; pendingId: string; reason: string }[] = []
+    // A DurableApprover/DurableQuestionHandler deferred this call to a
+    // durable record instead of resolving it inline (see
+    // DURABLE_APPROVALS.md) — collected separately from
+    // approvedCalls/deniedTools since it's neither run now nor denied now.
+    // No tool_result is pushed for these yet; the batch's post-loop
+    // handling below decides what happens to them. One shared array for
+    // both kinds (not two parallel ones) — see PendingItem's own doc
+    // comment for why a mixed batch has to share one checkpoint.
+    const pending: PendingItem[] = []
     // Keyed by tool_use id — approvedCalls (a toollane LaneCall) has no
     // room for extra fields of its own, and toolLane.run's own results
     // only carry `id`/`name`/status, not anything about the *decision*
@@ -753,6 +837,39 @@ async function runLoop(ctx: TurnContext, messages: Message[], newMessages: Messa
         const body = skillGarden.invoke(block.input!.skill as string, block.input?.args as string | undefined)
         log({ type: 'skill:loaded', skill: block.input!.skill as string })
         resultBlocks.push({ type: 'tool_result', tool_use_id: block.id!, content: body })
+        continue
+      }
+
+      // Checked before the systemToolInstances bypass just below (which
+      // would otherwise auto-run ask_user's own execute() straight away,
+      // in-process) — when the resolved QuestionHandler for this channel
+      // is durable (isDurableQuestionHandler — see its own doc comment,
+      // mirroring Gate's isDurableApprover), a system_ask_user call gets
+      // the exact same bucket-then-execute treatment a durably-gated tool
+      // call gets from gate.evaluate() below, never actually invoking the
+      // tool's own execute()/onPending live path at all. See PendingItem's
+      // own doc comment for why this shares `pending` with approvals
+      // rather than its own separate array. Identity, not name
+      // (`toolsByName.get(...) === askUserTool`, not `block.name ===
+      // 'system_ask_user'`) — same reasoning the systemToolInstances check
+      // just below already uses: an agent that deliberately overrode the
+      // name with its own ToolDefinition must still fall through to
+      // gate.evaluate() like any other tool, not get silently swallowed
+      // into the durable-question bucket just because the name happens to
+      // match. The *live* case (questionHandler resolved to something,
+      // just not durable — including the hard CliQuestionHandler default)
+      // deliberately falls through to the systemToolInstances bypass below
+      // unchanged — see RunAgentOptions.questionHandler's own doc comment
+      // for why that half isn't wired to this resolved value yet.
+      if (toolsByName.get(block.name!) === askUserTool && isDurableQuestionHandler(questionHandler)) {
+        const question = String(block.input?.question ?? '')
+        const questionOptions = Array.isArray(block.input?.options) ? block.input.options.map(String) : undefined
+        const { pendingId } = questionHandler.notifyPendingQuestion(question, questionOptions, scope.agent, sessionId)
+        // No 'tool:started'/'tool:result' here — same reasoning the
+        // durably-gated 'pending' branch below has: nothing to report
+        // until a resolve call answers it, later, possibly in a
+        // different process.
+        pending.push({ kind: 'question', toolUseId: block.id!, tool: block.name!, args: { question, options: questionOptions }, pendingId, reason: question })
         continue
       }
 
@@ -802,7 +919,7 @@ async function runLoop(ctx: TurnContext, messages: Message[], newMessages: Messa
         // possibly in a different process. See 'loop:pending_approval'
         // below (once every block in the batch is known) for the live
         // signal this batch needed a durable decision.
-        pendingCalls.push({ toolUseId: block.id!, tool: block.name!, args: block.input ?? {}, pendingId: decision.pendingId!, reason: decision.reason })
+        pending.push({ kind: 'approval', toolUseId: block.id!, tool: block.name!, args: block.input ?? {}, pendingId: decision.pendingId!, reason: decision.reason })
       } else {
         // Every requested tool gets exactly one tool_result back — a
         // denied call is not simply dropped, or the model has no way to
@@ -853,24 +970,25 @@ async function runLoop(ctx: TurnContext, messages: Message[], newMessages: Messa
         // just above.
         log({ type: 'tool:result', id: call.id, tool: call.name, args: approvedMetaById.get(call.id)?.args, detailText: skipReason, statusText: 'Skipped.' })
       }
-      // A pending call closes exactly the same way an approved-but-never-run
-      // one does above — see DURABLE_APPROVALS.md's own "denial closes the
-      // checkpoint immediately" semantics: since this never actually
-      // becomes a checkpoint (the batch is resolved synchronously right
-      // here), there's nothing durable left dangling — only the
-      // DurableApprover's own pendingId record, orphaned but harmless: a
-      // resolve call against it later finds no checkpoint at all (never
-      // created) and no-ops, same as any other unknown pendingId.
-      for (const pendingCall of pendingCalls) {
-        log({ type: 'loop:skipped', name: pendingCall.tool, deniedTools })
+      // A pending call/question closes exactly the same way an
+      // approved-but-never-run one does above — see DURABLE_APPROVALS.md's
+      // own "denial closes the checkpoint immediately" semantics: since
+      // this never actually becomes a checkpoint (the batch is resolved
+      // synchronously right here), there's nothing durable left dangling —
+      // only the DurableApprover's/DurableQuestionHandler's own pendingId
+      // record, orphaned but harmless: a resolve call against it later
+      // finds no checkpoint at all (never created) and no-ops, same as any
+      // other unknown pendingId.
+      for (const pendingItem of pending) {
+        log({ type: 'loop:skipped', name: pendingItem.tool, deniedTools })
         const skipReason = `a sibling tool call in this turn (${deniedTools.join(', ')}) was denied`
         resultBlocks.push({
           type: 'tool_result',
-          tool_use_id: pendingCall.toolUseId,
+          tool_use_id: pendingItem.toolUseId,
           content: `skipped: ${skipReason}`,
           is_error: true,
         })
-        log({ type: 'tool:result', id: pendingCall.toolUseId, tool: pendingCall.tool, args: pendingCall.args, detailText: skipReason, statusText: 'Skipped.' })
+        log({ type: 'tool:result', id: pendingItem.toolUseId, tool: pendingItem.tool, args: pendingItem.args, detailText: skipReason, statusText: 'Skipped.' })
       }
     } else {
       // result.id is the same id LaneCall.id was given above — the exact
@@ -908,24 +1026,27 @@ async function runLoop(ctx: TurnContext, messages: Message[], newMessages: Messa
       }
 
       // At least one call this batch is durably pending — resultBlocks is
-      // incomplete (missing an entry for every pendingCalls item) and must
+      // incomplete (missing an entry for every pending item) and must
       // NOT be pushed as the completing tool_result message: a real model
       // API expects exactly one, complete, tool_result per tool_use
       // message, not a partial one now and a follow-up later. Stop here
       // instead — newMessages already ends at the dangling assistant
       // tool_use message pushed above, the same crash-recovery shape
       // session-store.ts's own hasUnresolvedToolCall already detects (see
-      // RunAgentResult.stopReason's own 'pending_approval' doc comment).
-      // Turning this into a durable TurnCheckpoint is the caller's job —
-      // this loop does no I/O.
-      if (pendingCalls.length > 0) {
-        log({ type: 'loop:pending_approval', pendingIds: pendingCalls.map((p) => p.pendingId) })
+      // RunAgentResult.stopReason's own doc comment). Turning this into a
+      // durable TurnCheckpoint is the caller's job — this loop does no I/O.
+      if (pending.length > 0) {
+        // A mixed batch (both kinds present) reports 'pending_approval' —
+        // see RunAgentResult.stopReason's own doc comment for why that's
+        // the right call, not an arbitrary tie-break.
+        const stopReason = pending.some((p) => p.kind === 'approval') ? 'pending_approval' : 'pending_question'
+        log({ type: stopReason === 'pending_question' ? 'loop:pending_question' : 'loop:pending_approval', pendingIds: pending.map((p) => p.pendingId) })
         return {
-          text: `Stopped — awaiting durable approval for: ${pendingCalls.map((p) => p.tool).join(', ')}.`,
+          text: `Stopped — awaiting durable ${stopReason === 'pending_question' ? 'answer' : 'approval'} for: ${pending.map((p) => p.tool).join(', ')}.`,
           history: messages,
           newMessages,
-          stopReason: 'pending_approval',
-          pendingApproval: { resultsSoFar: resultBlocks, outstanding: pendingCalls },
+          stopReason,
+          pending: { resultsSoFar: resultBlocks, outstanding: pending },
         }
       }
     }

@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { runAgent, resumeAgent, type Message, type ModelCall, type ModelResponse, type ModelContentBlock } from '#core/run-agent.js'
-import type { AgentConfig, ToolDefinition } from '#core/agent-config.js'
+import type { AgentConfig, ToolDefinition, PendingQuestion } from '#core/agent-config.js'
 import type { LoopEvent } from '#core/loop-events.js'
+import { answerQuestion } from '#core/system-tools/index.js'
 
 function baseConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -885,7 +886,7 @@ describe('runAgent system tools/skills', () => {
 })
 
 describe('runAgent durable approvals', () => {
-  it('runs an already-approved sibling immediately even when another call in the same batch is durably pending, and stops with pendingApproval', async () => {
+  it('runs an already-approved sibling immediately even when another call in the same batch is durably pending, and stops with pending', async () => {
     const modelCall: ModelCall = vi.fn(async () =>
       toolUseResponse({ id: 't1', name: 'safe', input: {} }, { id: 't2', name: 'gated', input: { amount: 900 } }),
     )
@@ -918,11 +919,11 @@ describe('runAgent durable approvals', () => {
     expect(gated.execute).not.toHaveBeenCalled()
     expect(modelCall).toHaveBeenCalledTimes(1) // no second model call — the turn paused, it didn't continue
     expect(result.stopReason).toBe('pending_approval')
-    expect(result.pendingApproval?.resultsSoFar).toEqual([
+    expect(result.pending?.resultsSoFar).toEqual([
       { type: 'tool_result', tool_use_id: 't1', content: '"ran fine"', is_error: false, reason: "matched rule 'default/production/test-agent'" },
     ])
-    expect(result.pendingApproval?.outstanding).toEqual([
-      { toolUseId: 't2', tool: 'gated', args: { amount: 900 }, pendingId: 'pending-1', reason: expect.stringContaining('awaiting durable approval') },
+    expect(result.pending?.outstanding).toEqual([
+      { kind: 'approval', toolUseId: 't2', tool: 'gated', args: { amount: 900 }, pendingId: 'pending-1', reason: expect.stringContaining('awaiting durable approval') },
     ])
     // The dangling assistant tool_use message is durable (the same
     // crash-recovery shape session-store.ts's own hasUnresolvedToolCall
@@ -932,7 +933,7 @@ describe('runAgent durable approvals', () => {
     expect(last.role).toBe('assistant')
   })
 
-  it('skips a durably-pending sibling with a synthesized result when another call in the same batch is denied, and never returns pendingApproval', async () => {
+  it('skips a durably-pending sibling with a synthesized result when another call in the same batch is denied, and never returns pending', async () => {
     const modelCall: ModelCall = vi.fn(async () =>
       toolUseResponse({ id: 't1', name: 'gated', input: {} }, { id: 't2', name: 'dangerous', input: {} }),
     )
@@ -963,16 +964,149 @@ describe('runAgent durable approvals', () => {
     // The DurableApprover still got called — the batch is evaluated
     // fully, order-independently, before any denial short-circuits it —
     // but the resulting checkpoint (if the caller had created one) is
-    // immediately moot: run-agent.ts never emits pendingApproval at all
-    // for a batch that resolves synchronously.
+    // immediately moot: run-agent.ts never emits `pending` at all for a
+    // batch that resolves synchronously.
     expect(requestDurableApproval).toHaveBeenCalledTimes(1)
     expect(gated.execute).not.toHaveBeenCalled()
     expect(result.stopReason).toBe('denied')
-    expect(result.pendingApproval).toBeUndefined()
+    expect(result.pending).toBeUndefined()
     const results = toolResults(result.history)
     const gatedResult = results.find((r) => r.tool_use_id === 't1')
     expect(gatedResult?.content).toMatch(/^skipped: /)
     expect(gatedResult?.is_error).toBe(true)
+  })
+})
+
+describe('runAgent durable questions', () => {
+  it('durably pends a system_ask_user call when a DurableQuestionHandler is configured, never touching the live onQuestionPending path', async () => {
+    const modelCall: ModelCall = vi.fn(async () =>
+      toolUseResponse({ id: 't1', name: 'system_ask_user', input: { question: 'Which warehouse?', options: ['east', 'west'] } }),
+    )
+    const notifyPendingQuestion = vi.fn(() => ({ pendingId: 'q-pending-1' }))
+    const config = baseConfig({ questionHandlers: { http: { notifyPendingQuestion } } })
+    const onQuestionPending = vi.fn()
+
+    const result = await runAgent(config, modelCall, 'pick a warehouse', [], { channel: 'http', onQuestionPending })
+
+    expect(notifyPendingQuestion).toHaveBeenCalledWith('Which warehouse?', ['east', 'west'], 'test-agent', undefined)
+    // The whole point of the durable branch: the tool's own execute()/
+    // onPending live path never runs at all — nothing here should ever
+    // resolve on its own, since nothing is listening for an in-process
+    // answer.
+    expect(onQuestionPending).not.toHaveBeenCalled()
+    expect(modelCall).toHaveBeenCalledTimes(1)
+    expect(result.stopReason).toBe('pending_question')
+    expect(result.pending?.resultsSoFar).toEqual([])
+    expect(result.pending?.outstanding).toEqual([
+      {
+        kind: 'question',
+        toolUseId: 't1',
+        tool: 'system_ask_user',
+        args: { question: 'Which warehouse?', options: ['east', 'west'] },
+        pendingId: 'q-pending-1',
+        reason: 'Which warehouse?',
+      },
+    ])
+    const last = result.history[result.history.length - 1]
+    expect(last.role).toBe('assistant')
+  })
+
+  it('shares one checkpoint-shaped pending bucket when a batch mixes a gated tool call and a system_ask_user call', async () => {
+    const modelCall: ModelCall = vi.fn(async () =>
+      toolUseResponse({ id: 't1', name: 'gated', input: { amount: 500 } }, { id: 't2', name: 'system_ask_user', input: { question: 'Approve refund?' } }),
+    )
+    const gated: ToolDefinition = {
+      name: 'gated',
+      description: 'Needs durable approval',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'should not run yet'),
+    }
+    const requestDurableApproval = vi.fn(() => ({ pendingId: 'pending-approval-1' }))
+    const notifyPendingQuestion = vi.fn(() => ({ pendingId: 'pending-question-1' }))
+    const config = baseConfig({
+      tools: [gated],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'gated', decision: 'ask' }],
+      approvers: { http: { requestDurableApproval } },
+      questionHandlers: { http: { notifyPendingQuestion } },
+    })
+
+    const result = await runAgent(config, modelCall, 'do both', [], { channel: 'http' })
+
+    expect(requestDurableApproval).toHaveBeenCalledTimes(1)
+    expect(notifyPendingQuestion).toHaveBeenCalledTimes(1)
+    expect(gated.execute).not.toHaveBeenCalled()
+    // A mixed batch reports 'pending_approval', not 'pending_question' —
+    // see RunAgentResult.stopReason's own doc comment for why that's the
+    // right call, not an arbitrary tie-break.
+    expect(result.stopReason).toBe('pending_approval')
+    expect(result.pending?.outstanding).toEqual([
+      { kind: 'approval', toolUseId: 't1', tool: 'gated', args: { amount: 500 }, pendingId: 'pending-approval-1', reason: expect.stringContaining('awaiting durable approval') },
+      { kind: 'question', toolUseId: 't2', tool: 'system_ask_user', args: { question: 'Approve refund?', options: undefined }, pendingId: 'pending-question-1', reason: 'Approve refund?' },
+    ])
+  })
+
+  it('does not swallow a deliberately-overridden system_ask_user tool into the durable-question bucket, even with a questionHandler configured', async () => {
+    const modelCall: ModelCall = vi
+      .fn()
+      .mockResolvedValueOnce(toolUseResponse({ id: 't1', name: 'system_ask_user', input: { question: 'Anything?' } }))
+      .mockResolvedValueOnce(textResponse('handled'))
+    const overrideAskUser: ToolDefinition = {
+      name: 'system_ask_user',
+      description: 'A deliberate override, not the real system tool',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'handled by override'),
+    }
+    const notifyPendingQuestion = vi.fn(() => ({ pendingId: 'should-never-be-used' }))
+    const config = baseConfig({
+      tools: [overrideAskUser],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'system_ask_user', decision: 'allow' }],
+      questionHandlers: { http: { notifyPendingQuestion } },
+    })
+
+    const result = await runAgent(config, modelCall, 'hi', [], { channel: 'http' })
+
+    // Matched by name (toolsByName.get('system_ask_user')) but not by
+    // identity against the real askUserTool instance this call built —
+    // same "config wins, and the override goes through the agent's own
+    // rules like anything else" reasoning systemToolInstances' own check
+    // already relies on. A name-only check here would have silently
+    // swallowed this into the durable bucket instead.
+    expect(notifyPendingQuestion).not.toHaveBeenCalled()
+    expect(overrideAskUser.execute).toHaveBeenCalledTimes(1)
+    expect(result.stopReason).toBeUndefined()
+    expect(result.text).toBe('handled')
+  })
+
+  it('falls through to the live WebQuestionHandler path end to end when AgentConfig has no questionHandlers at all', async () => {
+    const modelCall: ModelCall = vi
+      .fn()
+      .mockResolvedValueOnce(toolUseResponse({ id: 't1', name: 'system_ask_user', input: { question: 'Which color?' } }))
+      .mockResolvedValueOnce(textResponse('picked blue'))
+    // No approvers, no questionHandlers — this is the ordinary shape of most
+    // agents in this repo (see agents/customer-service/index.ts for the
+    // one agent that *does* configure questionHandlers.http).
+    const config = baseConfig()
+    // Stands in for what an adapter (adapters/http.ts's own onQuestionPending
+    // closures) actually does: notice the pending question, then answer it
+    // asynchronously via the module-level answerQuestion() — same call a
+    // real POST /questions/:id/answer route makes.
+    const onQuestionPending = vi.fn((question: PendingQuestion) => {
+      answerQuestion(question.id, 'blue')
+    })
+
+    const result = await runAgent(config, modelCall, 'pick a color', [], { channel: 'http', onQuestionPending })
+
+    expect(onQuestionPending).toHaveBeenCalledTimes(1)
+    expect(modelCall).toHaveBeenCalledTimes(2)
+    expect(result.stopReason).toBeUndefined()
+    expect(result.text).toBe('picked blue')
+    // reason: 'system tool — always allowed' — the live path falls
+    // through to the systemToolInstances bypass/toolLane, same as any
+    // other system tool call, not a special code path of its own.
+    const results = toolResults(result.history)
+    expect(results).toEqual([
+      { type: 'tool_result', tool_use_id: 't1', content: '"blue"', is_error: false, reason: 'system tool — always allowed' },
+    ])
   })
 })
 
@@ -1005,7 +1139,7 @@ describe('resumeAgent', () => {
     expect(result.history).toEqual([...history, ...result.newMessages])
   })
 
-  it('can itself return pendingApproval again if the model requests another durably-gated call', async () => {
+  it('can itself return pending again if the model requests another durably-gated call', async () => {
     const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't2', name: 'gated-again', input: {} }))
     const gatedAgain: ToolDefinition = {
       name: 'gated-again',
@@ -1028,8 +1162,8 @@ describe('resumeAgent', () => {
     const result = await resumeAgent(config, modelCall, history, resolution, { channel: 'http' })
 
     expect(result.stopReason).toBe('pending_approval')
-    expect(result.pendingApproval?.outstanding).toEqual([
-      { toolUseId: 't2', tool: 'gated-again', args: {}, pendingId: 'pending-3', reason: expect.stringContaining('awaiting durable approval') },
+    expect(result.pending?.outstanding).toEqual([
+      { kind: 'approval', toolUseId: 't2', tool: 'gated-again', args: {}, pendingId: 'pending-3', reason: expect.stringContaining('awaiting durable approval') },
     ])
   })
 })

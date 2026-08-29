@@ -12,4 +12,14 @@ import type { ToolDefinition } from '../agent-config.js'
 
 export const systemTools: ToolDefinition[] = [readFile]
 
-export { createAskUserTool, listQuestions, answerQuestion, findQuestion, type PendingQuestion } from './ask_user.js'
+export {
+  createAskUserTool,
+  listQuestions,
+  answerQuestion,
+  findQuestion,
+  CliQuestionHandler,
+  WebQuestionHandler,
+  DurableWebQuestionHandler,
+  isDurableQuestionHandler,
+  type PendingQuestion,
+} from './ask_user.js'

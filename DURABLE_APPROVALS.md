@@ -565,13 +565,168 @@ into a durable `TurnCheckpoint`.
      Nothing else fires automatically — see the open question below on
      why that's a real, not-yet-solved gap.
    - **Another pending call.** The resumed turn's own tool requests hit
-     *another* gated call — `result.pendingApproval` gets turned into a
+     *another* gated call — `result.pending` gets turned into a
      fresh `TurnCheckpoint` the same way step 3 did for the original one
      (a real bug in the first working version: this was silently
      dropped, leaving the new `pendingId` permanently unresolvable —
      caught by testing a two-step gated chain end to end, not by
      inspection). Verified: resolve step one → turn pauses again on step
      two → resolve step two → turn genuinely finishes.
+
+## Durable questions (ask_user)
+
+**Status: implemented.** The one open question this doc used to leave
+unresolved — whether `question:pending` (the `system_ask_user` tool)
+needs the identical treatment tool-call approvals got above — is closed:
+it does, and it now gets almost exactly the same mechanism, reusing more
+of the above than a fresh design would suggest.
+
+`system_ask_user` never goes through `actauth`'s `Gate` at all (see
+`core/system-tools/ask_user.ts`'s own header comment on why it can't be
+gated — it's the human's only way to answer the agent in the first
+place, so gating it would be circular, not just redundant). That means
+its durable path can't reuse `actauth`'s `DurableApprover`/
+`DurableWebApprover` — those are approval-shaped and live in a package
+that has no reason to know `ask_user` exists. Everything durable-question
+specific is loopengine's own code instead:
+
+- **`DurableQuestionHandler`** (`core/agent-config.ts`) — the
+  question-side sibling of `DurableApprover`, same positional-args shape
+  (`notifyPendingQuestion(question, options, agent, sessionId):
+  {pendingId}`, mirroring `requestDurableApproval(tool, args, scope,
+  reason)`). **`DurableWebQuestionHandler`**
+  (`core/system-tools/ask_user.ts`) is the one built-in implementation —
+  a signed HMAC webhook POST (header `x-loopengine-signature`), same
+  fire-and-forget shape as `DurableWebApprover`. A reference sending/
+  receiving-side pair lives in `examples/question-handler/webhook-durable-question-handler.ts`
+  (its own folder, not `examples/approver/` — this class isn't an
+  actauth `Approver` at all).
+- **`WebQuestionHandler`** (`core/system-tools/ask_user.ts`) — the
+  *live* sibling, same relationship to `DurableWebQuestionHandler` that
+  actauth's own `WebApprover` has to `DurableWebApprover`: holds the
+  `Promise` open and resolves it directly via `decide()`, no webhook, no
+  `pendingId` handed to a durable resolve route. This isn't new
+  behavior — it's what `system_ask_user`'s live path already did before
+  any of the above existed, given an instantiable, testable home instead
+  of bare module-level state. One deliberate difference from
+  `WebApprover`: `onPending` is a per-call argument to
+  `requestQuestion()`, not a constructor option, because a question only
+  ever needs *one* shared registry (unlike approvals, which get a fresh
+  `WebApprover` per streamed turn specifically so each one's `onPending`
+  can target that turn's own SSE connection) — the module-level
+  `createAskUserTool`/`listQuestions`/`answerQuestion`/`findQuestion`
+  functions are thin wrappers over one default `WebQuestionHandler`
+  instance; a caller that wants an isolated registry can still construct
+  its own.
+- **`CliQuestionHandler`** (`core/system-tools/ask_user.ts`) — the
+  cli-channel default, same relationship to `ConsoleApprover` that
+  `WebQuestionHandler` has to `WebApprover`: a blocking terminal
+  `rl.question()`, nothing else. Simpler than `WebQuestionHandler` — no
+  `pending` map, no `list()`/`decide()` — since nothing outside the one
+  call that raised it ever answers it; the terminal that asked is the
+  terminal that answers, synchronously. `createAskUserTool`'s own
+  `onPending`-presence check is what actually picks between the two
+  (`adapters/cli.ts` passes `channel: 'cli'` but no live push callback at
+  all, so it always lands on `CliQuestionHandler`; `adapters/http.ts`'s
+  both routes always pass one, so they always land on
+  `WebQuestionHandler`) — `options.channel` itself isn't threaded into
+  `createAskUserTool` directly, since the presence of a push callback
+  already is that signal.
+- **Configured the same channel-keyed way, now a real type-level mirror
+  of `approver`.** `AgentConfig.questionHandlers?: Partial<Record<ApproverChannel,
+  QuestionHandler>>` and `RunAgentOptions.questionHandler?: QuestionHandler`,
+  where `QuestionHandler = LiveQuestionHandler | DurableQuestionHandler`
+  — the same union shape `Approver = LiveApprover | DurableApprover` is,
+  resolved with the same two-tier precedence and the same kind of real
+  hard default (`new CliQuestionHandler()`, playing `new
+  ConsoleApprover()`'s role), duck-typed the identical way
+  (`isDurableQuestionHandler`, mirroring `isDurableApprover`) to decide
+  which branch a `system_ask_user` call takes.
+
+  This wasn't the original shape — `questionHandler` first shipped as a
+  *dedicated*, always-durable field, deliberately disjoint from the
+  pre-existing live path (`RunAgentOptions.onQuestionPending`), to avoid a
+  breaking change to that already-tested field. It was refactored to this
+  union shape once the live/durable split settled down, for the same
+  reason `approver` is one slot rather than two: less API surface, one
+  resolution line instead of two independently-defaulted ones.
+
+  **One real gap this refactor deliberately left open**, rather than
+  closing halfway: only the *durable* half of the resolved
+  `QuestionHandler` is actually wired to anything. The loop only ever
+  calls `isDurableQuestionHandler()` on it to decide live-vs-durable; the
+  live branch still falls through to `createAskUserTool`'s own,
+  completely independent resolution (keyed off `onQuestionPending`'s
+  presence, exactly as before this field existed) — a live
+  `QuestionHandler` set via `config.questionHandlers`/`options.questionHandler`
+  is accepted by the type but has no effect at runtime. Fully closing this
+  gap means two further changes, each with a real cost: moving
+  `system_ask_user`'s live answer-collection inline into the loop (mirroring
+  how a live approval is `await`ed mid-scan in `gate.evaluate()`) would
+  change today's batching semantics — right now a pending question is
+  deferred until the *whole* tool_use batch is scanned and confirmed
+  denial-free, so a human is never asked something that turns out moot;
+  approvals don't have that property, since a live 'ask' is already
+  awaited mid-scan. And making a custom `LiveQuestionHandler` actually
+  reachable needs `createAskUserTool`'s own signature to change (from
+  `(context, onPending?)` to accepting the resolved live handler
+  directly) — a breaking change to a function `tests/ask-user.test.ts`
+  calls directly.
+  Left open on purpose rather than shipped half-carefully.
+- **One unified pending bucket, not two parallel ones.** A gated tool
+  call and a `system_ask_user` call can land in the *same* model
+  response — the worked example's own reasoning about why two gated
+  calls in one batch must share a single checkpoint applies identically
+  here: one dangling assistant `tool_use` message can only ever get one
+  completing `tool_result` message. `run-agent.ts`'s loop collects both
+  kinds into one `pending: PendingItem[]` (`{kind: 'approval' |
+  'question', toolUseId, tool, args, pendingId, reason}`), and
+  `RunAgentResult.pending.outstanding` carries both kinds together.
+  `stopReason` is `'pending_question'` only when a batch contains *no*
+  approval items at all; a mixed batch reports `'pending_approval'`
+  (not an arbitrary tie-break — an approval-aware caller already has to
+  handle `'pending_approval'`, so this is the one choice that needs no
+  new caller-side branching for the common case of a pure-approval
+  batch, which stays byte-for-byte unchanged).
+- **Same `CheckpointStore`, one new optional field.** No second store —
+  `core/durable-approvals.ts`'s `OutstandingItem` gained one field,
+  `kind?: 'approval' | 'question'`, left optional (not required)
+  specifically so every checkpoint ever written before this existed
+  keeps meaning exactly what it always meant (`undefined` ⇒
+  `'approval'`). The store itself still does no interpreting of `kind` —
+  that's entirely `adapters/http.ts`'s concern, same "this module knows
+  nothing about ActAuth or the model loop" boundary as before.
+- **Resolution is simpler than an approval's**, not just a copy of it:
+  `POST /pending-questions/:pendingId/answer` takes `{answer: string}`
+  and uses it as the completing `tool_result` content directly — no
+  `tool.execute()` (a question has nothing to run), no `editedArgs`/
+  schema validation, no deny/cascade-skip concept (a question is either
+  answered or it isn't). It shares the exact "outstanding empty → resume
+  via `resumeAgent`, else report the remaining count" tail with `POST
+  /pending-approvals/:pendingId/resolve` — one function,
+  `respondAfterResolution`, not duplicated logic. Each route rejects the
+  other kind's `pendingId` with a `400` naming the correct route, rather
+  than silently mishandling it.
+- **No new adapter-level "it's pending" event for the durable path** —
+  same precedent `approval:pending` already set. `defaultDurableHttpApprover`
+  fires no `onPending` callback (no live SSE for the plain `/messages`
+  route to push one onto), so a durable approval never emits
+  `approval:pending`; only the batch-level `loop:pending_approval`
+  fires. Mirrored exactly: `defaultDurableHttpQuestionHandler` fires no
+  callback either, and the new `loop:pending_question` event
+  (`core/loop-events.ts`) is the only signal — visibility into a durable
+  question is the webhook, the response body's `stopReason`, and the
+  checkpoint itself, same three as an approval.
+- **Where it's wired**, `adapters/http.ts`: `LOOPENGINE_DEFAULT_QUESTION_WEBHOOK_URL`/
+  `_SECRET`, falling back to the approval webhook's own env vars when
+  unset — so one webhook endpoint can receive both payload shapes by
+  default (a receiver tells them apart structurally: a question payload
+  has `question`, an approval payload has `tool`/`scope`) — rather than
+  forcing two separate endpoints for the common case. Same
+  plain-route-only default as `defaultDurableHttpApprover`: the
+  streaming route keeps its existing live `onQuestionPending` path
+  unconditionally (it already has a live connection), unless an agent
+  author opts a specific channel in via `config.questionHandlers`.
 
 ## Open questions — not yet decided
 
@@ -592,12 +747,6 @@ into a durable `TurnCheckpoint`.
   configured. A signed, expiring token per link, with real revocation
   (what a stale emailed link should do if the decision was already made
   via Slack) is still unbuilt.
-- Whether `question:pending` (the `ask_user` tool) needs the identical
-  treatment. Everything above was reasoned through, and implemented, for
-  tool-call approvals specifically; a durable version of a free-text
-  question likely wants the same `TurnCheckpoint`/`CheckpointStore`
-  shape, but hasn't been checked against this design point by point, let
-  alone built.
 - For an agent invoked both live and in the background: exactly how the
   dispatcher-side code discovers which webhook destination to construct
   `options.approver` with per agent. Treated above as ordinary

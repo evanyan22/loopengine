@@ -12,6 +12,7 @@
 import { createHash } from 'node:crypto'
 import type { AgentConfig } from '#core/agent-config.js'
 import { DurableWebApprover, type LiveApprover } from 'actauth'
+import { DurableWebQuestionHandler } from '#core/system-tools/index.js'
 
 // cli and http_stream (a real human, live, right now) keep auto-
 // approving for this demo — see below for why http is different.
@@ -37,6 +38,28 @@ const httpApprover =
   httpWebhookUrl && httpWebhookSecret
     ? new DurableWebApprover({ webhookUrl: httpWebhookUrl, signingSecret: httpWebhookSecret })
     : demoApprover
+
+// Question-side sibling of httpApprover above, for system_ask_user (see
+// DURABLE_APPROVALS.md's "Durable questions" section) — same "goes
+// durable on http, only when this agent's own webhook is configured"
+// reasoning, but no demoApprover-style fallback: unlike a boolean
+// approve/deny, there's no sensible way to auto-generate a free-text
+// answer to an arbitrary clarifying question, so there's nothing to
+// stand in for a human here. Left unset when unconfigured — falls
+// straight through to the http channel's own default (either
+// adapters/http.ts's own deployment-wide DurableWebQuestionHandler, if
+// *that's* configured, or the live WebQuestionHandler registry
+// otherwise), not to a fake answer. cli/http_stream get no override
+// either, for the same reason — both already default to the right thing
+// (CliQuestionHandler / WebQuestionHandler) via run-agent.ts's own
+// channel resolution, with no per-agent auto-answer to substitute in the
+// way demoApprover substitutes for a human's yes/no.
+const questionWebhookUrl = process.env.CUSTOMER_SERVICE_QUESTION_WEBHOOK_URL ?? httpWebhookUrl
+const questionWebhookSecret = process.env.CUSTOMER_SERVICE_QUESTION_WEBHOOK_SECRET ?? httpWebhookSecret
+const httpQuestionHandler =
+  questionWebhookUrl && questionWebhookSecret
+    ? new DurableWebQuestionHandler({ webhookUrl: questionWebhookUrl, signingSecret: questionWebhookSecret })
+    : undefined
 
 // This agent's own session-key derivation — a customer's identity (their
 // email) is what "one conversation" means here, so that mapping lives on
@@ -111,6 +134,7 @@ export const config: AgentConfig = {
   // which scope resolution governs it) lives as data there, not a
   // TypeScript array literal.
   approvers: { cli: demoApprover, http: httpApprover, http_stream: demoApprover },
+  questionHandlers: httpQuestionHandler ? { http: httpQuestionHandler } : undefined,
   sessionIdFor,
   // Resolved per request by tenantFor above, since who's calling can vary
   // request to request. Only adapters/http.ts can actually call this (see

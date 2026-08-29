@@ -17,6 +17,15 @@ import type { ModelContentBlock } from './run-agent.js'
 import { KeyedMutex } from './session-store.js'
 
 export interface OutstandingItem {
+  /** Which kind of durable decision this is — 'approval' (a gated tool
+   * call) or 'question' (a system_ask_user call), see
+   * DURABLE_APPROVALS.md's "Durable questions" section. Optional, not
+   * required: this store is deliberately agnostic to what it's storing
+   * (see this module's own header comment) — undefined means 'approval',
+   * preserving every checkpoint written before 'question' existed.
+   * adapters/http.ts's two resolve routes are the only things that ever
+   * read this. */
+  kind?: 'approval' | 'question'
   toolUseId: string
   tool: string
   args: Record<string, unknown>

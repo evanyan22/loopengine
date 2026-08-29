@@ -155,6 +155,17 @@ export interface PendingApprovalEvent {
   pendingIds: string[]
 }
 
+/** The question-side sibling of PendingApprovalEvent above — at least one
+ * `system_ask_user` call is durably pending a DurableQuestionHandler
+ * (see DURABLE_APPROVALS.md's "Durable questions" section), fired only
+ * when nothing else in the same batch is a pending *approval* (a mixed
+ * batch reports PendingApprovalEvent instead — see
+ * RunAgentResult.stopReason's own doc comment for why). */
+export interface PendingQuestionEvent {
+  type: 'loop:pending_question'
+  pendingIds: string[]
+}
+
 /** The loop's own final answer — the model produced text with no more
  * tool_use blocks. Distinct from the adapter-level 'done' below: this
  * only ever means a genuine finish, never a synthetic max_turns/denied
@@ -180,6 +191,7 @@ export type RunAgentLoopEvent =
   | LoopMaxTurnsEvent
   | LoopDeniedEvent
   | PendingApprovalEvent
+  | PendingQuestionEvent
   | LoopDoneEvent
 
 /** adapters/http.ts echoing back which session id this turn used — first
@@ -203,17 +215,18 @@ export type ApprovalPendingEvent = { type: 'approval:pending' } & PendingApprova
  * system-tools/ask_user.ts's own PendingQuestion. */
 export type QuestionPendingEvent = { type: 'question:pending' } & PendingQuestion
 
-/** This turn/request is over — covers a genuine finish and all three
- * synthetic stopReasons (max_turns/denied/pending_approval) alike, the
- * one event every caller can treat as "nothing more is coming on this
- * response" regardless of which it was (see RunAgentResult.stopReason's
- * own doc comment). pending_approval, like denied, doesn't mean the
- * conversation itself is over — only this turn; it resumes later via a
- * separate resolve call, not by continuing to read this same response. */
+/** This turn/request is over — covers a genuine finish and all four
+ * synthetic stopReasons (max_turns/denied/pending_approval/pending_question)
+ * alike, the one event every caller can treat as "nothing more is coming
+ * on this response" regardless of which it was (see
+ * RunAgentResult.stopReason's own doc comment). pending_approval/
+ * pending_question, like denied, don't mean the conversation itself is
+ * over — only this turn; it resumes later via a separate resolve call,
+ * not by continuing to read this same response. */
 export interface DoneEvent {
   type: 'done'
   text: string
-  stopReason?: 'max_turns' | 'denied' | 'pending_approval'
+  stopReason?: 'max_turns' | 'denied' | 'pending_approval' | 'pending_question'
 }
 
 /** Something failed after the response was already committed (SSE
