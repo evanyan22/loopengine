@@ -1,13 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import {
-  createAskUserTool,
-  listQuestions,
-  answerQuestion,
-  WebQuestionHandler,
-  CliQuestionHandler,
-  DurableWebQuestionHandler,
-  isDurableQuestionHandler,
-} from '#core/system-tools/index.js'
+import { createAskUserTool, listQuestions, answerQuestion, WebchatQuestionHandler, CliQuestionHandler, isDurableQuestionHandler } from '#core/system-tools/index.js'
+import { WebhookNotifier } from '#core/http-notify-triggers/webhook.js'
 
 const CONTEXT = { agent: 'test-agent', sessionId: 'session-1' }
 
@@ -102,9 +95,9 @@ describe('createAskUserTool', () => {
   })
 })
 
-describe('WebQuestionHandler', () => {
+describe('WebchatQuestionHandler', () => {
   it('is a separate, isolated registry from the default one createAskUserTool shares', async () => {
-    const questionHandler = new WebQuestionHandler()
+    const questionHandler = new WebchatQuestionHandler()
     const onPending = vi.fn()
 
     const resultPromise = questionHandler.requestQuestion('Isolated question?', undefined, 'test-agent', 'session-1', onPending)
@@ -128,7 +121,7 @@ describe('WebQuestionHandler', () => {
 
   it('times out with a fixed sentinel answer if nobody calls decide()', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    const questionHandler = new WebQuestionHandler({ timeoutMs: 1000 })
+    const questionHandler = new WebchatQuestionHandler({ timeoutMs: 1000 })
 
     const resultPromise = questionHandler.requestQuestion('Anyone there?', undefined, 'test-agent', undefined)
     await vi.advanceTimersByTimeAsync(1500)
@@ -140,9 +133,9 @@ describe('WebQuestionHandler', () => {
 
 describe('isDurableQuestionHandler', () => {
   it('distinguishes the durable questionHandler from both live ones, mirroring actauth\'s isDurableApprover', () => {
-    const durable = new DurableWebQuestionHandler({ webhookUrl: 'https://example.com/hook', signingSecret: 'shh' })
+    const durable = new WebhookNotifier({ webhookUrl: 'https://example.com/hook', signingSecret: 'shh' })
     expect(isDurableQuestionHandler(durable)).toBe(true)
-    expect(isDurableQuestionHandler(new WebQuestionHandler())).toBe(false)
+    expect(isDurableQuestionHandler(new WebchatQuestionHandler())).toBe(false)
     expect(isDurableQuestionHandler(new CliQuestionHandler())).toBe(false)
   })
 })

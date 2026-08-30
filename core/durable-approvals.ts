@@ -1,5 +1,5 @@
 // Durable storage for a turn paused on one or more DurableApprover
-// decisions — see DURABLE_APPROVALS.md for the full design. Mirrors
+// decisions — see HUMAN_IN_THE_LOOP.md for the full design. Mirrors
 // session-store.ts's own shape deliberately: a small "load, run
 // exclusively, persist" contract (withCheckpoint, here, plays the same
 // role withSession does there), a file-backed store for local dev and a
@@ -7,7 +7,7 @@
 // REDIS_URL-gated factory. This module does no tool execution and knows
 // nothing about ActAuth or the model loop — it only stores and locks;
 // run-agent.ts/adapters/http.ts own deciding what a resolution actually
-// does (see DURABLE_APPROVALS.md's own "request + raw resolve only"
+// does (see HUMAN_IN_THE_LOOP.md's own "request + raw resolve only"
 // division of labor).
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -19,7 +19,7 @@ import { KeyedMutex } from './session-store.js'
 export interface OutstandingItem {
   /** Which kind of durable decision this is — 'approval' (a gated tool
    * call) or 'question' (a system_ask_user call), see
-   * DURABLE_APPROVALS.md's "Durable questions" section. Optional, not
+   * HUMAN_IN_THE_LOOP.md's "Durable questions" section. Optional, not
    * required: this store is deliberately agnostic to what it's storing
    * (see this module's own header comment) — undefined means 'approval',
    * preserving every checkpoint written before 'question' existed.
@@ -62,7 +62,7 @@ export interface CheckpointStore {
   create(input: CreateCheckpointInput): Promise<TurnCheckpoint>
   /** Loads the checkpoint `pendingId` belongs to, runs `fn` exclusively
    * for that checkpoint (serializes concurrent resolutions of different
-   * outstanding items in the same checkpoint — see DURABLE_APPROVALS.md's
+   * outstanding items in the same checkpoint — see HUMAN_IN_THE_LOOP.md's
    * own "denial closes the checkpoint immediately" race), and persists
    * whatever checkpoint `fn` returns (or deletes it, once closed —
    * nothing revisits a closed checkpoint again).

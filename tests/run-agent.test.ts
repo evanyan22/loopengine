@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runAgent, resumeAgent, type Message, type ModelCall, type ModelResponse, type ModelContentBlock } from '#core/run-agent.js'
 import type { AgentConfig, ToolDefinition, PendingQuestion } from '#core/agent-config.js'
 import type { LoopEvent } from '#core/loop-events.js'
@@ -205,10 +205,9 @@ describe('runAgent', () => {
     const config = baseConfig({
       tools: [echo],
       rules: [{ scopePattern: 'default/production/test-agent', tool: 'echo', decision: 'ask' }],
-      approvers: { http: { requestApproval } },
     })
 
-    const result = await runAgent(config, modelCall, 'say hi', [], { channel: 'http' })
+    const result = await runAgent(config, modelCall, 'say hi', [], { channel: 'http', approver: { requestApproval } })
 
     expect(requestApproval).toHaveBeenCalledTimes(1)
     expect(toolResults(result.history)).toEqual([
@@ -909,10 +908,9 @@ describe('runAgent durable approvals', () => {
         { scopePattern: 'default/production/test-agent', tool: 'safe', decision: 'allow' },
         { scopePattern: 'default/production/test-agent', tool: 'gated', decision: 'ask' },
       ],
-      approvers: { http: { requestDurableApproval } },
     })
 
-    const result = await runAgent(config, modelCall, 'do both', [], { channel: 'http' })
+    const result = await runAgent(config, modelCall, 'do both', [], { channel: 'http', approver: { requestDurableApproval } })
 
     expect(requestDurableApproval).toHaveBeenCalledTimes(1)
     expect(safe.execute).toHaveBeenCalledTimes(1)
@@ -956,10 +954,9 @@ describe('runAgent durable approvals', () => {
         { scopePattern: 'default/production/test-agent', tool: 'gated', decision: 'ask' },
         { scopePattern: 'default/production/test-agent', tool: 'dangerous', decision: 'deny' },
       ],
-      approvers: { http: { requestDurableApproval } },
     })
 
-    const result = await runAgent(config, modelCall, 'do both', [], { channel: 'http' })
+    const result = await runAgent(config, modelCall, 'do both', [], { channel: 'http', approver: { requestDurableApproval } })
 
     // The DurableApprover still got called — the batch is evaluated
     // fully, order-independently, before any denial short-circuits it —
@@ -983,10 +980,14 @@ describe('runAgent durable questions', () => {
       toolUseResponse({ id: 't1', name: 'system_ask_user', input: { question: 'Which warehouse?', options: ['east', 'west'] } }),
     )
     const notifyPendingQuestion = vi.fn(() => ({ pendingId: 'q-pending-1' }))
-    const config = baseConfig({ questionHandlers: { http: { notifyPendingQuestion } } })
+    const config = baseConfig()
     const onQuestionPending = vi.fn()
 
-    const result = await runAgent(config, modelCall, 'pick a warehouse', [], { channel: 'http', onQuestionPending })
+    const result = await runAgent(config, modelCall, 'pick a warehouse', [], {
+      channel: 'http',
+      onQuestionPending,
+      questionHandler: { notifyPendingQuestion },
+    })
 
     expect(notifyPendingQuestion).toHaveBeenCalledWith('Which warehouse?', ['east', 'west'], 'test-agent', undefined)
     // The whole point of the durable branch: the tool's own execute()/
@@ -1026,11 +1027,13 @@ describe('runAgent durable questions', () => {
     const config = baseConfig({
       tools: [gated],
       rules: [{ scopePattern: 'default/production/test-agent', tool: 'gated', decision: 'ask' }],
-      approvers: { http: { requestDurableApproval } },
-      questionHandlers: { http: { notifyPendingQuestion } },
     })
 
-    const result = await runAgent(config, modelCall, 'do both', [], { channel: 'http' })
+    const result = await runAgent(config, modelCall, 'do both', [], {
+      channel: 'http',
+      approver: { requestDurableApproval },
+      questionHandler: { notifyPendingQuestion },
+    })
 
     expect(requestDurableApproval).toHaveBeenCalledTimes(1)
     expect(notifyPendingQuestion).toHaveBeenCalledTimes(1)
@@ -1060,10 +1063,9 @@ describe('runAgent durable questions', () => {
     const config = baseConfig({
       tools: [overrideAskUser],
       rules: [{ scopePattern: 'default/production/test-agent', tool: 'system_ask_user', decision: 'allow' }],
-      questionHandlers: { http: { notifyPendingQuestion } },
     })
 
-    const result = await runAgent(config, modelCall, 'hi', [], { channel: 'http' })
+    const result = await runAgent(config, modelCall, 'hi', [], { channel: 'http', questionHandler: { notifyPendingQuestion } })
 
     // Matched by name (toolsByName.get('system_ask_user')) but not by
     // identity against the real askUserTool instance this call built —
@@ -1077,14 +1079,15 @@ describe('runAgent durable questions', () => {
     expect(result.text).toBe('handled')
   })
 
-  it('falls through to the live WebQuestionHandler path end to end when AgentConfig has no questionHandlers at all', async () => {
+  it('falls through to the live WebchatQuestionHandler path end to end when nothing configures a durable questionHandler', async () => {
     const modelCall: ModelCall = vi
       .fn()
       .mockResolvedValueOnce(toolUseResponse({ id: 't1', name: 'system_ask_user', input: { question: 'Which color?' } }))
       .mockResolvedValueOnce(textResponse('picked blue'))
-    // No approvers, no questionHandlers — this is the ordinary shape of most
-    // agents in this repo (see agents/customer-service/index.ts for the
-    // one agent that *does* configure questionHandlers.http).
+    // No options.questionHandler, no AgentConfig.httpNotifier — this is
+    // the ordinary shape of most agents in this repo (see
+    // agents/customer-service/index.ts for the one agent that *does*
+    // configure httpNotifier's 'question' event).
     const config = baseConfig()
     // Stands in for what an adapter (adapters/http.ts's own onQuestionPending
     // closures) actually does: notice the pending question, then answer it
@@ -1151,7 +1154,6 @@ describe('resumeAgent', () => {
     const config = baseConfig({
       tools: [gatedAgain],
       rules: [{ scopePattern: 'default/production/test-agent', tool: 'gated-again', decision: 'ask' }],
-      approvers: { http: { requestDurableApproval } },
     })
     const history: Message[] = [
       { role: 'user', content: 'do the gated thing' },
@@ -1159,7 +1161,7 @@ describe('resumeAgent', () => {
     ]
     const resolution: ModelContentBlock[] = [{ type: 'tool_result', tool_use_id: 't1', content: '"approved and ran"', is_error: false }]
 
-    const result = await resumeAgent(config, modelCall, history, resolution, { channel: 'http' })
+    const result = await resumeAgent(config, modelCall, history, resolution, { channel: 'http', approver: { requestDurableApproval } })
 
     expect(result.stopReason).toBe('pending_approval')
     expect(result.pending?.outstanding).toEqual([
@@ -1168,14 +1170,227 @@ describe('resumeAgent', () => {
   })
 })
 
-describe('per-channel approver scoping', () => {
-  // The exact bug the config.approver -> config.approvers restructure
-  // fixes: a single blanket approver used to win outright over every
-  // channel at once, so setting a durable one for background/http use
-  // silently broke this same agent's live cli/http_stream chat too.
-  // config.approvers is keyed per channel specifically so this can't
-  // happen anymore — this proves it, not just the type shape.
-  it('a config.approvers.http override does not leak into a call on a different channel', async () => {
+describe('AgentConfig.onRunStart/onRunFinish', () => {
+  it('fires onRunStart once with trigger "message" for a fresh runAgent() call, and onRunFinish once on genuine completion', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('all done'))
+    const onRunStart = vi.fn()
+    const onRunFinish = vi.fn()
+    const config = baseConfig({ onRunStart, onRunFinish })
+
+    const result = await runAgent(config, modelCall, 'hi', [], { tenant: 'acme', sessionId: 'session-1', channel: 'http' })
+
+    expect(onRunStart).toHaveBeenCalledTimes(1)
+    expect(onRunStart).toHaveBeenCalledWith({ agent: 'test-agent', tenant: 'acme', sessionId: 'session-1', channel: 'http', trigger: 'message' })
+    expect(onRunFinish).toHaveBeenCalledTimes(1)
+    expect(onRunFinish).toHaveBeenCalledWith({ agent: 'test-agent', tenant: 'acme', sessionId: 'session-1', channel: 'http', text: 'all done', stopReason: undefined })
+    expect(result.text).toBe('all done')
+  })
+
+  it('fires onRunStart with trigger "resolution" for resumeAgent()', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('resumed and done'))
+    const onRunStart = vi.fn()
+    const config = baseConfig({ onRunStart })
+    const history: Message[] = [
+      { role: 'user', content: 'do the gated thing' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'gated', input: {} }] },
+    ]
+    const resolution: ModelContentBlock[] = [{ type: 'tool_result', tool_use_id: 't1', content: '"approved and ran"', is_error: false }]
+
+    await resumeAgent(config, modelCall, history, resolution, { sessionId: 'session-2' })
+
+    expect(onRunStart).toHaveBeenCalledWith({ agent: 'test-agent', tenant: 'default', sessionId: 'session-2', channel: undefined, trigger: 'resolution' })
+  })
+
+  it('does not fire onRunFinish when the turn is durably pending — only once it genuinely finishes', async () => {
+    const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't1', name: 'gated', input: {} }))
+    const gated: ToolDefinition = {
+      name: 'gated',
+      description: 'Needs durable approval',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'should not run'),
+    }
+    const requestDurableApproval = vi.fn(() => ({ pendingId: 'pending-onrunfinish' }))
+    const onRunFinish = vi.fn()
+    const config = baseConfig({
+      tools: [gated],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'gated', decision: 'ask' }],
+      onRunFinish,
+    })
+
+    const result = await runAgent(config, modelCall, 'do the gated thing', [], { channel: 'http', approver: { requestDurableApproval } })
+
+    expect(result.stopReason).toBe('pending_approval')
+    expect(onRunFinish).not.toHaveBeenCalled()
+  })
+
+  it('fires onRunFinish with the stopReason for a denied turn', async () => {
+    const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't1', name: 'dangerous', input: {} }))
+    const dangerous: ToolDefinition = {
+      name: 'dangerous',
+      description: 'Should never run',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'should not run'),
+    }
+    const onRunFinish = vi.fn()
+    const config = baseConfig({
+      tools: [dangerous],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'dangerous', decision: 'deny' }],
+      onRunFinish,
+    })
+
+    const result = await runAgent(config, modelCall, 'do it')
+
+    expect(result.stopReason).toBe('denied')
+    expect(onRunFinish).toHaveBeenCalledTimes(1)
+    expect(onRunFinish.mock.calls[0][0]).toMatchObject({ stopReason: 'denied' })
+  })
+
+  it('never awaits either hook, and logs rather than throws when one rejects or throws synchronously', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('done anyway'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onRunStart = vi.fn(() => {
+      throw new Error('boom (sync)')
+    })
+    const onRunFinish = vi.fn(async () => {
+      throw new Error('boom (async)')
+    })
+    const config = baseConfig({ onRunStart, onRunFinish })
+
+    const result = await runAgent(config, modelCall, 'hi')
+    // The async onRunFinish rejection is caught inside a .catch(), which
+    // schedules a microtask — give it a turn to settle before asserting
+    // console.error saw it, same reasoning any fire-and-forget rejection
+    // handler needs a caller to flush microtasks before checking.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(result.text).toBe('done anyway')
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("onRunStart threw for agent 'test-agent'"), expect.any(Error))
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("onRunFinish threw for agent 'test-agent'"), expect.any(Error))
+    consoleError.mockRestore()
+  })
+
+  it.each([['cli'], ['http_stream']] as const)('never fires either hook on the %s channel — that channel already delivers start/finish synchronously', async (channel) => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('done'))
+    const onRunStart = vi.fn()
+    const onRunFinish = vi.fn()
+    const config = baseConfig({ onRunStart, onRunFinish })
+
+    await runAgent(config, modelCall, 'hi', [], { channel })
+
+    expect(onRunStart).not.toHaveBeenCalled()
+    expect(onRunFinish).not.toHaveBeenCalled()
+  })
+
+  it('does fire on the http channel, and on no channel at all (a bespoke script)', async () => {
+    const modelCall: ModelCall = vi.fn(async () => textResponse('done'))
+    const onRunStart = vi.fn()
+    const onRunFinish = vi.fn()
+    const config = baseConfig({ onRunStart, onRunFinish })
+
+    await runAgent(config, modelCall, 'hi', [], { channel: 'http' })
+    await runAgent(config, modelCall, 'hi') // no channel at all
+
+    expect(onRunStart).toHaveBeenCalledTimes(2)
+    expect(onRunFinish).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('AgentConfig.httpNotifier', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('makes an "ask" approval durable on the http channel when httpNotifier lists "approval"', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't1', name: 'gated', input: {} }))
+    const gated: ToolDefinition = {
+      name: 'gated',
+      description: 'Needs approval',
+      input_schema: { type: 'object', properties: {} },
+      execute: vi.fn(async () => 'should not run yet'),
+    }
+    const config = baseConfig({
+      tools: [gated],
+      rules: [{ scopePattern: 'default/production/test-agent', tool: 'gated', decision: 'ask' }],
+      httpNotifier: { channel: 'webhook', config: { webhookUrl: 'https://example.com/hook', webhookSecret: 'shh' }, events: ['approval'] },
+    })
+
+    const result = await runAgent(config, modelCall, 'do it', [], { channel: 'http' })
+
+    expect(gated.execute).not.toHaveBeenCalled()
+    expect(result.stopReason).toBe('pending_approval')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const headers = fetchMock.mock.calls[0][1]?.headers as Record<string, string>
+    expect(headers['X-Actauth-Signature']).toMatch(/^sha256=[0-9a-f]{64}$/)
+  })
+
+  it('makes a system_ask_user call durable on the http channel when httpNotifier lists "question"', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const modelCall: ModelCall = vi.fn(async () => toolUseResponse({ id: 't1', name: 'system_ask_user', input: { question: 'Which warehouse?' } }))
+    const config = baseConfig({
+      httpNotifier: { channel: 'webhook', config: { webhookUrl: 'https://example.com/hook', webhookSecret: 'shh' }, events: ['question'] },
+    })
+
+    const result = await runAgent(config, modelCall, 'pick one', [], { channel: 'http' })
+
+    expect(result.stopReason).toBe('pending_question')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const headers = fetchMock.mock.calls[0][1]?.headers as Record<string, string>
+    expect(headers['X-Askuser-Signature']).toMatch(/^sha256=[0-9a-f]{64}$/)
+  })
+
+  it('fires onRunStart/onRunFinish via httpNotifier on the http channel when neither is set directly', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const modelCall: ModelCall = vi.fn(async () => textResponse('done'))
+    const config = baseConfig({
+      httpNotifier: {
+        channel: 'webhook',
+        config: { webhookUrl: 'https://example.com/hook', webhookSecret: 'shh' },
+        events: ['agentStart', 'agentFinish'],
+      },
+    })
+
+    await runAgent(config, modelCall, 'hi', [], { channel: 'http' })
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const events = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string).event)
+    expect(events.sort()).toEqual(['run_finish', 'run_start'])
+    for (const [, init] of fetchMock.mock.calls) {
+      const headers = init?.headers as Record<string, string>
+      expect(headers['X-Lifecycle-Signature']).toMatch(/^sha256=[0-9a-f]{64}$/)
+    }
+  })
+
+  it('never fires onRunStart/onRunFinish via httpNotifier on cli/http_stream — those channels get no config, live default only', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const modelCall: ModelCall = vi.fn(async () => textResponse('done'))
+    const config = baseConfig({
+      httpNotifier: {
+        channel: 'webhook',
+        config: { webhookUrl: 'https://example.com/hook', webhookSecret: 'shh' },
+        events: ['agentStart', 'agentFinish'],
+      },
+    })
+
+    await runAgent(config, modelCall, 'hi', [], { channel: 'cli' })
+    await runAgent(config, modelCall, 'hi', [], { channel: 'http_stream' })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  // The exact bug fixed by checking httpNotifier before options.approver
+  // (see run-agent.ts's own comment at the approver resolution site):
+  // adapters/http.ts's plain /messages route always passes *some*
+  // options.approver of its own (a deployment-wide durable default, or a
+  // live tracked one) — if that were checked first, an agent's own
+  // httpNotifier would never get a chance to apply at all.
+  it('wins outright over options.approver on the http channel, and never applies at all on other channels', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
     // Re-derived from conversation content each call, not closure state —
     // this modelCall is reused across two separate runAgent() invocations
     // below, and a fixed-count script would misbehave across both.
@@ -1191,28 +1406,26 @@ describe('per-channel approver scoping', () => {
       input_schema: { type: 'object', properties: {} },
       execute: vi.fn(async () => 'ran for real'),
     }
-    const requestDurableApproval = vi.fn(() => ({ pendingId: 'http-only-pending' }))
     const liveApprove = vi.fn(async () => true)
     const config = baseConfig({
       tools: [gated],
       rules: [{ scopePattern: 'default/production/test-agent', tool: 'gated', decision: 'ask' }],
-      approvers: { http: { requestDurableApproval } },
+      httpNotifier: { channel: 'webhook', config: { webhookUrl: 'https://example.com/hook', webhookSecret: 'shh' }, events: ['approval'] },
     })
 
-    // channel: 'cli', with no config.approvers.cli set — must fall
-    // through to options.approver (the adapter's own live default for
-    // *this* channel), never to config.approvers.http.
+    // channel: 'cli' — httpNotifier only ever matches 'http', so this
+    // call's own options.approver is the only thing that applies.
     const cliResult = await runAgent(config, modelCall, 'do it', [], { channel: 'cli', approver: { requestApproval: liveApprove } })
-    expect(requestDurableApproval).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
     expect(liveApprove).toHaveBeenCalledTimes(1)
     expect(gated.execute).toHaveBeenCalledTimes(1)
     expect(cliResult.stopReason).toBeUndefined()
 
-    // channel: 'http' on the exact same config — config.approvers.http
-    // now applies, and wins outright over whatever options.approver this
+    // channel: 'http' on the exact same config — httpNotifier now
+    // applies, and wins outright over whatever options.approver this
     // call also happens to supply.
     const httpResult = await runAgent(config, modelCall, 'do it', [], { channel: 'http', approver: { requestApproval: liveApprove } })
-    expect(requestDurableApproval).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(liveApprove).toHaveBeenCalledTimes(1) // still 1 — not called again for the http case
     expect(httpResult.stopReason).toBe('pending_approval')
   })

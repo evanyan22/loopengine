@@ -10,7 +10,7 @@ export const sendEmail: ToolDefinition = {
       // Drives actauth.yml's own send-email-tracking-info-allowed rule —
       // a tracking-info reply auto-sends, everything else (including a
       // malformed/missing value here) falls through to that file's
-      // catch-all ask rule instead. See DURABLE_APPROVALS.md's own
+      // catch-all ask rule instead. See HUMAN_IN_THE_LOOP.md's own
       // "Content-conditional gating" section for why this has to be a
       // structured field the model fills in, not a keyword scan over
       // `body`.

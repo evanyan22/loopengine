@@ -18,6 +18,7 @@ import { loadAgentModule } from './discover-agents.js'
 import { agentAsTool } from './agent-as-tool.js'
 import { loadGatewayToolsFromDir } from './gateway-tools.js'
 import { systemTools, createAskUserTool, CliQuestionHandler, isDurableQuestionHandler, type PendingQuestion } from './system-tools/index.js'
+import { resolveHttpNotifier } from './http-notifier.js'
 import type { LoopEvent } from './loop-events.js'
 export { systemTools } from './system-tools/index.js'
 export type * from './loop-events.js'
@@ -127,30 +128,32 @@ export interface RunAgentOptions {
    * pending question can't be session-scoped — still fine, it's still
    * agent-scoped either way. */
   sessionId?: string
-  /** Which channel this call is on — the key AgentConfig.approvers is
-   * checked against below (see approver's own doc comment for the full
-   * precedence). Omitted (a standalone script, a bespoke dispatcher with
-   * no fixed channel identity) means AgentConfig.approvers is never
-   * consulted at all — approver below is the only thing that applies. */
+  /** Which channel this call is on — checked below against `'http'`,
+   * the only value `AgentConfig.httpNotifier` ever matches (see that
+   * field's own doc comment). Omitted (a standalone script, a bespoke
+   * dispatcher with no fixed channel identity) means `httpNotifier` is
+   * never consulted at all — `approver` below is the only thing that
+   * applies. */
   channel?: ApproverChannel
-  /** This channel's own default Approver for 'ask' decisions, when
-   * AgentConfig.approvers[channel] isn't set for it — the seam an adapter
-   * uses to pick whichever approver actually fits its own channel
-   * (ConsoleApprover for a real terminal, a fresh WebApprover per
-   * streamed turn, a DurableWebApprover for a background dispatcher,
-   * ...) without every agent needing to hardcode one itself. An explicit
-   * AgentConfig.approvers[channel] still wins outright over this when the
-   * agent author set one on purpose *for that channel* — same precedent
-   * this field always had, just scoped per channel now instead of
-   * clobbering every channel at once (see Gate construction below).
-   * Default, if neither is given: actauth's own ConsoleApprover, same as
-   * always.
+  /** This call's own default Approver for 'ask' decisions, when
+   * `AgentConfig.httpNotifier` doesn't supply one (only possible on the
+   * `http` channel, and only when it lists `'approval'`) — the seam an
+   * adapter uses to pick whichever approver actually fits its own channel
+   * (ConsoleApprover for a real terminal, a fresh WebchatApprover per
+   * streamed turn, a WebhookApprover for a background dispatcher,
+   * ...) without every agent needing to hardcode one itself. `http`'s own
+   * `httpNotifier`, if it covers `'approval'`, still wins outright over
+   * this — the agent author's own explicit choice *for that channel*
+   * beats whatever the adapter would otherwise default to (see Gate
+   * construction below) — `cli`/`http_stream` have no such override at
+   * all, so this is the only thing that ever applies there. Default, if
+   * neither is given: actauth's own ConsoleApprover, same as always.
    *
-   * Can be a DurableApprover (DurableWebApprover, ...) instead of a live
-   * one — see DURABLE_APPROVALS.md. A background/cron dispatcher calling
+   * Can be a DurableApprover (WebhookApprover, ...) instead of a live
+   * one — see HUMAN_IN_THE_LOOP.md. A background/cron dispatcher calling
    * runAgent() directly is exactly this same kind of caller, and should
    * pass its own durable default here the same way adapters/http.ts's
-   * stream route passes a fresh WebApprover. */
+   * stream route passes a fresh WebchatApprover. */
   approver?: Approver
   /** Fired the instant the system ask_user tool registers a new pending
    * question — this is the seam that decides between a real, answerable
@@ -169,14 +172,14 @@ export interface RunAgentOptions {
    * that genuinely has an answering mechanism (adapters/http.ts, for both
    * its routes) should pass this. */
   onQuestionPending?: (question: PendingQuestion) => void
-  /** This channel's own default QuestionHandler — question-side sibling
-   * of `approver` above, same precedence (`AgentConfig.
-   * questionHandlers[channel]` still wins outright over this) and now
-   * the same `LiveQuestionHandler | DurableQuestionHandler` union
-   * `approver` itself is, duck-typed the same way (see
+  /** This call's own default QuestionHandler — question-side sibling of
+   * `approver` above, same precedence (`AgentConfig.httpNotifier`, when it
+   * covers `'question'` on the `http` channel, still wins outright over
+   * this) and the same `LiveQuestionHandler | DurableQuestionHandler`
+   * union `approver` itself is, duck-typed the same way (see
    * `isDurableQuestionHandler`). Default, if neither this nor
-   * `config.questionHandlers[channel]` is set: `new CliQuestionHandler()`
-   * — same role `new ConsoleApprover()` plays for `approver`.
+   * `httpNotifier` supplies one: `new CliQuestionHandler()` — same role
+   * `new ConsoleApprover()` plays for `approver`.
    *
    * One real, current asymmetry versus `approver`: only the *durable*
    * half of this union is actually wired into the loop below — a
@@ -184,7 +187,7 @@ export interface RunAgentOptions {
    * live-vs-durable; the live case still always falls through to
    * `onQuestionPending`/the tool's own independent live resolution
    * (unchanged from before this field existed), never actually calling
-   * a live `QuestionHandler` resolved here. See DURABLE_APPROVALS.md's
+   * a live `QuestionHandler` resolved here. See HUMAN_IN_THE_LOOP.md's
    * "Durable questions" section for why: fully wiring the live half too
    * would mean moving system_ask_user's answer-collection inline into
    * this loop (changing today's batching semantics — right now a
@@ -231,7 +234,7 @@ export interface RunAgentResult {
    * 'pending_approval' / 'pending_question': at least one requested tool
    * call is durably pending a DurableApprover decision, or at least one
    * `system_ask_user` call is durably pending a DurableQuestionHandler
-   * answer (see DURABLE_APPROVALS.md) — same "the whole batch stops here"
+   * answer (see HUMAN_IN_THE_LOOP.md) — same "the whole batch stops here"
    * shape as 'denied', except this isn't a rejection: any already-run
    * sibling call in the same batch still ran (see the loop's own
    * bucket-then-execute), captured in `pending.resultsSoFar`, and the
@@ -536,6 +539,11 @@ interface TurnContext {
    * versus `approver` (only the durable branch is actually wired to this
    * resolved value; the live branch still ignores it). */
   questionHandler: QuestionHandler
+  /** AgentConfig.httpNotifier, already resolved (see http-notifier.ts's
+   * own doc comment) — runAgent/resumeAgent read .onRunStart/.onRunFinish
+   * off of this same resolution for their own lifecycle-hook fallback,
+   * rather than calling resolveHttpNotifier a second time. */
+  httpNotifier: ReturnType<typeof resolveHttpNotifier>
 }
 
 async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, options: RunAgentOptions): Promise<TurnContext> {
@@ -602,15 +610,31 @@ async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, optio
   const budgetTracker = new BudgetTracker({ budgetTokens: config.contextBudgetTokens ?? 8000 })
   const compactor = new Compactor({ budgetTokens: config.contextBudgetTokens ?? 8000, softThreshold: budgetTracker.softThreshold, tailMessages })
   const rules = loadRules(config)
-  const approver = (options.channel && config.approvers?.[options.channel]) ?? options.approver ?? new ConsoleApprover()
+  // AgentConfig.httpNotifier only ever stands in for the http channel —
+  // see its own doc comment for why cli/http_stream never consult it at
+  // all, not even as a fallback.
+  const httpNotifier = resolveHttpNotifier(config)
+  // httpNotifier.approver, when the http channel has one, wins outright
+  // over options.approver — the same "the agent's own explicit choice for
+  // this channel beats whatever the adapter would otherwise default to"
+  // precedent a channel-keyed override always had here. This ordering
+  // matters in practice, not just on paper: adapters/http.ts's own plain
+  // /messages route always passes *some* options.approver (its own
+  // deployment-wide durable default, or a live tracked one) — checking
+  // httpNotifier first is what lets a single agent's own httpNotifier
+  // actually take effect there, rather than being silently shadowed by
+  // that per-deployment default every time.
+  const approver = (options.channel === 'http' ? httpNotifier.approver : undefined) ?? options.approver ?? new ConsoleApprover()
   const gate = new Gate(rules, approver)
-  // Same channel-keyed precedence as approver above, now with the same
-  // kind of real hard default too — see RunAgentOptions.questionHandler's
+  // Exact mirror of approver's own resolution above, same reasoning and
+  // same ordering (httpNotifier checked before options.questionHandler,
+  // not after — see approver's own comment for why that order matters in
+  // practice, not just on paper) — see RunAgentOptions.questionHandler's
   // own doc comment for the one place this still isn't a full mirror of
   // approver (only the durable branch below actually reads this; the live
   // branch keeps resolving independently, via onQuestionPending).
   const questionHandler: QuestionHandler =
-    (options.channel && config.questionHandlers?.[options.channel]) ?? options.questionHandler ?? new CliQuestionHandler()
+    (options.channel === 'http' ? httpNotifier.questionHandler : undefined) ?? options.questionHandler ?? new CliQuestionHandler()
   // No explicit isSafeTool: fall back to each called tool's own `safe`
   // flag (looked up by name) rather than defaulting every tool to unsafe
   // outright — see ToolDefinition.safe's own doc comment for why this is
@@ -691,6 +715,7 @@ async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, optio
     tailMessages,
     askUserTool,
     questionHandler,
+    httpNotifier,
   }
 }
 
@@ -810,7 +835,7 @@ async function runLoop(ctx: TurnContext, messages: Message[], newMessages: Messa
     const deniedTools: string[] = []
     // A DurableApprover/DurableQuestionHandler deferred this call to a
     // durable record instead of resolving it inline (see
-    // DURABLE_APPROVALS.md) — collected separately from
+    // HUMAN_IN_THE_LOOP.md) — collected separately from
     // approvedCalls/deniedTools since it's neither run now nor denied now.
     // No tool_result is pushed for these yet; the batch's post-loop
     // handling below decides what happens to them. One shared array for
@@ -971,7 +996,7 @@ async function runLoop(ctx: TurnContext, messages: Message[], newMessages: Messa
         log({ type: 'tool:result', id: call.id, tool: call.name, args: approvedMetaById.get(call.id)?.args, detailText: skipReason, statusText: 'Skipped.' })
       }
       // A pending call/question closes exactly the same way an
-      // approved-but-never-run one does above — see DURABLE_APPROVALS.md's
+      // approved-but-never-run one does above — see HUMAN_IN_THE_LOOP.md's
       // own "denial closes the checkpoint immediately" semantics: since
       // this never actually becomes a checkpoint (the batch is resolved
       // synchronously right here), there's nothing durable left dangling —
@@ -1068,6 +1093,40 @@ async function runLoop(ctx: TurnContext, messages: Message[], newMessages: Messa
   }
 }
 
+/** Invokes an AgentConfig.onRunStart/onRunFinish callback per its own
+ * never-awaited contract (see AgentConfig's own doc comments on each) —
+ * whether `call()` throws synchronously or returns a rejected Promise,
+ * the failure is logged, never surfaced to (or awaited by) the loop that
+ * triggered it. One shared implementation for both hooks and both of
+ * runAgent/resumeAgent's own call sites, rather than four copies of the
+ * same try/catch-and-maybe-.catch dance. */
+function fireLifecycleHook(label: 'onRunStart' | 'onRunFinish', agentName: string, call: () => void | Promise<void>): void {
+  try {
+    const result = call()
+    if (result && typeof result.catch === 'function') {
+      result.catch((err) => console.error(`[loopengine] ${label} threw for agent '${agentName}':`, err))
+    }
+  } catch (err) {
+    console.error(`[loopengine] ${label} threw for agent '${agentName}':`, err)
+  }
+}
+
+/** `cli` and `http_stream` both already deliver the start/finish signal
+ * to whoever's actually waiting, synchronously, as part of that channel's
+ * own normal response — a terminal that just ran the command, or an SSE
+ * connection that already carries its own `session`/`done` events on the
+ * exact same stream. Firing onRunStart/onRunFinish there too would just
+ * be a second, redundant copy of information the caller already has, so
+ * neither hook is invoked for those two channels — not left to each
+ * implementation to notice and filter out itself the way `channel` in
+ * the fired context still lets you filter *within* the channels this
+ * does fire for (`http`, or no channel at all — a bespoke script has no
+ * such guaranteed synchronous delivery to assume either way, so it still
+ * fires there). */
+function shouldFireLifecycleHooks(channel: ApproverChannel | undefined): boolean {
+  return channel !== 'cli' && channel !== 'http_stream'
+}
+
 export async function runAgent(
   config: AgentConfig,
   modelCall: ModelCall,
@@ -1076,11 +1135,26 @@ export async function runAgent(
   options: RunAgentOptions = {},
 ): Promise<RunAgentResult> {
   const ctx = await buildTurnContext(config, modelCall, options)
-  return runLoop(ctx, [...history], [], { role: 'user', content: userMessage })
+  // config.onRunStart, if set, still wins outright over notifier's own
+  // derived hook — see NotifierConfig's own doc comment on precedence.
+  const onRunStart = config.onRunStart ?? (options.channel === 'http' ? ctx.httpNotifier.onRunStart : undefined)
+  if (onRunStart && shouldFireLifecycleHooks(options.channel)) {
+    fireLifecycleHook('onRunStart', config.name, () =>
+      onRunStart({ agent: config.name, tenant: ctx.scope.tenant, sessionId: options.sessionId, channel: options.channel, trigger: 'message' }),
+    )
+  }
+  const result = await runLoop(ctx, [...history], [], { role: 'user', content: userMessage })
+  const onRunFinish = config.onRunFinish ?? (options.channel === 'http' ? ctx.httpNotifier.onRunFinish : undefined)
+  if (onRunFinish && !result.pending && shouldFireLifecycleHooks(options.channel)) {
+    fireLifecycleHook('onRunFinish', config.name, () =>
+      onRunFinish({ agent: config.name, tenant: ctx.scope.tenant, sessionId: options.sessionId, channel: options.channel, text: result.text, stopReason: result.stopReason as 'max_turns' | 'denied' | undefined }),
+    )
+  }
+  return result
 }
 
 /** Continues a turn durably paused on RunAgentResult.stopReason ===
- * 'pending_approval' — see DURABLE_APPROVALS.md for the full design.
+ * 'pending_approval' — see HUMAN_IN_THE_LOOP.md for the full design.
  * `history` is durable session history including the dangling assistant
  * tool_use message the pause left behind (exactly what a caller's
  * SessionStore.getHistory/withSession already returns — this needs no
@@ -1108,5 +1182,18 @@ export async function resumeAgent(
   options: RunAgentOptions = {},
 ): Promise<RunAgentResult> {
   const ctx = await buildTurnContext(config, modelCall, options)
-  return runLoop(ctx, [...history], [], { role: 'user', content: resolution })
+  const onRunStart = config.onRunStart ?? (options.channel === 'http' ? ctx.httpNotifier.onRunStart : undefined)
+  if (onRunStart && shouldFireLifecycleHooks(options.channel)) {
+    fireLifecycleHook('onRunStart', config.name, () =>
+      onRunStart({ agent: config.name, tenant: ctx.scope.tenant, sessionId: options.sessionId, channel: options.channel, trigger: 'resolution' }),
+    )
+  }
+  const result = await runLoop(ctx, [...history], [], { role: 'user', content: resolution })
+  const onRunFinish = config.onRunFinish ?? (options.channel === 'http' ? ctx.httpNotifier.onRunFinish : undefined)
+  if (onRunFinish && !result.pending && shouldFireLifecycleHooks(options.channel)) {
+    fireLifecycleHook('onRunFinish', config.name, () =>
+      onRunFinish({ agent: config.name, tenant: ctx.scope.tenant, sessionId: options.sessionId, channel: options.channel, text: result.text, stopReason: result.stopReason as 'max_turns' | 'denied' | undefined }),
+    )
+  }
+  return result
 }

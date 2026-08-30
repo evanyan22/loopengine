@@ -10,55 +10,35 @@
 // since they're tied to this agent's own request-handling code
 // (tenantFor, sessionIdFor) in a way the rules themselves aren't.
 import { createHash } from 'node:crypto'
-import type { AgentConfig } from '#core/agent-config.js'
-import { DurableWebApprover, type LiveApprover } from 'actauth'
-import { DurableWebQuestionHandler } from '#core/system-tools/index.js'
+import type { AgentConfig, HttpNotifierConfig } from '#core/agent-config.js'
 
-// cli and http_stream (a real human, live, right now) keep auto-
-// approving for this demo — see below for why http is different.
-const demoApprover: LiveApprover = {
-  async requestApproval(tool, args, _scope, reason) {
-    console.log(`  [actauth] approval requested for ${tool}(${JSON.stringify(args)}) — ${reason}`)
-    console.log('  [actauth] auto-approved for this demo (swap in SlackApprover to page a human for real refunds)')
-    return true
-  },
-}
-
-// http specifically goes durable instead: a plain POST /messages caller
-// (a webhook, another backend, anything that isn't a human watching this
-// exact response) is exactly the case DurableWebApprover exists for —
-// see DURABLE_APPROVALS.md. Only constructed when this agent's own
+// A plain POST /messages caller (a webhook, another backend, anything
+// that isn't a human watching this exact response) is exactly the case
+// AgentConfig.httpNotifier exists for — see that field's own doc comment
+// (core/agent-config.ts) and core/http-notifier.ts. One config covers
+// what used to be up to four separate ones here: an approvers.http
+// override, a questionHandlers.http override, onRunStart, and onRunFinish
+// each hand-wired their own webhook call (an earlier version of this file
+// did exactly that — see git history). Only set when this agent's own
 // webhook is actually configured, same "don't invent a target" reasoning
 // adapters/http.ts's own LOOPENGINE_DEFAULT_WEBHOOK_URL fallback uses —
-// falls back to the same demoApprover above otherwise, so this agent
-// still runs out of the box with nothing configured.
+// unset, this agent falls straight through to the library's own live
+// defaults on every channel, including http (ConsoleApprover, blocking on
+// stdin) — there's no more agent-level auto-approving stand-in for that
+// case (an earlier version of both this file and agents/file-agent/index.ts
+// had one; it existed purely to re-derive the same webhook credentials a
+// real approver already has, which is exactly the duplication
+// httpNotifier exists to remove — see HttpNotifierConfig's own doc
+// comment).
 const httpWebhookUrl = process.env.CUSTOMER_SERVICE_WEBHOOK_URL
 const httpWebhookSecret = process.env.CUSTOMER_SERVICE_WEBHOOK_SECRET
-const httpApprover =
+const httpNotifier: HttpNotifierConfig | undefined =
   httpWebhookUrl && httpWebhookSecret
-    ? new DurableWebApprover({ webhookUrl: httpWebhookUrl, signingSecret: httpWebhookSecret })
-    : demoApprover
-
-// Question-side sibling of httpApprover above, for system_ask_user (see
-// DURABLE_APPROVALS.md's "Durable questions" section) — same "goes
-// durable on http, only when this agent's own webhook is configured"
-// reasoning, but no demoApprover-style fallback: unlike a boolean
-// approve/deny, there's no sensible way to auto-generate a free-text
-// answer to an arbitrary clarifying question, so there's nothing to
-// stand in for a human here. Left unset when unconfigured — falls
-// straight through to the http channel's own default (either
-// adapters/http.ts's own deployment-wide DurableWebQuestionHandler, if
-// *that's* configured, or the live WebQuestionHandler registry
-// otherwise), not to a fake answer. cli/http_stream get no override
-// either, for the same reason — both already default to the right thing
-// (CliQuestionHandler / WebQuestionHandler) via run-agent.ts's own
-// channel resolution, with no per-agent auto-answer to substitute in the
-// way demoApprover substitutes for a human's yes/no.
-const questionWebhookUrl = process.env.CUSTOMER_SERVICE_QUESTION_WEBHOOK_URL ?? httpWebhookUrl
-const questionWebhookSecret = process.env.CUSTOMER_SERVICE_QUESTION_WEBHOOK_SECRET ?? httpWebhookSecret
-const httpQuestionHandler =
-  questionWebhookUrl && questionWebhookSecret
-    ? new DurableWebQuestionHandler({ webhookUrl: questionWebhookUrl, signingSecret: questionWebhookSecret })
+    ? {
+        channel: 'webhook',
+        config: { webhookUrl: httpWebhookUrl, webhookSecret: httpWebhookSecret },
+        events: ['approval', 'question', 'agentStart', 'agentFinish'],
+      }
     : undefined
 
 // This agent's own session-key derivation — a customer's identity (their
@@ -133,8 +113,13 @@ export const config: AgentConfig = {
   // to set explicitly. The permission story (which tool, which rule,
   // which scope resolution governs it) lives as data there, not a
   // TypeScript array literal.
-  approvers: { cli: demoApprover, http: httpApprover, http_stream: demoApprover },
-  questionHandlers: { http: httpQuestionHandler },
+  //
+  // No approvers/questionHandlers/onRunStart/onRunFinish here at all —
+  // httpNotifier covers all four when it's set (http only; cli/http_stream
+  // keep the library's own live defaults automatically, with nothing to
+  // configure), and when it's unset there's nothing agent-specific to
+  // fall back to for any of them either.
+  httpNotifier,
   sessionIdFor,
   // Resolved per request by tenantFor above, since who's calling can vary
   // request to request. Only adapters/http.ts can actually call this (see

@@ -67,8 +67,8 @@ import {
 import { describeModelProviders, describeGateways } from '#web/global-config.js'
 import { scaffoldAgent, AgentNameError, AgentExistsError, AgentModelError, type AgentTemplateOptions } from '#bin/cli.js'
 import { createTrackedApprover, listApprovals, decideApproval, findApproval } from '#web/web-approver.js'
-import { listQuestions, answerQuestion, findQuestion, createAskUserTool, DurableWebQuestionHandler, type PendingQuestion } from '#core/system-tools/index.js'
-import { DurableWebApprover } from 'actauth'
+import { listQuestions, answerQuestion, findQuestion, createAskUserTool, type PendingQuestion } from '#core/system-tools/index.js'
+import { WebhookNotifier } from '#core/http-notify-triggers/webhook.js'
 import type { Decision, PendingApproval } from 'actauth'
 import type { LoopEvent } from '#core/loop-events.js'
 
@@ -79,34 +79,28 @@ const checkpoints = createCheckpointStore()
 // for the 'http' channel — durable when configured, since that route
 // already has no live connection of its own to hold open (see
 // handleMessages' own header comment). One shared instance, not
-// per-request: unlike WebApprover, nothing about DurableWebApprover
-// needs to be scoped to a specific turn/connection. Deployment-wide env
-// vars, same pattern REDIS_URL/LOOPENGINE_ADMIN_AUTH already use — there's
-// no sensible webhook target to invent without one configured, so this
-// is undefined (handleMessages falls back to today's live WebApprover
-// instead, not all the way to ConsoleApprover) rather than guessed.
+// per-request: unlike WebchatApprover, nothing about WebhookNotifier
+// needs to be scoped to a specific turn/connection — and, same "it's
+// channel-specific, not concern-specific" reasoning
+// core/http-notify-triggers/webhook.ts's own doc comment gives, one
+// instance covers both the approval and question default, not two
+// separately-configured ones (an earlier version of this file supported
+// a separate LOOPENGINE_DEFAULT_QUESTION_WEBHOOK_URL/_SECRET pair for the
+// question side specifically — dropped once WebhookNotifier's own
+// one-target-for-both shape made that a real, not just cosmetic,
+// simplification; a deployment that genuinely needs different targets
+// per concern can still set AgentConfig.httpNotifier per agent instead,
+// which wins outright over this default anyway). Deployment-wide env
+// vars, same pattern REDIS_URL/LOOPENGINE_ADMIN_AUTH already use —
+// there's no sensible webhook target to invent without one configured,
+// so this is undefined (handleMessages falls back to today's live
+// WebchatApprover instead, not all the way to ConsoleApprover) rather
+// than guessed.
 const defaultHttpWebhookUrl = process.env.LOOPENGINE_DEFAULT_WEBHOOK_URL
 const defaultHttpWebhookSecret = process.env.LOOPENGINE_DEFAULT_WEBHOOK_SECRET
-const defaultDurableHttpApprover =
+const defaultHttpWebhookNotifier =
   defaultHttpWebhookUrl && defaultHttpWebhookSecret
-    ? new DurableWebApprover({ webhookUrl: defaultHttpWebhookUrl, signingSecret: defaultHttpWebhookSecret })
-    : undefined
-
-// Question-side sibling of the two consts above — same reasoning, same
-// shape, except this fires from loopengine's own DurableWebQuestionHandler
-// (system_ask_user never goes through actauth's Gate at all, so
-// DurableWebApprover itself can't be reused — see DURABLE_APPROVALS.md's
-// "Durable questions" section). Falls back to the approval webhook's own
-// env vars when the question-specific ones aren't set, so a single
-// webhook endpoint can receive both payload shapes by default rather than
-// forcing two separate ones for the common case; a receiver tells them
-// apart by shape (a question payload has `question`, an approval payload
-// has `tool`/`scope`).
-const defaultHttpQuestionWebhookUrl = process.env.LOOPENGINE_DEFAULT_QUESTION_WEBHOOK_URL ?? defaultHttpWebhookUrl
-const defaultHttpQuestionWebhookSecret = process.env.LOOPENGINE_DEFAULT_QUESTION_WEBHOOK_SECRET ?? defaultHttpWebhookSecret
-const defaultDurableHttpQuestionHandler =
-  defaultHttpQuestionWebhookUrl && defaultHttpQuestionWebhookSecret
-    ? new DurableWebQuestionHandler({ webhookUrl: defaultHttpQuestionWebhookUrl, signingSecret: defaultHttpQuestionWebhookSecret })
+    ? new WebhookNotifier({ webhookUrl: defaultHttpWebhookUrl, signingSecret: defaultHttpWebhookSecret })
     : undefined
 
 // Used when an AgentConfig doesn't define its own sessionIdFor — a plain
@@ -312,10 +306,13 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
     isSafeTool: config.isSafeTool ? 'custom' : "default (each tool's own `safe` flag)",
     sessionIdFor: config.sessionIdFor ? 'custom' : 'default (client-supplied `sessionId` field)',
     tenantFor: config.tenantFor ? 'custom' : "none (every request is the 'default' tenant)",
+    // No more per-agent cli/http_stream override — both always get the
+    // library's own live default now (see AgentConfig.httpNotifier's own
+    // doc comment); only http has anything to report as 'custom'.
     approvers: {
-      cli: config.approvers?.cli ? 'custom' : 'default (blocks on stdin)',
-      http: config.approvers?.http ? 'custom' : 'default (durable webhook, if configured — see LOOPENGINE_DEFAULT_WEBHOOK_URL)',
-      http_stream: config.approvers?.http_stream ? 'custom' : 'default (web — approvals pop up inline in the playground)',
+      cli: 'default (blocks on stdin)',
+      http: config.httpNotifier?.events.includes('approval') ? 'custom' : 'default (durable webhook, if configured — see LOOPENGINE_DEFAULT_WEBHOOK_URL)',
+      http_stream: 'default (web — approvals pop up inline in the playground)',
     },
   }
 }
@@ -937,11 +934,11 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
   // This route has no live channel of its own — no SSE connection to push
   // a pending question/approval onto the way the streaming route does.
   // For a tool-call approval, that's exactly why its channel default is
-  // durable (see defaultDurableHttpApprover above): the turn just returns
+  // durable (see defaultHttpWebhookNotifier above): the turn just returns
   // stopReason 'pending_approval' and this responds with that directly,
   // no live wait at all. question:pending gets the same durable default
-  // now too (see defaultDurableHttpQuestionHandler below and
-  // DURABLE_APPROVALS.md's "Durable questions" section) — but either kind
+  // now too (see defaultHttpWebhookNotifier's own use below and
+  // HUMAN_IN_THE_LOOP.md's "Durable questions" section) — but either kind
   // can still fall through to the live path (unconfigured webhook, or an
   // agent that explicitly opts into a live approver for this channel), so
   // the race-the-whole-turn-against-the-first-pending-signal machinery
@@ -956,14 +953,14 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
   sessionTurns.set(key, state)
 
   // Durable when LOOPENGINE_DEFAULT_WEBHOOK_URL/_SECRET are configured
-  // (see this module's own defaultDurableHttpApprover) — otherwise falls
-  // back to today's live WebApprover, tracked so a decide() call routes
+  // (see this module's own defaultHttpWebhookNotifier) — otherwise falls
+  // back to today's live WebchatApprover, tracked so a decide() call routes
   // back to this exact instance (see createTrackedApprover's own doc
-  // comment). Either way, config.approvers.http (if the agent sets its
-  // own, for this channel specifically) still wins outright over this —
-  // see RunAgentOptions.approver's own doc comment.
+  // comment). Either way, this agent's own config.httpNotifier (if it
+  // covers 'approval') still wins outright over this — see
+  // RunAgentOptions.approver's own doc comment.
   const approver =
-    defaultDurableHttpApprover ??
+    defaultHttpWebhookNotifier ??
     createTrackedApprover(rawSessionId, (approval) => {
       state.events.push({ type: 'approval:pending', ...approval })
       pushSignal(state, { type: 'approval', entry: approval })
@@ -977,12 +974,14 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse, agentNa
       sessionId: rawSessionId,
       channel: 'http',
       approver,
-      // Durable when LOOPENGINE_DEFAULT_QUESTION_WEBHOOK_URL/_SECRET (or
-      // the approval webhook's own) are configured — see this module's
-      // own defaultDurableHttpQuestionHandler. When unset, onQuestionPending
-      // below still applies unchanged, same fallback-of-the-fallback
-      // relationship approver/defaultDurableHttpApprover already have.
-      questionHandler: defaultDurableHttpQuestionHandler,
+      // Durable when LOOPENGINE_DEFAULT_WEBHOOK_URL/_SECRET are
+      // configured — see this module's own defaultHttpWebhookNotifier,
+      // the same shared instance `approver` above already uses (one
+      // instance, both concerns — see WebhookNotifier's own doc
+      // comment). When unset, onQuestionPending below still applies
+      // unchanged, same fallback-of-the-fallback relationship `approver`
+      // above already has.
+      questionHandler: defaultHttpWebhookNotifier,
       onEvent: (event) => state.events.push(event),
       onQuestionPending: (question) => {
         state.events.push({ type: 'question:pending', ...question })
@@ -1059,14 +1058,14 @@ async function handleMessagesStream(req: IncomingMessage, res: ServerResponse, a
   const state: SessionTurnState = { turnPromise: null, bufferedSignal: null, waiter: null, events: [{ type: 'session', sessionId: rawSessionId }] }
   sessionTurns.set(key, state)
 
-  // A fresh WebApprover per streamed turn, not the shared one the plain
+  // A fresh WebchatApprover per streamed turn, not the shared one the plain
   // /messages route passes — its onPending writes straight onto *this*
   // SSE connection, so the approve/deny popup shows up inline in the
   // conversation that's actually blocked on it, not on some separate page
-  // an operator has to remember to check. Passed unconditionally — same
-  // as the plain route's own default, entry.config.approvers.http_stream
-  // (if the agent sets its own, for this channel specifically) still wins
-  // outright over this; see RunAgentOptions.approver's own doc comment.
+  // an operator has to remember to check. Passed unconditionally, and
+  // nothing can override it for this channel — AgentConfig.httpNotifier
+  // only ever matches 'http', never 'http_stream' (see its own doc
+  // comment), so this is always what actually decides an 'ask' here.
   const streamApprover = createTrackedApprover(rawSessionId, (approval) => {
     const event: LoopEvent = { type: 'approval:pending', ...approval }
     writeSseEvent(res, event)
@@ -1177,7 +1176,7 @@ async function resolveAgentTool(config: AgentConfig, toolName: string): Promise<
  * ajv dependency, and one field-presence check is enough to stop an
  * approver's edited args from being obviously wrong (missing a field the
  * tool genuinely needs) without adding one just for this. See
- * DURABLE_APPROVALS.md's own "Approve-with-edit" section. */
+ * HUMAN_IN_THE_LOOP.md's own "Approve-with-edit" section. */
 function validateEditedArgs(args: unknown, schema: Record<string, unknown>): string | undefined {
   if (typeof args !== 'object' || args === null || Array.isArray(args)) return 'must be an object'
   const required = Array.isArray(schema.required) ? schema.required : []
@@ -1214,7 +1213,7 @@ async function createCheckpointFromPending(
 }
 
 /** Resolves one outstanding item on a durable checkpoint (see
- * DURABLE_APPROVALS.md) — approve (optionally with editedArgs) or deny —
+ * HUMAN_IN_THE_LOOP.md) — approve (optionally with editedArgs) or deny —
  * and, once nothing's left outstanding, resumes the turn via
  * resumeAgent() (see respondAfterResolution below, shared with
  * handlePendingQuestionAnswer's own tail). Has no live sessionTurns entry
@@ -1302,7 +1301,7 @@ async function handlePendingApprovalResolve(req: IncomingMessage, res: ServerRes
     // Unknown pendingId, or its checkpoint was already closed — a
     // sibling denial got there first, or this exact pendingId was
     // already resolved. Graceful no-op, not an error (see
-    // DURABLE_APPROVALS.md's own worked example for why this has to be).
+    // HUMAN_IN_THE_LOOP.md's own worked example for why this has to be).
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ alreadyResolved: true }))
     return
   }
@@ -1322,7 +1321,7 @@ async function handlePendingApprovalResolve(req: IncomingMessage, res: ServerRes
   await respondAfterResolution(res, outcome.checkpoint)
 }
 
-/** Resolves one outstanding durable question (see DURABLE_APPROVALS.md's
+/** Resolves one outstanding durable question (see HUMAN_IN_THE_LOOP.md's
  * "Durable questions" section) — the question-side sibling of
  * handlePendingApprovalResolve above. Simpler than an approval's own
  * resolution: the human's free-text answer becomes the completing
@@ -1395,20 +1394,20 @@ async function respondAfterResolution(res: ServerResponse, finalCheckpoint: Turn
     // (now-resolved) call used — a chained second pending item should
     // behave identically to the first, not fall through further just
     // because it's mid-resume. No live connection to wire an onPending
-    // push onto here (unlike handleMessages' own WebApprover) — the
+    // push onto here (unlike handleMessages' own WebchatApprover) — the
     // approver is still tracked, so GET /agents/:name/approvals and
     // POST /approvals/:id/approve|deny can find and resolve it, and its
     // own 5-minute timeout still applies rather than this hanging
     // forever. A resumed turn's own new system_ask_user call, likewise,
-    // is durable when defaultDurableHttpQuestionHandler is configured —
-    // and when it isn't, onQuestionPending still has to be *something*
+    // is durable when defaultHttpWebhookNotifier is configured — and
+    // when it isn't, onQuestionPending still has to be *something*
     // (not omitted): createAskUserTool's own live/console-fallback branch
     // keys off onQuestionPending's mere presence, not usefulness, and
     // omitting it here (as an earlier version of this code did) meant a
     // resumed turn's fresh question blocked the *server process's own
     // stdin* — unrecoverable via any HTTP endpoint, not just live-but-
     // unwatched. A no-op is enough to route it into the shared
-    // WebQuestionHandler registry instead — same "still tracked, still
+    // WebchatQuestionHandler registry instead — same "still tracked, still
     // answerable via the REST endpoints, still times out on its own"
     // safety net createTrackedApprover(sessionId) (no onPending) already
     // gives a resumed approval just above.
@@ -1416,8 +1415,8 @@ async function respondAfterResolution(res: ServerResponse, finalCheckpoint: Turn
       tenant: finalCheckpoint.tenant,
       sessionId: finalCheckpoint.sessionId,
       channel: 'http',
-      approver: defaultDurableHttpApprover ?? createTrackedApprover(finalCheckpoint.sessionId),
-      questionHandler: defaultDurableHttpQuestionHandler,
+      approver: defaultHttpWebhookNotifier ?? createTrackedApprover(finalCheckpoint.sessionId),
+      questionHandler: defaultHttpWebhookNotifier,
       onQuestionPending: () => {},
     })
     // The resumed turn can itself hit another durably-pending call/
@@ -1557,7 +1556,7 @@ const server = createServer(async (req, res) => {
       return
     }
 
-    // A DurableApprover's own pending decision — see DURABLE_APPROVALS.md.
+    // A DurableApprover's own pending decision — see HUMAN_IN_THE_LOOP.md.
     // Unlike /approvals/:id/approve|deny above, this doesn't assume a live
     // sessionTurns entry exists at all (the whole point of durable is that
     // the process that started the turn may be long gone) — resolving one
@@ -1572,7 +1571,7 @@ const server = createServer(async (req, res) => {
 
     // A DurableQuestionHandler's own pending question — question-side
     // sibling of /pending-approvals/:id/resolve just above, same
-    // reasoning (see DURABLE_APPROVALS.md's "Durable questions" section):
+    // reasoning (see HUMAN_IN_THE_LOOP.md's "Durable questions" section):
     // no live sessionTurns entry assumed, resolving one just updates the
     // checkpoint and, once nothing's left outstanding, resumes the turn
     // fresh via resumeAgent + sessions.withSession.

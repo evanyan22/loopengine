@@ -13,21 +13,18 @@
 // exists anymore, or block module load on a CLI subprocess call.
 import type { AgentConfig } from '#core/agent-config.js'
 import type { ModelCall } from '#core/run-agent.js'
-import type { LiveApprover } from 'actauth'
 
-// One shared instance across every channel — this demo auto-approves
-// regardless of how the agent was invoked, same reasoning
-// agents/customer-service/index.ts's own demoApprover has.
-const demoApprover: LiveApprover = {
-  // ConsoleApprover would block this non-interactive demo on stdin — a
-  // tiny auto-approving stand-in that still exercises the real 'ask' path.
-  async requestApproval(tool, args, _scope, reason) {
-    console.log(`  [actauth] approval requested for ${tool}(${JSON.stringify(args)}) — ${reason}`)
-    console.log('  [actauth] auto-approved for this demo (swap in ConsoleApprover or SlackApprover for real use)')
-    return true
-  },
-}
-
+// No approver config at all — every channel gets the library's own live
+// default (ConsoleApprover, blocking on stdin) for write_file's 'ask'
+// decision below. This used to be a demoApprover here, auto-approving on
+// every channel purely so a non-interactive run wouldn't hang on stdin —
+// removed along with AgentConfig.approvers itself (see
+// agents/customer-service/index.ts's own comment on why): it re-derived
+// nothing a real approver couldn't already do, so keeping it as a second,
+// separate config surface stopped paying for itself. Running this agent
+// non-interactively against a rule that resolves to 'ask' (write_file
+// does) now genuinely blocks on stdin — pass your own `RunAgentOptions.approver`
+// from whatever script invokes it if that's not what you want.
 export const config: AgentConfig = {
   name: 'file-agent',
   systemPrompt: 'You summarize text files into other text files.',
@@ -39,5 +36,4 @@ export const config: AgentConfig = {
   // No rules here — it defaults to agents/file-agent/actauth.yml (see
   // AgentConfig.rules's own doc comment), the same path this used to set
   // explicitly.
-  approvers: { cli: demoApprover, http: demoApprover, http_stream: demoApprover },
 }

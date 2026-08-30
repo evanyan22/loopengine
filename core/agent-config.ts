@@ -1,20 +1,26 @@
 // The declarative surface a user fills in to define a new agent. Nothing
 // here runs anything — run-agent.ts is the one place that interprets it.
-import type { Rule, Decision, Approver } from 'actauth'
+import type { Rule, Decision, Scope } from 'actauth'
+import type { Redis } from 'ioredis'
 import type { SafetyClassifier } from 'toollane'
 
-/** Which channel a runAgent() call is on — the key RunAgentOptions.channel
- * and AgentConfig.approvers below are both keyed by. See
- * AgentConfig.approvers' own doc comment for why this exists instead of
- * one blanket approver value. */
+/** Which channel a runAgent() call is on — the value RunAgentOptions.channel
+ * carries, checked against directly by AgentConfig.httpNotifier's own
+ * resolution (see its own doc comment for why it only ever matches
+ * `'http'`). `cli`/`http_stream` always get the library's own live
+ * defaults (`ConsoleApprover`, `CliQuestionHandler`, or whatever live
+ * approver/questionHandler the adapter itself passes as
+ * `RunAgentOptions.approver`/`questionHandler`) — there's no
+ * AgentConfig-level way to override either for those two channels
+ * specifically; only `http` has one, via `httpNotifier`. */
 export type ApproverChannel = 'cli' | 'http' | 'http_stream'
 
 /** A pending system_ask_user question — defined here, not in
  * core/system-tools/ask_user.ts, purely so LiveQuestionHandler/
- * DurableQuestionHandler below (and AgentConfig.questionHandlers) can
- * reference it without a circular import (ask_user.ts already imports
- * from this file for ToolDefinition/DurableQuestionHandler); ask_user.ts
- * re-exports this same type for its own module's callers. */
+ * DurableQuestionHandler below can reference it without a circular import
+ * (ask_user.ts already imports from this file for
+ * ToolDefinition/DurableQuestionHandler); ask_user.ts re-exports this same
+ * type for its own module's callers. */
 export interface PendingQuestion {
   id: string
   question: string
@@ -32,15 +38,16 @@ export interface PendingQuestion {
 
 /** The question-side sibling of actauth's own `DurableApprover` — fires a
  * notification and returns a `pendingId` immediately, never awaited for
- * the actual answer (see DURABLE_APPROVALS.md's "Durable questions"
+ * the actual answer (see HUMAN_IN_THE_LOOP.md's "Durable questions"
  * section). Lives here, in loopengine, rather than in actauth: unlike a
  * tool-call approval, `system_ask_user` (core/system-tools/ask_user.ts)
  * is loopengine's own system tool — it never goes through actauth's
  * `Gate` at all (see that file's own doc comment on why it can't be
  * gated), so actauth has no reason to know it exists. Positional args,
  * mirroring `DurableApprover.requestDurableApproval(tool, args, scope,
- * reason)`'s own shape. The one built-in implementation is
- * `DurableWebQuestionHandler` (core/system-tools/ask_user.ts). */
+ * reason)`'s own shape. The built-in implementations are
+ * `core/http-notify-triggers/webhook.ts`'s `WebhookNotifier` and its
+ * slack.ts/lark.ts/email.ts siblings. */
 export interface DurableQuestionHandler {
   notifyPendingQuestion(question: string, options: string[] | undefined, agent: string, sessionId: string | undefined): { pendingId: string }
 }
@@ -49,23 +56,151 @@ export interface DurableQuestionHandler {
  * directly for the human's actual answer, same call shape
  * `DurableQuestionHandler.notifyPendingQuestion` has except this one
  * blocks and returns the real answer instead of a `pendingId`. `onPending`
- * mirrors `WebApprover`'s own notification hook, but stays a per-call
+ * mirrors `WebchatApprover`'s own notification hook, but stays a per-call
  * argument here rather than a constructor option — see
- * `WebQuestionHandler`'s own doc comment (core/system-tools/ask_user.ts)
+ * `WebchatQuestionHandler`'s own doc comment (core/system-tools/ask_user.ts)
  * for why a question, unlike an approval, only ever needs one shared
  * registry, not a fresh instance per turn. The two built-in
- * implementations are `WebQuestionHandler` and `CliQuestionHandler`
+ * implementations are `WebchatQuestionHandler` and `CliQuestionHandler`
  * (both core/system-tools/ask_user.ts). */
 export interface LiveQuestionHandler {
   requestQuestion(question: string, options: string[] | undefined, agent: string, sessionId: string | undefined, onPending?: (question: PendingQuestion) => void): Promise<string>
 }
 
-/** `RunAgentOptions.questionHandler`/`AgentConfig.questionHandlers`' own
- * type — mirrors actauth's own `Approver = LiveApprover | DurableApprover`
- * union exactly, resolved the identical channel-keyed way and duck-typed
- * (`core/system-tools/ask_user.ts`'s `isDurableQuestionHandler`) the
- * identical way `Gate` distinguishes a live from a durable `Approver`. */
+/** `RunAgentOptions.questionHandler`'s own type — mirrors actauth's own
+ * `Approver = LiveApprover | DurableApprover` union exactly, resolved the
+ * same `http`-only-fallback way `httpNotifier` resolves an approver, and
+ * duck-typed (`core/system-tools/ask_user.ts`'s `isDurableQuestionHandler`)
+ * the identical way `Gate` distinguishes a live from a durable `Approver`. */
 export type QuestionHandler = LiveQuestionHandler | DurableQuestionHandler
+
+/** Which of the four durable/lifecycle concerns an HttpNotifierConfig
+ * should cover — 'approval'/'question' make that concern durable on the
+ * `http` channel (a signed webhook standing in for a live human),
+ * 'agentStart'/'agentFinish' wire `onRunStart`/`onRunFinish` to the same
+ * webhook instead of requiring them written out by hand. Listing only
+ * some of the four is deliberate, not partial config — an agent that
+ * wants durable approvals but a live (blocking) question flow lists just
+ * `['approval']`. */
+export type HttpNotifierEvent = 'approval' | 'question' | 'agentStart' | 'agentFinish'
+
+/** `channel: 'database'`/`'redis'`'s own narrower `events` — both are
+ * approval-only backends (a row/queue entry, not a notification to
+ * anyone), with no `DurableQuestionHandler` or lifecycle-sender
+ * equivalent at all — see `core/http-notify-triggers/database.ts`'s own
+ * doc comment for why. Listing `'question'`/`'agentStart'`/`'agentFinish'`
+ * for either channel wouldn't be a type error under the plain
+ * `HttpNotifierEvent[]` these two used before, just silently inert; this
+ * narrower type catches that at the config-authoring boundary instead. */
+export type ApprovalOnlyHttpNotifierEvent = 'approval'
+
+/** A `sendEmail` function, passed in rather than a hardcoded provider —
+ * see `core/http-notify-triggers/email.ts`'s own doc comment for why
+ * (an SMTP client/provider SDK is a dependency this package deliberately
+ * doesn't carry). */
+export type SendEmail = (to: string, subject: string, html: string) => Promise<void>
+
+/** One row `channel: 'database'` (`core/http-notify-triggers/database.ts`)
+ * inserts per pending approval — implement `insert()` against whatever
+ * real database/ORM you already have (a single INSERT, a Prisma/Drizzle
+ * create call, anything); `DatabaseApprover` needs nothing else
+ * from it. */
+export interface PendingApprovalRow {
+  pendingId: string
+  tool: string
+  args: Record<string, unknown>
+  scope: Scope
+  reason: string
+  requestedAt: string
+}
+
+export interface PendingApprovalsRepository {
+  insert(row: PendingApprovalRow): Promise<void>
+}
+
+/** The `http` channel's one notification config — replaces what used to
+ * be up to three separate fields (a channel-keyed `approvers.http`
+ * override, `onRunStart`, `onRunFinish`) with the single shape almost
+ * every real deployment actually wants: one webhook, receiving whichever
+ * of approvals/questions/lifecycle events it asks for. Resolved by
+ * `core/http-notifier.ts`'s `resolveHttpNotifier` — see that module for
+ * the actual `WebhookNotifier`/signed-POST construction.
+ *
+ * Only ever consulted for the `http` channel, and only as a fallback
+ * *there*: `RunAgentOptions.approver`/`questionHandler` (an adapter's own
+ * per-call default — `adapters/http.ts`'s plain route always passes one)
+ * still loses to this when it's set, the same "the agent's own explicit
+ * choice for this channel wins outright over whatever the adapter would
+ * otherwise default to" precedent a channel-keyed override always had
+ * here — but an explicit `AgentConfig.onRunStart`/`onRunFinish`, if also
+ * set, still wins outright over this field's own derived hooks (no
+ * per-call value competes with those the way `options.approver` does).
+ *
+ * `cli`/`http_stream` never consult this at all, not even as a fallback
+ * — they keep the library's own live defaults (`ConsoleApprover`,
+ * `CliQuestionHandler`, or whatever live approver the adapter passes as
+ * `RunAgentOptions.approver`) automatically, with nothing to configure.
+ * This isn't a limitation to work around: a durable webhook stands in
+ * for a human who isn't there to answer live, which is exactly what
+ * `http` (no open connection to block on) needs and `cli`/`http_stream`
+ * (a real human already attached, live, right now) don't. There's also
+ * no more AgentConfig-level way to give `cli`/`http_stream` their own
+ * custom *live* approver, the way a former `approvers.cli`/
+ * `approvers.http_stream` entry could — see `RunAgentOptions.approver`'s
+ * own doc comment if a specific call genuinely needs one; a whole demo
+ * agent auto-approving on every channel (this repo used to have two)
+ * turned out to be exactly the "config re-deriving the same webhook
+ * settings a real approver already has" duplication this field exists
+ * to remove, not a use case worth keeping a separate field alive for.
+ *
+ * Six channels ship today, `resolveHttpNotifier` (`core/http-notifier.ts`)
+ * switches on which — each one's own sending-side class lives under
+ * `core/http-notify-triggers/`:
+ *   - `'webhook'` — a signed HMAC-SHA256 POST, via
+ *     `http-notify-triggers/webhook.ts`'s `WebhookNotifier` (one
+ *     instance for both concerns, same shape as `'slack'`/`'lark'`/
+ *     `'email'` below — not actauth's own `WebhookApprover` plus a
+ *     separate loopengine question class anymore; see that file's own
+ *     doc comment for why they merged) — plus the lifecycle sender
+ *     neither approvals nor questions needed on their own.
+ *   - `'slack'` — bot-token `chat.postMessage`, via
+ *     `http-notify-triggers/slack.ts`'s `SlackNotifier`.
+ *   - `'lark'` — Lark/Feishu's own card API, via
+ *     `http-notify-triggers/lark.ts`'s `LarkNotifier` (lower
+ *     confidence on exact card-schema field names — see that file's own
+ *     header comment).
+ *   - `'email'` — a `sendEmail` callback plus a signed, expiring
+ *     magic-link token per approval/question, via
+ *     `http-notify-triggers/email.ts`'s `EmailNotifier`.
+ *   - `'database'`/`'redis'` — not a notification channel at all (see
+ *     `ApprovalOnlyHttpNotifierEvent`'s own doc comment): a row insert or
+ *     a queue push for a separate worker/dashboard to poll, via
+ *     `http-notify-triggers/database.ts`'s `DatabaseApprover`/
+ *     `http-notify-triggers/redis.ts`'s `RedisQueueApprover`.
+ *     `'approval'` is the only event either ever does anything with.
+ *
+ * `'webhook'`/`'slack'`/`'lark'`/`'email'` post an interactive message
+ * (buttons, a card, or a link) for `'approval'`/`'question'`, and a plain
+ * announcement (no buttons — nothing to resolve) for
+ * `'agentStart'`/`'agentFinish'`. The discriminated union shape (`channel`
+ * plus a matching `config`) is what lets a future kind be added later as
+ * another member, not another AgentConfig field. For anything none of
+ * these cover (a channel not listed above, a live `QuestionHandler` on
+ * `http`, ...) set `onRunStart`/`onRunFinish` directly instead, or pass a
+ * custom `RunAgentOptions.approver`/`questionHandler` from your own
+ * adapter — this field is sugar over the common cases, never a
+ * replacement for everything those can express. */
+export type HttpNotifierConfig =
+  | { channel: 'webhook'; config: { webhookUrl: string; webhookSecret: string }; events: HttpNotifierEvent[] }
+  | { channel: 'slack'; config: { botToken: string; channelId: string }; events: HttpNotifierEvent[] }
+  | { channel: 'lark'; config: { appId: string; appSecret: string; chatId: string }; events: HttpNotifierEvent[] }
+  | {
+      channel: 'email'
+      config: { to: string; sendEmail: SendEmail; resolveBaseUrl: string; answerBaseUrl: string; signingSecret: string; linkTtlMs?: number }
+      events: HttpNotifierEvent[]
+    }
+  | { channel: 'database'; config: { repository: PendingApprovalsRepository }; events: ApprovalOnlyHttpNotifierEvent[] }
+  | { channel: 'redis'; config: { redis: Redis; queueKey?: string }; events: ApprovalOnlyHttpNotifierEvent[] }
 
 /** Declares which real ModelCall an agent module wants built for it, so
  * the module doesn't have to export its own `createModelCall` —
@@ -168,43 +303,61 @@ export interface AgentConfig {
   /** Decision when no rule matches, for the inline-array `rules` form only.
    * Default 'ask' — new tools are opt-in, not silently allowed. */
   defaultDecision?: Decision
-  /** Per-channel override — an agent author's explicit choice for *that*
-   * channel wins outright over whatever the adapter itself would
-   * otherwise default to (see RunAgentOptions.approver's own doc
-   * comment), same precedent 'approver' (singular) always had — just now
-   * scoped to one channel, not all three at once. Before this existed, a
-   * single blanket override meant setting one for background/http use
-   * silently broke this same agent's live chat too, since there was no
-   * way to say "just for this channel." Default, for any channel left
-   * unset here: actauth's own ConsoleApprover (blocks on stdin) — the
-   * adapter's own per-call `approver` default fills in first, if it
-   * has one. */
-  approvers?: Partial<Record<ApproverChannel, Approver>>
-  /** Per-channel override for `system_ask_user` notification —
-   * question-side sibling of `approvers` just above, same channel-keyed
-   * precedence and the same `QuestionHandler = LiveQuestionHandler |
-   * DurableQuestionHandler` union `approvers` itself uses (`Approver =
-   * LiveApprover | DurableApprover`). Default, for any channel left unset
-   * here: `run-agent.ts`'s own hard fallback, `new CliQuestionHandler()`
-   * — same role `new ConsoleApprover()` plays for `approvers`.
-   *
-   * Setting a `DurableQuestionHandler` here (the one built-in
-   * implementation is `DurableWebQuestionHandler`) makes a question
-   * raised on that channel durable: the turn ends with `stopReason:
-   * 'pending_question'`, notified via whatever this does (a signed
-   * webhook), and resumable later via `POST /pending-questions/:pendingId/answer`
-   * — surviving a restart the same way a durable approval does.
-   *
-   * One real, current gap versus `approvers`: setting a *live*
-   * `QuestionHandler` here (a custom `LiveQuestionHandler`, or even
-   * `WebQuestionHandler`/`CliQuestionHandler` themselves) is accepted by
-   * the type but has **no runtime effect** yet — `run-agent.ts`'s loop
-   * only ever consults this field to decide live-vs-durable (via
-   * `isDurableQuestionHandler`); the live case still always falls
-   * through to `createAskUserTool`'s own independent resolution (keyed off
-   * `RunAgentOptions.onQuestionPending`'s presence, not this field). Only
-   * the durable half of this union is actually wired end to end today. */
-  questionHandlers?: Partial<Record<ApproverChannel, QuestionHandler>>
+  /** The `http` channel's notification config — see
+   * `HttpNotifierConfig`'s own doc comment for the full precedence rules
+   * and why it only ever touches that one channel. There's no equivalent
+   * for `cli`/`http_stream`: both always get the library's own live
+   * defaults, with nothing to configure. */
+  httpNotifier?: HttpNotifierConfig
+  /** Fires once, fire-and-forget, at the start of every `runAgent()`/
+   * `resumeAgent()` call on the `http` channel (or no channel at all —
+   * see below) — the "someone triggered this agent" signal, for
+   * visibility into unattended/cron-triggered runs specifically. Never
+   * fires for `cli`/`http_stream`: both already deliver the "it started"
+   * signal to whoever's waiting synchronously, as part of that channel's
+   * own normal response (a terminal that just ran the command; an SSE
+   * connection carrying its own `session` event on the same stream) — a
+   * second, redundant copy of information the caller already has, so
+   * loopengine itself skips it there rather than leaving every
+   * implementation to notice and filter it out. A caller with no
+   * `channel` at all (a bespoke script) still fires, since there's no
+   * such guaranteed synchronous delivery to assume for it either way.
+   * `trigger` distinguishes a fresh message from a durable resume (a
+   * human just answered/approved something) — an implementation that
+   * only cares about the former (the common "announce a new
+   * cron-triggered run started" case) checks that field itself;
+   * loopengine doesn't guess which one you care about. Never awaited: an
+   * implementation that returns a Promise has its rejection caught and
+   * logged, not surfaced to the loop — a failed announcement shouldn't
+   * fail the turn that triggered it. See `HUMAN_IN_THE_LOOP.md` for the
+   * problem this and `onRunFinish` below solve. */
+  onRunStart?: (context: {
+    agent: string
+    tenant: string
+    sessionId?: string
+    channel?: ApproverChannel
+    trigger: 'message' | 'resolution'
+  }) => void | Promise<void>
+  /** Fires once, fire-and-forget, whenever a turn reaches a genuine
+   * terminal outcome — `loop:done`, `max_turns`, or `denied` — never for
+   * `pending_approval`/`pending_question` (those are paused, not
+   * finished), and never for `cli`/`http_stream` for the exact same
+   * "that channel already delivered this synchronously" reasoning
+   * `onRunStart` above has (an SSE connection's own `done` event *is*
+   * this signal, already). This is `onRunFinish`, not `onRunStart`'s own
+   * mirror by accident: the actual gap it closes is durability-specific —
+   * the caller that sent the original message may be long disconnected
+   * by the time a durably-paused turn resumes and finishes (see
+   * `HUMAN_IN_THE_LOOP.md`'s own section on this). Same never-awaited
+   * contract as `onRunStart` above. */
+  onRunFinish?: (context: {
+    agent: string
+    tenant: string
+    sessionId?: string
+    channel?: ApproverChannel
+    text: string
+    stopReason?: 'max_turns' | 'denied'
+  }) => void | Promise<void>
   /** Resolves the ActAuth tenant for a request, from headers (never the
    * body: tenant feeds permission decisions directly, so it has to come
    * from something verified — an Authorization/API-key header checked

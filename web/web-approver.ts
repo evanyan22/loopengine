@@ -1,26 +1,26 @@
-// adapters/http.ts's wiring around actauth's WebApprover (see its own
-// approvers.ts) — one process can have several WebApprover instances
+// adapters/http.ts's wiring around actauth's WebchatApprover (see its own
+// approvers.ts) — one process can have several WebchatApprover instances
 // live at once (see createTrackedApprover's own doc comment for why),
 // so POST /approvals/:id/approve|deny needs to know which instance
 // actually owns a given pending id before it can call decide() on it.
 // That routing table is what this file owns; the approver class itself
 // stays in actauth, generic and framework-agnostic.
-import { WebApprover, type PendingApproval } from 'actauth'
+import { WebchatApprover, type PendingApproval } from 'actauth'
 
-const approversById = new Map<string, WebApprover>()
+const approversById = new Map<string, WebchatApprover>()
 
 // Which session each *instance* is serving — not each pending approval,
-// because a single WebApprover instance only ever needs to serve one
+// because a single WebchatApprover instance only ever needs to serve one
 // session's worth of calls: both adapters/http.ts routes now create a
 // fresh tracked approver per call (see createTrackedApprover's own doc
 // comment), so this is always known, not best-effort. A WeakMap, not a
 // Map, so an old instance (nothing else references it once its own
 // approvals are gone) doesn't get held alive forever just for this
 // bookkeeping.
-const sessionByApprover = new WeakMap<WebApprover, string>()
+const sessionByApprover = new WeakMap<WebchatApprover, string>()
 
-/** Every WebApprover a request might end up using should be created
- * through this, not `new WebApprover()` directly — the id it hands out
+/** Every WebchatApprover a request might end up using should be created
+ * through this, not `new WebchatApprover()` directly — the id it hands out
  * on each new pending approval is otherwise unreachable from
  * decideApproval()/listApprovals() below. Both adapters/http.ts routes
  * call this once per turn, with that turn's own sessionId: the streaming
@@ -30,9 +30,9 @@ const sessionByApprover = new WeakMap<WebApprover, string>()
  * race handleMessages uses instead of blocking indefinitely (see its own
  * doc comment) — same reason, no HTTP request should hang on a human
  * with nothing telling the caller that's what's happening. */
-export function createTrackedApprover(sessionId: string, onPending?: (approval: PendingApproval) => void): WebApprover {
-  let approver: WebApprover
-  approver = new WebApprover({
+export function createTrackedApprover(sessionId: string, onPending?: (approval: PendingApproval) => void): WebchatApprover {
+  let approver: WebchatApprover
+  approver = new WebchatApprover({
     onPending: (approval) => {
       approversById.set(approval.id, approver)
       onPending?.(approval)
@@ -65,7 +65,7 @@ export function listApprovals(filter?: { agent?: string; sessionId?: string }): 
   return results
 }
 
-/** Routes to whichever WebApprover instance actually owns `id` — the
+/** Routes to whichever WebchatApprover instance actually owns `id` — the
  * caller doesn't need to know which turn/session created it. */
 export function decideApproval(id: string, approved: boolean): boolean {
   const approver = approversById.get(id)

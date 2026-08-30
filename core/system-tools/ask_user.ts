@@ -1,7 +1,7 @@
 // The system ask_user tool (see this folder's own index.ts, and
 // run-agent.ts's tools merge) — lets a model pause mid-turn and ask the
 // human operator a genuinely ambiguous question instead of guessing, the
-// same reasoning WebApprover exists for permission 'ask' decisions
+// same reasoning WebchatApprover exists for permission 'ask' decisions
 // (web/web-approver.ts), just generalized from a fixed allow/deny to an open
 // answer. No companion skill the way read_file has
 // system-skills/composio-large-outputs — that skill exists to bridge an
@@ -16,7 +16,7 @@
 // needs to close over that call's own onEvent — see createAskUserTool's
 // own doc comment, and web/web-approver.ts's createTrackedApprover for the
 // same reasoning applied to approvals.
-import { createHmac, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline/promises'
 import type { DurableQuestionHandler, LiveQuestionHandler, PendingQuestion, QuestionHandler, ToolDefinition } from '../agent-config.js'
 
@@ -36,19 +36,20 @@ interface PendingEntry {
 
 const DEFAULT_TIMEOUT_MS = 5 * 60_000
 
-/** The live-side sibling of `DurableWebQuestionHandler` below — same
- * relationship actauth's own `WebApprover` has to `DurableWebApprover`:
+/** The live-side sibling of the webhook-backed `DurableQuestionHandler`
+ * (`core/http-notify-triggers/webhook.ts`'s `WebhookNotifier`) — same
+ * relationship actauth's own `WebchatApprover` has to `WebhookApprover`:
  * this one holds the actual `Promise` open and resolves it directly, no
  * webhook, no `pendingId` handed back to a durable resolve route. Named
- * to match `WebApprover`'s own shape (a `pending` map, `requestX()`,
+ * to match `WebchatApprover`'s own shape (a `pending` map, `requestX()`,
  * `list()`, `decide()`) even though the underlying registration/timeout
  * logic already existed here before this class did — this just gives it
  * an instantiable, testable home instead of leaving it as bare
  * module-level state.
  *
- * One real, deliberate difference from `WebApprover`: `onPending` is
+ * One real, deliberate difference from `WebchatApprover`: `onPending` is
  * taken per-call (an argument to `requestQuestion`), not baked in at
- * construction. `WebApprover` gets a *fresh instance per turn* precisely
+ * construction. `WebchatApprover` gets a *fresh instance per turn* precisely
  * so each one's constructor-time `onPending` can target that turn's own
  * SSE connection (see web/web-approver.ts's createTrackedApprover) — but
  * a question only ever needs *one* registry, unlike approvals (see the
@@ -58,8 +59,8 @@ const DEFAULT_TIMEOUT_MS = 5 * 60_000
  * instance regardless of whether anything was listening for `onPending`
  * when it was raised. A caller that genuinely wants per-turn isolation
  * (its own registry, not sharing the default one) can still construct
- * its own `WebQuestionHandler` instance directly. */
-export class WebQuestionHandler implements LiveQuestionHandler {
+ * its own `WebchatQuestionHandler` instance directly. */
+export class WebchatQuestionHandler implements LiveQuestionHandler {
   private readonly pending = new Map<string, PendingEntry>()
   private readonly timeoutMs: number
 
@@ -118,24 +119,24 @@ export class WebQuestionHandler implements LiveQuestionHandler {
   }
 }
 
-// One shared, global instance — unlike WebApprover's pending approvals
+// One shared, global instance — unlike WebchatApprover's pending approvals
 // (split across a shared instance and a fresh one per streamed turn),
 // createAskUserTool below always registers into this same one regardless
 // of which call raised it, so every question is always answerable via
 // the module-level listQuestions()/answerQuestion()/findQuestion()
 // functions below, whether it came from a streamed turn, the plain
-// route's fallback, or anywhere else — see WebQuestionHandler's own doc
+// route's fallback, or anywhere else — see WebchatQuestionHandler's own doc
 // comment for the full reasoning.
-const defaultQuestionHandler = new WebQuestionHandler()
+const defaultQuestionHandler = new WebchatQuestionHandler()
 
 /** The cli-channel default — blocks on the terminal it's already attached
  * to, same fallback actauth's own `ConsoleApprover` is for a permission
- * ask with nowhere else to go. Unlike `WebQuestionHandler`, this needs
+ * ask with nowhere else to go. Unlike `WebchatQuestionHandler`, this needs
  * no `pending` map, no `list()`/`decide()`: nothing outside this one call
  * ever answers it — the terminal that asked is the terminal that
  * answers, synchronously, in the same `rl.question()`. `agent`/
  * `sessionId`/`onPending` are accepted (not just `question`/`options`)
- * purely so this has the same call shape `WebQuestionHandler.requestQuestion`
+ * purely so this has the same call shape `WebchatQuestionHandler.requestQuestion`
  * does — a caller (createAskUserTool below) doesn't need to know which
  * kind of questionHandler it's holding, it just calls `requestQuestion` either
  * way — but none of the three do anything here: there's no registry to
@@ -157,8 +158,8 @@ export class CliQuestionHandler implements LiveQuestionHandler {
 // The two live-channel defaults — cli gets a blocking prompt, http/
 // http_stream share one live registry — both single, shared instances
 // for the same reason defaultQuestionHandler above is: neither needs
-// per-turn isolation the way WebApprover's fresh-instance-per-turn does
-// (see WebQuestionHandler's own doc comment).
+// per-turn isolation the way WebchatApprover's fresh-instance-per-turn does
+// (see WebchatQuestionHandler's own doc comment).
 const defaultCliQuestionHandler = new CliQuestionHandler()
 
 /** Builds the ask_user ToolDefinition for one runAgent() call.
@@ -174,7 +175,7 @@ const defaultCliQuestionHandler = new CliQuestionHandler()
  * playground.ts's own inline card for it) finds out immediately instead
  * of having to poll listQuestions(). It's a notification only, not a
  * routing key: the question is registered on the same shared
- * WebQuestionHandler instance either way, so answerQuestion() works
+ * WebchatQuestionHandler instance either way, so answerQuestion() works
  * regardless of whether anything was listening for onPending in the
  * first place.
  *
@@ -224,7 +225,7 @@ export function createAskUserTool(context: { agent: string; sessionId?: string }
   }
 }
 
-/** Thin wrapper over the default WebQuestionHandler's own list() — see
+/** Thin wrapper over the default WebchatQuestionHandler's own list() — see
  * that class's own doc comment for why one shared instance, not a fresh
  * one per call, is the right default for questions. */
 export function listQuestions(filter?: { agent?: string; sessionId?: string }): PendingQuestion[] {
@@ -239,7 +240,7 @@ export function findQuestion(id: string): PendingQuestion | undefined {
   return defaultQuestionHandler.find(id)
 }
 
-/** Thin wrapper over the default WebQuestionHandler's own decide(). */
+/** Thin wrapper over the default WebchatQuestionHandler's own decide(). */
 export function answerQuestion(id: string, answer: string): boolean {
   return defaultQuestionHandler.decide(id, answer)
 }
@@ -247,7 +248,7 @@ export function answerQuestion(id: string, answer: string): boolean {
 /** Duck-types on the one method DurableQuestionHandler actually needs —
  * same "no eval, just an explicit structural check" spirit as actauth's
  * own isDurableApprover, which this mirrors: run-agent.ts's loop calls
- * this on the resolved QuestionHandler (see AgentConfig.questionHandlers'
+ * this on the resolved QuestionHandler (see RunAgentOptions.questionHandler's
  * own doc comment) to decide which branch a system_ask_user call takes,
  * the same way Gate uses isDurableApprover to decide which branch a
  * gated tool call takes. */
@@ -255,45 +256,10 @@ export function isDurableQuestionHandler(questionHandler: QuestionHandler): ques
   return typeof (questionHandler as DurableQuestionHandler).notifyPendingQuestion === 'function'
 }
 
-/** Fires a signed webhook POST instead of holding anything open — the
- * question-side sibling of actauth's own `DurableWebApprover` (see
- * DURABLE_APPROVALS.md's "Durable questions" section), same shape: a
- * signed HMAC body, a fire-and-forget `fetch`, never a promise or timer
- * since nothing here is actually blocked. `notifyPendingQuestion` is
- * called directly by run-agent.ts's loop, not by this tool's own
- * `execute()` — a durable question never runs through `questionsById` at
- * all, so `answerQuestion`/`findQuestion`/`listQuestions` above never see
- * it either; resolving it is entirely `core/durable-approvals.ts`'s
- * `CheckpointStore` + `adapters/http.ts`'s `POST
- * /pending-questions/:pendingId/answer`. */
-export class DurableWebQuestionHandler implements DurableQuestionHandler {
-  private readonly webhookUrl: string
-  private readonly signingSecret: string
-
-  constructor(options: { webhookUrl: string; signingSecret: string }) {
-    this.webhookUrl = options.webhookUrl
-    this.signingSecret = options.signingSecret
-  }
-
-  notifyPendingQuestion(question: string, options: string[] | undefined, agent: string, sessionId: string | undefined): { pendingId: string } {
-    const pendingId = randomUUID()
-    const requestedAt = new Date().toISOString()
-    const body = JSON.stringify({ pendingId, question, options, agent, sessionId, requestedAt })
-    const hmac = createHmac('sha256', this.signingSecret)
-    hmac.update(body)
-    const signature = `sha256=${hmac.digest('hex')}`
-    // Not awaited — notifyPendingQuestion returns immediately, by
-    // contract (see DurableQuestionHandler's own doc comment). A
-    // delivery failure here has no synchronous way to surface to the
-    // caller; logged instead of thrown, since throwing would blow up a
-    // decision that has already, correctly, been recorded as pending.
-    fetch(this.webhookUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-loopengine-signature': signature },
-      body,
-    }).catch((err) => {
-      console.error(`[loopengine] DurableWebQuestionHandler: webhook delivery failed for pendingId '${pendingId}':`, err)
-    })
-    return { pendingId }
-  }
-}
+// The webhook-backed DurableQuestionHandler that used to live here
+// (WebhookQuestionHandler) moved to core/http-notify-triggers/webhook.ts's
+// WebhookNotifier — merged with the approval-sending side that used to
+// be actauth's own WebhookApprover, since sending a signed webhook POST
+// was never actually approval-specific or question-specific, just
+// under a different header. See that file's own header comment for the
+// full reasoning.

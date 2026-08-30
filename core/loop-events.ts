@@ -149,7 +149,7 @@ export interface LoopDeniedEvent {
  * isn't a rejection: any already-approved sibling call in the same batch
  * still ran (see run-agent.ts's own bucket-then-execute), and the turn
  * resumes (via resumeAgent) once every pendingId here is resolved. See
- * DURABLE_APPROVALS.md for the full design. */
+ * HUMAN_IN_THE_LOOP.md for the full design. */
 export interface PendingApprovalEvent {
   type: 'loop:pending_approval'
   pendingIds: string[]
@@ -157,7 +157,7 @@ export interface PendingApprovalEvent {
 
 /** The question-side sibling of PendingApprovalEvent above — at least one
  * `system_ask_user` call is durably pending a DurableQuestionHandler
- * (see DURABLE_APPROVALS.md's "Durable questions" section), fired only
+ * (see HUMAN_IN_THE_LOOP.md's "Durable questions" section), fired only
  * when nothing else in the same batch is a pending *approval* (a mixed
  * batch reports PendingApprovalEvent instead — see
  * RunAgentResult.stopReason's own doc comment for why). */

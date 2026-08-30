@@ -18,8 +18,7 @@ export {
   answerQuestion,
   findQuestion,
   CliQuestionHandler,
-  WebQuestionHandler,
-  DurableWebQuestionHandler,
+  WebchatQuestionHandler,
   isDurableQuestionHandler,
   type PendingQuestion,
 } from './ask_user.js'
