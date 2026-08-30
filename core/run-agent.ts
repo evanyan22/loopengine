@@ -20,6 +20,7 @@ import { loadGatewayToolsFromDir } from './gateway-tools.js'
 import { systemTools, createAskUserTool, CliQuestionHandler, isDurableQuestionHandler, type PendingQuestion } from './system-tools/index.js'
 import { resolveHttpNotifier } from './http-notifier.js'
 import type { LoopEvent } from './loop-events.js'
+import { CRASH_RECOVERY_CONTINUATION } from './session-store.js'
 export { systemTools } from './system-tools/index.js'
 export type * from './loop-events.js'
 
@@ -1188,7 +1189,23 @@ export async function resumeAgent(
       onRunStart({ agent: config.name, tenant: ctx.scope.tenant, sessionId: options.sessionId, channel: options.channel, trigger: 'resolution' }),
     )
   }
-  const result = await runLoop(ctx, [...history], [], { role: 'user', content: resolution })
+  // sessions.withSession's own load (adapters/http.ts's respondAfterResolution)
+  // runs through the exact same hasUnresolvedToolCall check real crash
+  // recovery uses — a durable pause deliberately leaves the identical
+  // dangling-tool_use shape (see HUMAN_IN_THE_LOOP.md's own "same
+  // crash-recovery shape... entered on purpose"), so session-store.ts has
+  // no way to tell the two apart and injects its own synthetic
+  // CRASH_RECOVERY_CONTINUATION message regardless. Only resumeAgent
+  // itself knows, by the fact that it's being called at all with a real
+  // resolution in hand, that this wasn't a crash — so it's the only place
+  // that can safely strip that message back out before it ends up wedged
+  // between the assistant's tool_calls message and the tool_result
+  // answering it, which every OpenAI-wire-compatible provider rejects
+  // outright (an assistant message with tool_calls must be immediately
+  // followed by one tool message per call, nothing in between).
+  const lastMessage = history[history.length - 1]
+  const effectiveHistory = lastMessage?.role === 'user' && lastMessage.content === CRASH_RECOVERY_CONTINUATION ? history.slice(0, -1) : history
+  const result = await runLoop(ctx, [...effectiveHistory], [], { role: 'user', content: resolution })
   const onRunFinish = config.onRunFinish ?? (options.channel === 'http' ? ctx.httpNotifier.onRunFinish : undefined)
   if (onRunFinish && !result.pending && shouldFireLifecycleHooks(options.channel)) {
     fireLifecycleHook('onRunFinish', config.name, () =>

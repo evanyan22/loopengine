@@ -116,12 +116,15 @@ function hasUnresolvedToolCall(message: Message): boolean {
   )
 }
 
+// Exported so resumeAgent (run-agent.ts) can strip this exact message
+// back out when it turns out the "interruption" wasn't a crash at all —
+// see that constant's own doc comment for why the two can't be told
+// apart at the point sessionknit's own resume() runs.
+export const CRASH_RECOVERY_CONTINUATION =
+  '[session resumed after an interruption — the assistant had requested tool calls but the process stopped before any results were recorded; treat those tools as not having run]'
+
 function buildContinuation(): Message {
-  return {
-    role: 'user',
-    content:
-      '[session resumed after an interruption — the assistant had requested tool calls but the process stopped before any results were recorded; treat those tools as not having run]',
-  }
+  return { role: 'user', content: CRASH_RECOVERY_CONTINUATION }
 }
 
 /** Wraps a SessionKnit log behind the flat load/run/append contract
