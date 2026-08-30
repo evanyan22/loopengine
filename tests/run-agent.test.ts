@@ -1349,7 +1349,7 @@ describe('AgentConfig.httpNotifier', () => {
       httpNotifier: {
         channel: 'webhook',
         config: { webhookUrl: 'https://example.com/hook', webhookSecret: 'shh' },
-        events: ['agentStart', 'agentFinish'],
+        events: ['run_start', 'run_finish'],
       },
     })
 
@@ -1372,7 +1372,7 @@ describe('AgentConfig.httpNotifier', () => {
       httpNotifier: {
         channel: 'webhook',
         config: { webhookUrl: 'https://example.com/hook', webhookSecret: 'shh' },
-        events: ['agentStart', 'agentFinish'],
+        events: ['run_start', 'run_finish'],
       },
     })
 

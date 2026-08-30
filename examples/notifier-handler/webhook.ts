@@ -127,7 +127,7 @@ export function verifyWebhookNotifier(
 // httpNotifier: {
 //   channel: 'webhook',
 //   config: { webhookUrl: process.env.MY_WEBHOOK_URL!, webhookSecret: process.env.MY_WEBHOOK_SECRET! },
-//   events: ['approval', 'question', 'agentStart', 'agentFinish'],
+//   events: ['approval', 'question', 'run_start', 'run_finish'],
 // }
 //
 // import { createServer } from 'node:http'

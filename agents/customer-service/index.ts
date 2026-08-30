@@ -37,7 +37,7 @@ const httpNotifier: HttpNotifierConfig | undefined =
     ? {
         channel: 'webhook',
         config: { webhookUrl: httpWebhookUrl, webhookSecret: httpWebhookSecret },
-        events: ['approval', 'question', 'agentStart', 'agentFinish'],
+        events: ['approval', 'question', 'run_start', 'run_finish'],
       }
     : undefined
 

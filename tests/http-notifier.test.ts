@@ -35,7 +35,7 @@ describe('resolveHttpNotifier', () => {
       httpNotifier: {
         channel: 'webhook',
         config: { webhookUrl: 'https://example.com/hook', webhookSecret: 'shh' },
-        events: ['approval', 'question', 'agentStart', 'agentFinish'],
+        events: ['approval', 'question', 'run_start', 'run_finish'],
       },
     })
     const resolved = resolveHttpNotifier(config)
@@ -56,7 +56,7 @@ describe('resolveHttpNotifier', () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
     const config = baseConfig({
-      httpNotifier: { channel: 'webhook', config: { webhookUrl: 'https://example.com/hook', webhookSecret: 'shh' }, events: ['agentFinish'] },
+      httpNotifier: { channel: 'webhook', config: { webhookUrl: 'https://example.com/hook', webhookSecret: 'shh' }, events: ['run_finish'] },
     })
 
     resolveHttpNotifier(config).onRunFinish!({ agent: 'test-agent', tenant: 'default', text: 'done', sessionId: 's1' })
@@ -94,7 +94,7 @@ describe('resolveHttpNotifier', () => {
       httpNotifier: {
         channel: 'slack',
         config: { botToken: 'xoxb-test', channelId: 'C123' },
-        events: ['agentStart', 'agentFinish'],
+        events: ['run_start', 'run_finish'],
       },
     })
 

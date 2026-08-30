@@ -132,7 +132,7 @@ fields (a channel-keyed `approvers.http` override, `questionHandlers.http`,
 deployment actually wants: one target, receiving whichever of
 approvals/questions/lifecycle events it asks for via `events`. Only
 `http` ever consults it — `cli`/`http_stream` keep the library's own live
-defaults (`ConsoleApprover`, `CliQuestionHandler`, `WebchatApprover`)
+defaults (`ConsoleApprover`, `CliQuestionHandler`, `WebchatApprover`, `WebchatQuestionHandler`)
 automatically, with nothing to configure. When it's set for `http`, it
 still wins outright over whatever the adapter itself would otherwise
 default to (`adapters/http.ts`'s plain `/messages` route always passes

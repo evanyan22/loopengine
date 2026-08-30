@@ -70,8 +70,8 @@ export function resolveHttpNotifier(config: AgentConfig): ResolvedHttpNotifier {
       resolved = {
         approver: events.has('approval') ? webhook : undefined,
         questionHandler: events.has('question') ? webhook : undefined,
-        onRunStart: events.has('agentStart') ? (context) => postLifecycleWebhook(webhookUrl, webhookSecret, 'run_start', context) : undefined,
-        onRunFinish: events.has('agentFinish') ? (context) => postLifecycleWebhook(webhookUrl, webhookSecret, 'run_finish', context) : undefined,
+        onRunStart: events.has('run_start') ? (context) => postLifecycleWebhook(webhookUrl, webhookSecret, 'run_start', context) : undefined,
+        onRunFinish: events.has('run_finish') ? (context) => postLifecycleWebhook(webhookUrl, webhookSecret, 'run_finish', context) : undefined,
       }
       break
     }
@@ -86,8 +86,8 @@ export function resolveHttpNotifier(config: AgentConfig): ResolvedHttpNotifier {
       resolved = {
         approver: events.has('approval') ? slack : undefined,
         questionHandler: events.has('question') ? slack : undefined,
-        onRunStart: events.has('agentStart') ? (context) => slack.postMessage(formatChatLifecycleMessage('run_start', context)) : undefined,
-        onRunFinish: events.has('agentFinish') ? (context) => slack.postMessage(formatChatLifecycleMessage('run_finish', context)) : undefined,
+        onRunStart: events.has('run_start') ? (context) => slack.postMessage(formatChatLifecycleMessage('run_start', context)) : undefined,
+        onRunFinish: events.has('run_finish') ? (context) => slack.postMessage(formatChatLifecycleMessage('run_finish', context)) : undefined,
       }
       break
     }
@@ -97,8 +97,8 @@ export function resolveHttpNotifier(config: AgentConfig): ResolvedHttpNotifier {
       resolved = {
         approver: events.has('approval') ? lark : undefined,
         questionHandler: events.has('question') ? lark : undefined,
-        onRunStart: events.has('agentStart') ? (context) => lark.postMessage(formatChatLifecycleMessage('run_start', context)) : undefined,
-        onRunFinish: events.has('agentFinish') ? (context) => lark.postMessage(formatChatLifecycleMessage('run_finish', context)) : undefined,
+        onRunStart: events.has('run_start') ? (context) => lark.postMessage(formatChatLifecycleMessage('run_start', context)) : undefined,
+        onRunFinish: events.has('run_finish') ? (context) => lark.postMessage(formatChatLifecycleMessage('run_finish', context)) : undefined,
       }
       break
     }
@@ -108,10 +108,10 @@ export function resolveHttpNotifier(config: AgentConfig): ResolvedHttpNotifier {
       resolved = {
         approver: events.has('approval') ? email : undefined,
         questionHandler: events.has('question') ? email : undefined,
-        onRunStart: events.has('agentStart')
+        onRunStart: events.has('run_start')
           ? (context) => email.sendAnnouncement(formatEmailLifecycleSubject('run_start', context), formatChatLifecycleMessage('run_start', context))
           : undefined,
-        onRunFinish: events.has('agentFinish')
+        onRunFinish: events.has('run_finish')
           ? (context) => email.sendAnnouncement(formatEmailLifecycleSubject('run_finish', context), formatChatLifecycleMessage('run_finish', context))
           : undefined,
       }

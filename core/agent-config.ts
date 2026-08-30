@@ -77,18 +77,18 @@ export type QuestionHandler = LiveQuestionHandler | DurableQuestionHandler
 /** Which of the four durable/lifecycle concerns an HttpNotifierConfig
  * should cover — 'approval'/'question' make that concern durable on the
  * `http` channel (a signed webhook standing in for a live human),
- * 'agentStart'/'agentFinish' wire `onRunStart`/`onRunFinish` to the same
+ * 'run_start'/'run_finish' wire `onRunStart`/`onRunFinish` to the same
  * webhook instead of requiring them written out by hand. Listing only
  * some of the four is deliberate, not partial config — an agent that
  * wants durable approvals but a live (blocking) question flow lists just
  * `['approval']`. */
-export type HttpNotifierEvent = 'approval' | 'question' | 'agentStart' | 'agentFinish'
+export type HttpNotifierEvent = 'approval' | 'question' | 'run_start' | 'run_finish'
 
 /** `channel: 'database'`/`'redis'`'s own narrower `events` — both are
  * approval-only backends (a row/queue entry, not a notification to
  * anyone), with no `DurableQuestionHandler` or lifecycle-sender
  * equivalent at all — see `core/http-notify-triggers/database.ts`'s own
- * doc comment for why. Listing `'question'`/`'agentStart'`/`'agentFinish'`
+ * doc comment for why. Listing `'question'`/`'run_start'`/`'run_finish'`
  * for either channel wouldn't be a type error under the plain
  * `HttpNotifierEvent[]` these two used before, just silently inert; this
  * narrower type catches that at the config-authoring boundary instead. */
@@ -182,7 +182,7 @@ export interface PendingApprovalsRepository {
  * `'webhook'`/`'slack'`/`'lark'`/`'email'` post an interactive message
  * (buttons, a card, or a link) for `'approval'`/`'question'`, and a plain
  * announcement (no buttons — nothing to resolve) for
- * `'agentStart'`/`'agentFinish'`. The discriminated union shape (`channel`
+ * `'run_start'`/`'run_finish'`. The discriminated union shape (`channel`
  * plus a matching `config`) is what lets a future kind be added later as
  * another member, not another AgentConfig field. For anything none of
  * these cover (a channel not listed above, a live `QuestionHandler` on
