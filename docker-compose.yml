@@ -10,12 +10,25 @@ services:
       - '8787:8787'
     environment:
       REDIS_URL: redis://redis:6379
-      # DEEPSEEK_API_KEY: agents/customer-service/index.ts's real
-      # createDeepSeekModelCall needs this — set here to actually run it
-      # through this compose file rather than have every request fail once
-      # a real message comes in. ANTHROPIC_API_KEY / OPENAI_API_KEY: only
-      # needed if file-agent or rag-agent get wired to a real model call
-      # too — see README's "Wiring a real model".
+      # Pulled from a .env file at this project's own root (Compose loads
+      # it automatically for ${...} substitution — see README's "Wiring a
+      # real model"), or the host shell's environment, or a one-off
+      # `docker compose run -e DEEPSEEK_API_KEY=... agent-api`. Left unset
+      # (empty string) if none of those provide it — agents/customer-service/
+      # index.ts's real createDeepSeekModelCall needs this or every request
+      # fails once a real message comes in. ANTHROPIC_API_KEY / OPENAI_API_KEY:
+      # only needed if file-agent or rag-agent get wired to a real model
+      # call too.
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # This service publishes 8787 (see ports: above) — without this,
+      # adapters/http.ts logs a startup warning and leaves every route,
+      # including the actual approve/deny endpoint
+      # (/pending-approvals/:id/resolve), open to anyone who can reach the
+      # port, Basic Auth or not. Same ${...}-from-.env-or-shell sourcing as
+      # the model keys above.
+      LOOPENGINE_ADMIN_AUTH: ${LOOPENGINE_ADMIN_AUTH}
       # This compose file is local/dev-testing (see README's project layout:
       # "Container build + local Redis for testing"), not a real production
       # deployment — staging is the correct default here, not an oversight.
