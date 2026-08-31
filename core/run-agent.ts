@@ -60,7 +60,18 @@ export function dedupeToolsByName(list: ToolDefinition[]): ToolDefinition[] {
 
 export interface ModelContentBlock {
   type: string
-  /** text blocks. */
+  /** text blocks, and thinking blocks (a model's own chain-of-thought,
+   * e.g. DeepSeek's `reasoning_content` sibling field, or — if a
+   * model-calls/* adapter ever opts into it — Anthropic's own `thinking`
+   * content block). Reuses this same field rather than adding a
+   * thinking-only one, since both are just "a string of the model's own
+   * words." Carried opaquely: loopengine never reads or reasons about
+   * this text itself, only round-trips it back verbatim on the next
+   * request that includes this message — some reasoning-mode providers
+   * (DeepSeek's thinking mode, confirmed live; Anthropic's extended
+   * thinking, documented the same way) reject the request outright if a
+   * prior turn's reasoning gets silently dropped on the way back in,
+   * once the conversation has tool_calls in it. */
   text?: string
   /** tool_use blocks: this call's own id (referenced by a later tool_result). */
   id?: string
@@ -297,7 +308,7 @@ function flattenForBudget(message: Message): BudgetMessage {
   if (typeof message.content === 'string') return { role: message.role, content: message.content }
   const text = message.content
     .map((block) => {
-      if (block.type === 'text') return block.text ?? ''
+      if (block.type === 'text' || block.type === 'thinking') return block.text ?? ''
       if (block.type === 'tool_use') return `[tool_use ${block.name}(${JSON.stringify(block.input)})]`
       if (block.type === 'tool_result') {
         return `[tool_result for ${block.tool_use_id}]${block.is_error ? ' ERROR' : ''}: ${block.content ?? ''}`

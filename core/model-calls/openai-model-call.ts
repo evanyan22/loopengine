@@ -30,6 +30,14 @@ import type { Message, ModelCall, ModelContentBlock, ModelResponse } from '#core
 
 type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam
 
+// reasoning_content is a DeepSeek-specific extension of the otherwise
+// wire-compatible request/response shape (confirmed against DeepSeek's
+// own thinking-mode docs) — not part of the OpenAI SDK's own
+// ChatCompletionMessage/ChatCompletionMessageParam types, hence these
+// widened aliases rather than `as any` at each call site.
+type ChatMessageWithReasoning = ChatMessage & { reasoning_content?: string }
+type ChatCompletionMessageWithReasoning = OpenAI.Chat.Completions.ChatCompletionMessage & { reasoning_content?: string }
+
 export interface OpenAIModelCallOptions {
   /** Defaults to the OPENAI_API_KEY env var, same as the SDK itself. */
   apiKey?: string
@@ -53,22 +61,30 @@ export function toMessageParams(message: Message): ChatMessage[] {
       .map((block) => block.text ?? '')
       .join('')
     const toolUseBlocks = message.content.filter((block) => block.type === 'tool_use')
-    return [
-      {
-        role: 'assistant',
-        // Required unless tool_calls is set — an empty string here (no
-        // text, only tool calls) is rejected by the API, so this must be
-        // null, not ''.
-        content: text || null,
-        tool_calls: toolUseBlocks.length
-          ? toolUseBlocks.map((block) => ({
-              id: block.id!,
-              type: 'function',
-              function: { name: block.name!, arguments: JSON.stringify(block.input ?? {}) },
-            }))
-          : undefined,
-      },
-    ]
+    // DeepSeek's thinking mode requires the exact reasoning that produced
+    // this message — tool_calls included — echoed back verbatim on every
+    // later request that still includes this message, for as long as the
+    // conversation keeps passing `tools` at all (confirmed live: dropping
+    // it gets the whole request rejected with a 400, not just ignored).
+    // Round-tripped opaquely here, never inspected — see
+    // ModelContentBlock's own 'thinking' block doc comment (run-agent.ts).
+    const thinkingBlock = message.content.find((block) => block.type === 'thinking')
+    const result: ChatMessageWithReasoning = {
+      role: 'assistant',
+      // Required unless tool_calls is set — an empty string here (no
+      // text, only tool calls) is rejected by the API, so this must be
+      // null, not ''.
+      content: text || null,
+      tool_calls: toolUseBlocks.length
+        ? toolUseBlocks.map((block) => ({
+            id: block.id!,
+            type: 'function',
+            function: { name: block.name!, arguments: JSON.stringify(block.input ?? {}) },
+          }))
+        : undefined,
+    }
+    if (thinkingBlock?.text) result.reasoning_content = thinkingBlock.text
+    return [result]
   }
 
   // Every non-assistant, block-structured Message this loop ever builds is
@@ -90,6 +106,12 @@ export function toStopReason(finishReason: string): string {
 
 export function toModelResponse(choice: OpenAI.Chat.Completions.ChatCompletion.Choice): ModelResponse {
   const content: ModelContentBlock[] = []
+  // Ordered first — reasoning precedes the response it produced. Only
+  // DeepSeek's thinking-mode responses carry this; a plain response
+  // simply has no reasoning_content, so nothing gets pushed and
+  // toMessageParams above has nothing to echo back for this message.
+  const reasoningContent = (choice.message as ChatCompletionMessageWithReasoning).reasoning_content
+  if (reasoningContent) content.push({ type: 'thinking', text: reasoningContent })
   if (choice.message.content) content.push({ type: 'text', text: choice.message.content })
   for (const call of choice.message.tool_calls ?? []) {
     // A 'custom' tool call is the freeform-text tool type OpenAI added
