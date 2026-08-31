@@ -9,7 +9,15 @@ services:
     ports:
       - '8787:8787'
     environment:
-      REDIS_URL: redis://redis:6379
+      # redis://redis:6379 is this file's own `redis` service, addressed
+      # by its Compose-internal DNS hostname — not a secret, fully
+      # determined by the topology right above, so it's the default
+      # rather than something that has to come from .env/the shell. The
+      # `${VAR:-default}` form still lets it be overridden (e.g. pointing
+      # at a real managed Redis instead of the local one this file spins
+      # up) without breaking the working-out-of-the-box case when nothing
+      # overrides it.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       # Pulled from a .env file at this project's own root (Compose loads
       # it automatically for ${...} substitution — see README's "Wiring a
       # real model"), or the host shell's environment, or a one-off
