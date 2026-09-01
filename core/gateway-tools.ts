@@ -19,13 +19,15 @@ import type { ToolDefinition } from './agent-config.js'
 
 const execFileAsync = promisify(execFile)
 
-// Same "one level up from this file, not process.cwd()" reasoning
-// run-agent.ts's own agentsRootDir uses (this file lives in core/
-// alongside it, with agents/ one level up at repo root either way) — real
-// code (an actauth.yml write, a gateway-tools.yml write) needs to land in
-// the same place a built dist/ would look for it, not wherever the
-// process happened to be launched from.
-const agentsRootDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'agents')
+// gateway-tools.yml is plain data (see this file's own header comment),
+// not compiled code — same "resolved against process.cwd(), like
+// actauth.yml/skillsDirs, not import.meta.url" reasoning run-agent.ts's
+// own loadRules/skillsDirs defaults use, and unlike that file's tools/
+// subagents defaults (real compiled code, needing the built-alongside-
+// core/ fallback) this one doesn't need a dual-path check: the physical
+// file is at the same cwd-relative path whether it's this repo's own
+// agents/ or an external project's.
+const agentsRootDir = join(process.cwd(), 'agents')
 
 export interface ResolvedGatewayTool {
   name: string

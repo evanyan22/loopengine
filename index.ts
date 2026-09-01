@@ -63,7 +63,73 @@ export type { OpenAIModelCallOptions } from './core/model-calls/openai-model-cal
 export { createDeepSeekModelCall } from './core/model-calls/deepseek-model-call.js'
 export type { DeepSeekModelCallOptions } from './core/model-calls/deepseek-model-call.js'
 
-export { discoverAgents, loadAgentModule } from './core/discover-agents.js'
+export { discoverAgents, loadAgentModule, synthesizeCreateModelCall } from './core/discover-agents.js'
 export type { AgentModule } from './core/discover-agents.js'
 
 export { agentAsTool } from './core/agent-as-tool.js'
+
+// Everything below backs the Admin UI (agents-config/list/global-config
+// pages, playground) that this repo's own adapters/http.ts wires up —
+// re-exported here, same "one entry point, no deep subpath imports"
+// convention as everything above, so a project scaffolded by
+// create-loopengine can build the same admin surface on top of its own
+// copy of adapters/http.ts (which, like agent-registry.ts, is meant to be
+// owned/edited, not imported — see this file's own header comment).
+
+export { resumeAgent, loadRules, loadDefaultTools, loadSubagentAsTools, systemTools, systemSkillsDir } from './core/run-agent.js'
+
+export { createCheckpointStore } from './core/durable-approvals.js'
+export type { TurnCheckpoint, CheckpointStore, OutstandingItem } from './core/durable-approvals.js'
+
+export {
+  addGatewayTool,
+  agentDir,
+  disconnectComposioAccount,
+  describeGatewayTools,
+  listComposioConnections,
+  listComposioTools,
+  loadGatewayToolsFromDir,
+  removeGatewayTool,
+  removeGatewayToolSlug,
+  GatewayToolExistsError,
+  GatewayToolNotFoundError,
+} from './core/gateway-tools.js'
+export type { GatewayToolEntry, GatewayToolDecision } from './core/gateway-tools.js'
+
+export { WebhookNotifier } from './core/http-notify-triggers/webhook.js'
+
+// answerQuestion above (core/client.ts) is the HTTP client-side helper —
+// this is the server-side function that actually resolves a pending
+// question in-process, aliased to avoid colliding with that name.
+export { listQuestions, answerQuestion as resolvePendingQuestion, findQuestion, createAskUserTool } from './core/system-tools/index.js'
+export type { PendingQuestion } from './core/system-tools/index.js'
+
+export { editAgentFile, AgentEditNotSupportedError, AgentFileNotFoundError } from './web/agent-file-admin.js'
+export type { AgentEditableFields, AgentEditResult } from './web/agent-file-admin.js'
+
+export { agentsConfigPageHtml } from './web/agents-config-page.js'
+export { agentsListPageHtml } from './web/agents-list-page.js'
+export { globalConfigPageHtml } from './web/global-config-page.js'
+export { playgroundHtml } from './web/playground.js'
+
+export { readSkill, writeSkill, deleteSkill, SkillInvalidIdError, SkillNotFoundError } from './web/skills-admin.js'
+export type { SkillContent } from './web/skills-admin.js'
+
+export {
+  readActauthConfig,
+  addActauthRule,
+  updateActauthRule,
+  removeActauthRule,
+  setDefaultDecision,
+  ActauthRuleExistsError,
+  ActauthRuleNotFoundError,
+} from './web/actauth-admin.js'
+export type { ActauthRuleInput, ActauthConfigView } from './web/actauth-admin.js'
+
+export { describeModelProviders, describeGateways } from './web/global-config.js'
+export type { ModelProviderInfo, AgentModelUsage, ModelsView, GatewayProviderInfo, GatewaysView } from './web/global-config.js'
+
+export { createTrackedApprover, listApprovals, decideApproval, findApproval } from './web/web-approver.js'
+
+export { scaffoldAgent, scaffoldSubagent, AgentNameError, AgentExistsError, AgentNotFoundError, AgentModelError } from './bin/cli.js'
+export type { AgentTemplateOptions } from './bin/cli.js'

@@ -1656,7 +1656,7 @@ const server = createServer(async (req, res) => {
       return
     }
     if (req.method === 'GET' && pathname === '/config/models') {
-      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(describeModelProviders()))
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(describeModelProviders(listAgents(), (name) => getEntry(name)?.config)))
       return
     }
     if (req.method === 'GET' && pathname === '/config/gateways') {

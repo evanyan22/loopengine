@@ -1,6 +1,6 @@
 {
   "name": "loopengine",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "Runtime for tool-using AI agents with a transparent ReAct loop.",
   "license": "MIT",
@@ -58,6 +58,9 @@
     "dist/core/http-notify-triggers",
     "dist/core/system-tools",
     "dist/core/system-skills",
+    "dist/core/durable-approvals.js",
+    "dist/core/durable-approvals.d.ts",
+    "dist/web",
     "protocol/loop-event.schema.json",
     "PROTOCOL.md",
     "LICENSE"
@@ -77,12 +80,12 @@
     "sessionknit": "^0.0.2",
     "skillgarden": "^0.0.5",
     "toollane": "^0.0.1",
+    "typescript": "^5.7.0",
     "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
     "vitest": "^2.1.9"
   }
 }

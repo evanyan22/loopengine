@@ -7,7 +7,7 @@
 // which gateway providers (Composio today) this machine's CLI session
 // is authenticated against — neither is a property of any one
 // AgentConfig.
-import { listAgents, getEntry } from '../core/agent-registry.js'
+import type { AgentConfig } from '../core/agent-config.js'
 import { getComposioAuthStatus } from '../core/gateway-tools.js'
 
 export interface ModelProviderInfo {
@@ -48,8 +48,18 @@ const KNOWN_PROVIDERS: Array<{ provider: ModelProviderInfo['provider']; envVar: 
  * this page can add support for by itself. An agent with a custom
  * `createModelCall` (no `config.model`) is skipped — there's no
  * provider/model pair to report for it, the same "custom" case
- * describeAgent's own model field already carves out. */
-export function describeModelProviders(): ModelsView {
+ * describeAgent's own model field already carves out.
+ *
+ * Takes the registered agent names and a config lookup as parameters,
+ * rather than importing core/agent-registry.ts's listAgents/getEntry
+ * directly — that module is this repo's own reference app, not part of
+ * the published package (see index.ts's own header comment), and its
+ * top-level-await agent scan is resolved relative to *its own* file
+ * location, which would be meaningless run from inside node_modules.
+ * Every caller already has its own local registry's listAgents/getEntry
+ * on hand (adapters/http.ts, in this repo or a scaffolded project alike)
+ * to pass straight through. */
+export function describeModelProviders(agentNames: string[], getConfig: (name: string) => AgentConfig | undefined): ModelsView {
   const providers = KNOWN_PROVIDERS.map(({ provider, envVar }) => ({
     provider,
     envVar,
@@ -57,8 +67,8 @@ export function describeModelProviders(): ModelsView {
   }))
 
   const agents: AgentModelUsage[] = []
-  for (const name of listAgents()) {
-    const config = getEntry(name)?.config
+  for (const name of agentNames) {
+    const config = getConfig(name)
     if (config?.model) {
       agents.push({ agent: name, provider: config.model.provider, model: config.model.model ?? '(provider default)' })
     }

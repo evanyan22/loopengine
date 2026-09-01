@@ -2,6 +2,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { describeModelProviders, describeGateways } from '../web/global-config.js'
+import { listAgents, getEntry } from '../core/agent-registry.js'
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-composio-cli.mjs')
 
@@ -24,7 +25,7 @@ describe('describeModelProviders', () => {
     process.env.OPENAI_API_KEY = 'sk-test'
     delete process.env.DEEPSEEK_API_KEY
 
-    const { providers } = describeModelProviders()
+    const { providers } = describeModelProviders(listAgents(), (name) => getEntry(name)?.config)
     expect(providers).toEqual([
       { provider: 'anthropic', envVar: 'ANTHROPIC_API_KEY', configured: false },
       { provider: 'openai', envVar: 'OPENAI_API_KEY', configured: true },
@@ -33,7 +34,7 @@ describe('describeModelProviders', () => {
   })
 
   it('lists every registered agent with a resolved model config, from the real agents/ registry', () => {
-    const { agents } = describeModelProviders()
+    const { agents } = describeModelProviders(listAgents(), (name) => getEntry(name)?.config)
     // core/agent-registry.ts discovers the repo's own real agents/ directory
     // at import time (see its own top-level await) — customer-service is
     // one of this repo's real demo agents, with a known, hand-set model.
