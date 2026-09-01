@@ -306,14 +306,6 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
     isSafeTool: config.isSafeTool ? 'custom' : "default (each tool's own `safe` flag)",
     sessionIdFor: config.sessionIdFor ? 'custom' : 'default (client-supplied `sessionId` field)',
     tenantFor: config.tenantFor ? 'custom' : "none (every request is the 'default' tenant)",
-    // No more per-agent cli/http_stream override — both always get the
-    // library's own live default now (see AgentConfig.httpNotifier's own
-    // doc comment); only http has anything to report as 'custom'.
-    approvers: {
-      cli: 'default (blocks on stdin)',
-      http: config.httpNotifier?.events.includes('approval') ? 'custom' : 'default (durable webhook, if configured — see LOOPENGINE_DEFAULT_WEBHOOK_URL)',
-      http_stream: 'default (web — approvals pop up inline in the playground)',
-    },
   }
 }
 

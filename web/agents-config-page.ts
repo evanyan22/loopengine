@@ -587,9 +587,6 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '<dt>sessionIdFor</dt><dd>' + badge(cfg.sessionIdFor.indexOf('custom') === 0 ? 'custom' : 'default') + ' <span class="muted">' + escapeHtml(cfg.sessionIdFor) + '</span></dd>' +
         '<dt>tenantFor</dt><dd>' + badge(cfg.tenantFor.indexOf('custom') === 0 ? 'custom' : 'default') + ' <span class="muted">' + escapeHtml(cfg.tenantFor) + '</span></dd>' +
         '<dt>isSafeTool</dt><dd>' + badge(cfg.isSafeTool === 'custom' ? 'custom' : 'default') + ' <span class="muted">' + escapeHtml(cfg.isSafeTool) + '</span></dd>' +
-        '<dt>approvers.cli</dt><dd>' + badge(cfg.approvers.cli === 'custom' ? 'custom' : 'default') + ' <span class="muted">' + escapeHtml(cfg.approvers.cli) + '</span></dd>' +
-        '<dt>approvers.http</dt><dd>' + badge(cfg.approvers.http === 'custom' ? 'custom' : 'default') + ' <span class="muted">' + escapeHtml(cfg.approvers.http) + '</span></dd>' +
-        '<dt>approvers.http_stream</dt><dd>' + badge(cfg.approvers.http_stream === 'custom' ? 'custom' : 'default') + ' <span class="muted">' + escapeHtml(cfg.approvers.http_stream) + '</span></dd>' +
         '</dl></section>' +
       '<section><h3>Limits &amp; budgets</h3><dl class="kv">' +
         '<dt>maxTurns</dt><dd>' + escapeHtml(cfg.maxTurns) + '</dd>' +
