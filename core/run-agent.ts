@@ -38,6 +38,24 @@ export type * from './loop-events.js'
 // relative location, once dist/ is what's actually running.
 const agentsRootDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'agents')
 
+// agentsRootDir above is right when agents/ is compiled alongside core/
+// into the same dist/ tree (this repo's own reference agents; also this
+// repo's own Dockerfile, which copies dist/agents/**/*.js this way) — but
+// a project that only *depends on* the published loopengine package has
+// no dist/agents/<name> inside node_modules/loopengine at all, just its
+// own agents/<name>/ at the project root, found only via process.cwd(),
+// the same way loadRules/skillsDirs already resolve their own (data, not
+// code) defaults. Tried first since it's this repo's own existing,
+// tested behavior; process.cwd() only kicks in when nothing's built
+// there to find — so this repo's own agents are unaffected either way.
+function resolveAgentCodeDir(name: string, subpath: string, indexRequired: boolean): string {
+  const built = join(agentsRootDir, name, subpath)
+  const builtExists = indexRequired
+    ? existsSync(join(built, 'index.ts')) || existsSync(join(built, 'index.js'))
+    : existsSync(built)
+  return builtExists ? built : join(process.cwd(), 'agents', name, subpath)
+}
+
 // Same "resolved relative to this file's own location" reasoning as
 // agentsRootDir above, but system-skills/ is a same-level sibling of
 // run-agent.ts itself (both live directly under core/ — see package.json's
@@ -413,7 +431,7 @@ async function loadToolsFromDir(toolsDir: string): Promise<ToolDefinition[]> {
 }
 
 export async function loadDefaultTools(config: AgentConfig): Promise<ToolDefinition[]> {
-  return loadToolsFromDir(join(agentsRootDir, config.name, 'tools'))
+  return loadToolsFromDir(resolveAgentCodeDir(config.name, 'tools', true))
 }
 
 /** Every other folder-form default in this file (loadDefaultTools,
@@ -490,7 +508,7 @@ async function resolveSubagentConfig(config: AgentConfig, dir: string): Promise<
  * this can't cycle the way a hand-wired agentAsTool(getEntry(...)) call
  * elsewhere could. */
 export async function loadSubagentAsTools(config: AgentConfig): Promise<ToolDefinition[]> {
-  const subagentsDir = join(agentsRootDir, config.name, 'subagents')
+  const subagentsDir = resolveAgentCodeDir(config.name, 'subagents', false)
   if (!existsSync(subagentsDir)) return []
 
   const tools: ToolDefinition[] = []
@@ -593,7 +611,7 @@ async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, optio
     askUserTool,
     ...(config.tools ?? (await loadDefaultTools(config))),
     ...(await loadSubagentAsTools(config)),
-    ...(await loadGatewayToolsFromDir(join(agentsRootDir, config.name))),
+    ...(await loadGatewayToolsFromDir(join(process.cwd(), 'agents', config.name))),
   ])
 
   // Omitted entirely (undefined): default to this agent's own

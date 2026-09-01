@@ -261,11 +261,15 @@ export interface AgentConfig {
    * Omit entirely and it defaults to importing
    * `agents/<name>/tools/index.{ts,js}` and using its exported `tools` —
    * this repo's own aggregation-file convention (see
-   * `agents/customer-service/tools/index.ts`), resolved next to
-   * `run-agent.ts` itself (not `process.cwd()`, unlike `skillsDirs`/
-   * `rules` — that file is real compiled code, not data, so it has to be
-   * found next to whichever build of `run-agent.ts` is actually running).
-   * A missing file there is just `[]`, not an error — same
+   * `agents/customer-service/tools/index.ts`). Tried first next to
+   * `run-agent.ts` itself, since that file is real compiled code, not
+   * data — right when `agents/` is built alongside `core/` into the same
+   * `dist/` tree (this repo's own reference agents); falls back to
+   * `process.cwd()`, same as `skillsDirs`/`rules`, when nothing's built
+   * there — right for a project that only depends on the published
+   * package, whose own `agents/<name>/tools/` was never compiled into
+   * `node_modules/loopengine` at all.
+   * A missing file either place is just `[]`, not an error — same
    * missing-is-fine treatment `skillsDirs` gets. An agent that needs to
    * merge in tools from somewhere else too (e.g.
    * `agents/file-agent/index.ts`'s Composio-sourced ones) can't rely on
