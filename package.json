@@ -1,6 +1,6 @@
 {
   "name": "loopengine",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Runtime for tool-using AI agents with a transparent ReAct loop.",
   "license": "MIT",
@@ -18,6 +18,7 @@
     "#*": "./*"
   },
   "files": [
+    "dist/package.json",
     "dist/index.js",
     "dist/index.d.ts",
     "dist/bin/cli.js",
@@ -46,14 +47,23 @@
     "dist/core/agent-as-tool.d.ts",
     "dist/core/gateway-tools.js",
     "dist/core/gateway-tools.d.ts",
+    "dist/core/budget.js",
+    "dist/core/budget.d.ts",
+    "dist/core/compaction.js",
+    "dist/core/compaction.d.ts",
+    "dist/core/recovery.js",
+    "dist/core/recovery.d.ts",
+    "dist/core/http-notifier.js",
+    "dist/core/http-notifier.d.ts",
+    "dist/core/http-notify-triggers",
     "dist/core/system-tools",
-    "core/system-skills",
+    "dist/core/system-skills",
     "protocol/loop-event.schema.json",
     "PROTOCOL.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc; s=$?; chmod +x dist/bin/cli.js; exit $s",
+    "build": "tsc; s=$?; chmod +x dist/bin/cli.js; cp -r core/system-skills dist/core/system-skills; tsx scripts/write-dist-package-json.ts; exit $s",
     "prepublishOnly": "npm run build",
     "start": "node --env-file-if-exists=.env dist/adapters/http.js",
     "test": "vitest run"
