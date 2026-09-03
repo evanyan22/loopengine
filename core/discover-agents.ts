@@ -62,8 +62,20 @@ export async function synthesizeCreateModelCall(model: AgentModelConfig): Promis
     const { createOpenAIModelCall } = await import('./model-calls/openai-model-call.js')
     return () => (cached ??= createOpenAIModelCall(model))
   }
-  const { createDeepSeekModelCall } = await import('./model-calls/deepseek-model-call.js')
-  return () => (cached ??= createDeepSeekModelCall(model))
+  if (model.provider === 'deepseek') {
+    const { createDeepSeekModelCall } = await import('./model-calls/deepseek-model-call.js')
+    return () => (cached ??= createDeepSeekModelCall(model))
+  }
+  if (model.provider === 'kimi') {
+    const { createKimiModelCall } = await import('./model-calls/kimi-model-call.js')
+    return () => (cached ??= createKimiModelCall(model))
+  }
+  if (model.provider === 'glm') {
+    const { createGlmModelCall } = await import('./model-calls/glm-model-call.js')
+    return () => (cached ??= createGlmModelCall(model))
+  }
+  const { createGeminiModelCall } = await import('./model-calls/gemini-model-call.js')
+  return () => (cached ??= createGeminiModelCall(model))
 }
 
 /** Resolves one directory entry to an agent module's path, or undefined if

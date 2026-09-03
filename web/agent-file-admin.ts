@@ -41,12 +41,17 @@ import { AgentModelError } from '../bin/cli.js'
 export class AgentEditNotSupportedError extends Error {}
 export class AgentFileNotFoundError extends Error {}
 
-type Provider = 'anthropic' | 'openai' | 'deepseek'
+type Provider = 'anthropic' | 'openai' | 'deepseek' | 'kimi' | 'glm' | 'gemini'
 
 const MODEL_ENV_VAR: Record<Provider, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   deepseek: 'DEEPSEEK_API_KEY',
+  // Moonshot AI's own env var name, not KIMI_API_KEY — see
+  // core/model-calls/kimi-model-call.ts's own header comment for why.
+  kimi: 'MOONSHOT_API_KEY',
+  glm: 'GLM_API_KEY',
+  gemini: 'GEMINI_API_KEY',
 }
 
 // The exact shape agentIndexTemplate (bin/cli.ts) always generates for the

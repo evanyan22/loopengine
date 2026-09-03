@@ -11,7 +11,7 @@ import type { AgentConfig } from '../core/agent-config.js'
 import { getComposioAuthStatus } from '../core/gateway-tools.js'
 
 export interface ModelProviderInfo {
-  provider: 'anthropic' | 'openai' | 'deepseek'
+  provider: 'anthropic' | 'openai' | 'deepseek' | 'kimi' | 'glm' | 'gemini'
   envVar: string
   configured: boolean
 }
@@ -36,6 +36,11 @@ const KNOWN_PROVIDERS: Array<{ provider: ModelProviderInfo['provider']; envVar: 
   { provider: 'anthropic', envVar: 'ANTHROPIC_API_KEY' },
   { provider: 'openai', envVar: 'OPENAI_API_KEY' },
   { provider: 'deepseek', envVar: 'DEEPSEEK_API_KEY' },
+  // Moonshot AI's own env var name, not KIMI_API_KEY — see
+  // core/model-calls/kimi-model-call.ts's own header comment for why.
+  { provider: 'kimi', envVar: 'MOONSHOT_API_KEY' },
+  { provider: 'glm', envVar: 'GLM_API_KEY' },
+  { provider: 'gemini', envVar: 'GEMINI_API_KEY' },
 ]
 
 /** Every registered agent's resolved model, alongside whether each

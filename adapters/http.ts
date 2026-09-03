@@ -608,7 +608,14 @@ function parseAgentTemplateOptions(body: Record<string, unknown>): { ok: true; v
       return { ok: false, error: 'model must be an object' }
     }
     const provider = (body.model as Record<string, unknown>).provider
-    if (provider !== 'anthropic' && provider !== 'openai' && provider !== 'deepseek') {
+    if (
+      provider !== 'anthropic' &&
+      provider !== 'openai' &&
+      provider !== 'deepseek' &&
+      provider !== 'kimi' &&
+      provider !== 'glm' &&
+      provider !== 'gemini'
+    ) {
       return { ok: false, error: `unsupported model provider '${String(provider)}'` }
     }
     const modelName = (body.model as Record<string, unknown>).model

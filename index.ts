@@ -63,6 +63,15 @@ export type { OpenAIModelCallOptions } from './core/model-calls/openai-model-cal
 export { createDeepSeekModelCall } from './core/model-calls/deepseek-model-call.js'
 export type { DeepSeekModelCallOptions } from './core/model-calls/deepseek-model-call.js'
 
+export { createKimiModelCall } from './core/model-calls/kimi-model-call.js'
+export type { KimiModelCallOptions } from './core/model-calls/kimi-model-call.js'
+
+export { createGlmModelCall } from './core/model-calls/glm-model-call.js'
+export type { GlmModelCallOptions } from './core/model-calls/glm-model-call.js'
+
+export { createGeminiModelCall } from './core/model-calls/gemini-model-call.js'
+export type { GeminiModelCallOptions } from './core/model-calls/gemini-model-call.js'
+
 export { discoverAgents, loadAgentModule, synthesizeCreateModelCall } from './core/discover-agents.js'
 export type { AgentModule } from './core/discover-agents.js'
 

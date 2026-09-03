@@ -654,7 +654,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '<form class="add-source" id="modelForm" style="display:none">' +
           '<label>Provider' +
             '<select name="provider">' +
-              ['anthropic', 'openai', 'deepseek'].map(function (p) {
+              ['anthropic', 'openai', 'deepseek', 'kimi', 'glm', 'gemini'].map(function (p) {
                 return '<option value="' + p + '"' + (p === cfg.model.provider ? ' selected' : '') + '>' + p + '</option>';
               }).join('') +
             '</select>' +

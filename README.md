@@ -466,6 +466,18 @@ you, using the matching API key from the environment:
 | `'anthropic'` | `ANTHROPIC_API_KEY` | no — defaults to `claude-sonnet-5` |
 | `'openai'` | `OPENAI_API_KEY` | yes |
 | `'deepseek'` | `DEEPSEEK_API_KEY` | yes |
+| `'kimi'` | `MOONSHOT_API_KEY` | yes |
+| `'glm'` | `GLM_API_KEY` | yes |
+| `'gemini'` | `GEMINI_API_KEY` | yes |
+
+`'kimi'`'s env var is `MOONSHOT_API_KEY`, not `KIMI_API_KEY` — deliberate,
+matching Moonshot AI's own docs (the API/company behind Kimi) rather than
+this package's own provider name. `openai`/`deepseek`/`kimi`/`glm`/
+`gemini` all reuse the same OpenAI-Chat-Completions-compatible request
+translation, just pointed at each provider's own base URL — see
+`core/model-calls/*.ts` for the provider-specific details (base URLs,
+`max_completion_tokens` vs `max_tokens`, and Gemini's own "still in beta"
+caveat on Google's compatibility layer).
 
 For anything else (a custom SDK client, a canned/simulated model for
 testing), export your own `createModelCall(): ModelCall` instead.

@@ -11,6 +11,9 @@ describe('describeModelProviders', () => {
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+    MOONSHOT_API_KEY: process.env.MOONSHOT_API_KEY,
+    GLM_API_KEY: process.env.GLM_API_KEY,
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
   }
 
   afterEach(() => {
@@ -24,12 +27,18 @@ describe('describeModelProviders', () => {
     delete process.env.ANTHROPIC_API_KEY
     process.env.OPENAI_API_KEY = 'sk-test'
     delete process.env.DEEPSEEK_API_KEY
+    delete process.env.MOONSHOT_API_KEY
+    delete process.env.GLM_API_KEY
+    delete process.env.GEMINI_API_KEY
 
     const { providers } = describeModelProviders(listAgents(), (name) => getEntry(name)?.config)
     expect(providers).toEqual([
       { provider: 'anthropic', envVar: 'ANTHROPIC_API_KEY', configured: false },
       { provider: 'openai', envVar: 'OPENAI_API_KEY', configured: true },
       { provider: 'deepseek', envVar: 'DEEPSEEK_API_KEY', configured: false },
+      { provider: 'kimi', envVar: 'MOONSHOT_API_KEY', configured: false },
+      { provider: 'glm', envVar: 'GLM_API_KEY', configured: false },
+      { provider: 'gemini', envVar: 'GEMINI_API_KEY', configured: false },
     ])
   })
 
