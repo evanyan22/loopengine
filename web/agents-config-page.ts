@@ -1135,12 +1135,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '<dt>skillsDirs</dt><dd>' + escapeHtml(cfg.skillsDirs.join(', ') || '(none)') + '</dd>' +
         '<dt>skillIndexBudgetTokens</dt><dd>' + escapeHtml(cfg.skillIndexBudgetTokens) + '</dd>' +
         '</dl></section>' +
-      '<section><h3>Skills (' + cfg.skills.length + ')</h3><div id="skillList">' + listHtml + '</div>' +
-        '<div class="admin-subsection"><h4>Browse skillgarden catalog</h4>' +
-          '<input type="text" id="skillgardenFilterInput" placeholder="Filter by name or category&hellip;">' +
-          '<div id="skillgardenCatalogList"><p class="hint">Loading&hellip;</p></div>' +
-        '</div>' +
-      '</section>' +
+      '<section><h3>Skills (' + cfg.skills.length + ')</h3><div id="skillList">' + listHtml + '</div></section>' +
       '<section><h3 id="skillFormHeading">Add a skill</h3>' +
         '<form class="add-source" id="skillForm">' +
           '<label>Id <span class="hint">(lowercase, hyphen-separated — becomes the SKILL.md folder name; nested skills aren\\'t editable here)</span>' +
@@ -1163,19 +1158,23 @@ export const agentsConfigPageHtml: string = `<!doctype html>
           '<button type="submit" id="skillSubmitBtn">Add</button>' +
           '<button type="button" id="skillCancelBtn" style="display:none">Cancel</button>' +
           '<div id="skillFormError" class="error"></div>' +
-        '</form></section>';
+        '</form></section>' +
+      '<section><h3>Browse skillgarden catalog</h3>' +
+        '<input type="text" id="skillgardenFilterInput" placeholder="Filter by name or category&hellip;">' +
+        '<div id="skillgardenCatalogList"><p class="hint">Loading&hellip;</p></div>' +
+      '</section>';
   }
 
   function skillsPanelEl() {
     return detail.querySelector('[data-tab-panel="skills"]');
   }
 
-  // ---- Skills tab's "Browse skillgarden catalog" subsection: a
+  // ---- Skills tab's "Browse skillgarden catalog" section: a
   // read-only, agent-independent list of everything GET /skillgarden-
   // catalog reports (see web/skillgarden-admin.ts) — cached in this one
   // module-level variable, not per-agent like gatewayLoadedFor, since
   // the catalog itself never varies by agent. renderSkillsTabHtml
-  // regenerates the whole Skills panel (including this subsection's own
+  // regenerates the whole Skills panel (including this section's own
   // markup) on every agent switch/refresh, so loadSkillgardenCatalogSection
   // re-renders from this cache instead of re-fetching every time — only
   // the very first time this tab is opened in the page's lifetime hits

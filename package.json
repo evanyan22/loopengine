@@ -78,7 +78,7 @@
     "mcpplug": "^0.0.1",
     "openai": "^7.4.0",
     "sessionknit": "^0.0.2",
-    "skillgarden": "^0.0.8",
+    "skillgarden": "^0.0.9",
     "toollane": "^0.0.1",
     "typescript": "^5.7.0",
     "yaml": "^2.6.0"
