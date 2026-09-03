@@ -310,6 +310,64 @@ export const agentsConfigPageHtml: string = `<!doctype html>
      stretches the checkbox to the full row width, which visually
      overlaps the description text under it instead of sitting beside it. */
   form.add-source input[type="checkbox"] { width: auto; flex-shrink: 0; margin-top: 2px; }
+  /* Same column-stacking issue as .tool-picker-item above: .http-tool-
+     inline-label (the "required" / "send as JSON body" checkboxes in the
+     HTTP tool builder) is a <label> too, so "form.add-source label" wins
+     on specificity alone and stacks the checkbox above its own text
+     instead of beside it — this rule needs to match "label" too to win. */
+  form.add-source label.http-tool-inline-label {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+  }
+  /* These three are plain <div>s of sibling inputs/selects/buttons, not
+     <label>s, so none of the rules above touch them — without an explicit
+     row layout they just wrap at the browser's default inline spacing,
+     which reads as everything jammed together with no breathing room.
+     form.add-source itself caps at max-width: 480px (see above), which
+     isn't wide enough to hold a field row's 5 items (name/type/
+     description/required/delete) on one line at a readable width, so
+     this wraps rather than forcing a single cramped line — each item
+     gets a min-width so text inputs wrap onto their own line instead of
+     shrinking to an unreadable sliver. */
+  .http-tool-field-row, .http-tool-header-row, .http-tool-method-url {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  /* Same "form.add-source input { width: 100% }" override as the checkbox
+     fix above — each field here sits beside its siblings in a row, not
+     stacked full-width above them. */
+  .http-tool-field-row input[type="text"],
+  .http-tool-field-row select,
+  .http-tool-header-row input[type="text"],
+  .http-tool-method-url input[type="text"],
+  .http-tool-method-url select {
+    width: auto;
+  }
+  .http-tool-field-row .http-tool-field-name { flex: 1 1 100px; min-width: 100px; }
+  .http-tool-field-row .http-tool-field-type { flex: 0 0 auto; }
+  .http-tool-field-row .http-tool-field-description { flex: 2 1 140px; min-width: 140px; }
+  .http-tool-field-row .http-tool-inline-label { flex: 0 0 auto; white-space: nowrap; }
+  .http-tool-header-row .http-tool-header-key { flex: 1 1 100px; min-width: 100px; }
+  .http-tool-header-row .http-tool-header-value { flex: 2 1 140px; min-width: 140px; }
+  .http-tool-method-url select { flex: 0 0 auto; }
+  .http-tool-method-url input[type="text"] { flex: 1 1 160px; min-width: 160px; }
+  .http-tool-field-row .http-tool-remove-row,
+  .http-tool-header-row .http-tool-remove-row {
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+  /* Taller than .hint-btn's own 2px 8px default (shared with the Gateway
+     Tools "Refresh" button, which sits inline in an <h3> and shouldn't
+     grow) — these two sit on their own line below the field/header rows,
+     so there's no header-row height to match. */
+  #httpToolAddFieldBtn, #httpToolAddHeaderBtn {
+    padding: 6px 12px;
+  }
 </style>
 </head>
 <body>
@@ -1208,7 +1266,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '<input type="text" name="name" required pattern="[a-z][a-z0-9_]*" placeholder="lookup_order_status">' +
       '</label>' +
       '<label>Description' +
-        '<input type="text" name="description" required placeholder="What this tool does">' +
+        '<textarea name="description" id="httpToolDescriptionInput" required placeholder="What this tool does"></textarea>' +
       '</label>' +
       '<label>Fields' +
         '<div id="httpToolFieldRows"></div>' +
