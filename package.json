@@ -1,6 +1,6 @@
 {
   "name": "loopengine",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "description": "Runtime for tool-using AI agents with a transparent ReAct loop.",
   "license": "MIT",
@@ -78,7 +78,7 @@
     "mcpplug": "^0.0.1",
     "openai": "^7.4.0",
     "sessionknit": "^0.0.2",
-    "skillgarden": "^0.0.5",
+    "skillgarden": "^0.0.8",
     "toollane": "^0.0.1",
     "typescript": "^5.7.0",
     "yaml": "^2.6.0"

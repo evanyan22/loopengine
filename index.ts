@@ -118,6 +118,9 @@ export { playgroundHtml } from './web/playground.js'
 export { readSkill, writeSkill, deleteSkill, SkillInvalidIdError, SkillNotFoundError } from './web/skills-admin.js'
 export type { SkillContent } from './web/skills-admin.js'
 
+export { listSkillgardenCatalog, readSkillgardenCatalogEntry, addSkillgardenSkillToAgent, SkillgardenUnavailableError } from './web/skillgarden-admin.js'
+export type { SkillgardenCatalogEntry, SkillgardenCatalogDetail } from './web/skillgarden-admin.js'
+
 export {
   readActauthConfig,
   addActauthRule,

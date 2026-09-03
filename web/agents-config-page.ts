@@ -132,12 +132,12 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     letter-spacing: normal;
     padding: 2px 8px;
   }
-  .http-tool-subsection {
+  .admin-subsection {
     margin-top: 14px;
     padding-top: 14px;
     border-top: 1px dashed light-dark(#eee, #2a2a2e);
   }
-  .http-tool-subsection h4 {
+  .admin-subsection h4 {
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -367,6 +367,26 @@ export const agentsConfigPageHtml: string = `<!doctype html>
      so there's no header-row height to match. */
   #httpToolAddFieldBtn, #httpToolAddHeaderBtn {
     padding: 6px 12px;
+  }
+  .skillgarden-category-badge {
+    display: inline-block;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: light-dark(#eef1ec, #1e2519);
+    color: light-dark(#3f6b4a, #7fbf8f);
+    margin-right: 6px;
+  }
+  #skillgardenFilterInput { margin-bottom: 8px; }
+  .skillgarden-catalog-body {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid light-dark(#eee, #2a2a2e);
+    font-size: 13px;
   }
 </style>
 </head>
@@ -1115,7 +1135,12 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '<dt>skillsDirs</dt><dd>' + escapeHtml(cfg.skillsDirs.join(', ') || '(none)') + '</dd>' +
         '<dt>skillIndexBudgetTokens</dt><dd>' + escapeHtml(cfg.skillIndexBudgetTokens) + '</dd>' +
         '</dl></section>' +
-      '<section><h3>Skills (' + cfg.skills.length + ')</h3><div id="skillList">' + listHtml + '</div></section>' +
+      '<section><h3>Skills (' + cfg.skills.length + ')</h3><div id="skillList">' + listHtml + '</div>' +
+        '<div class="admin-subsection"><h4>Browse skillgarden catalog</h4>' +
+          '<input type="text" id="skillgardenFilterInput" placeholder="Filter by name or category&hellip;">' +
+          '<div id="skillgardenCatalogList"><p class="hint">Loading&hellip;</p></div>' +
+        '</div>' +
+      '</section>' +
       '<section><h3 id="skillFormHeading">Add a skill</h3>' +
         '<form class="add-source" id="skillForm">' +
           '<label>Id <span class="hint">(lowercase, hyphen-separated — becomes the SKILL.md folder name; nested skills aren\\'t editable here)</span>' +
@@ -1145,10 +1170,182 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     return detail.querySelector('[data-tab-panel="skills"]');
   }
 
+  // ---- Skills tab's "Browse skillgarden catalog" subsection: a
+  // read-only, agent-independent list of everything GET /skillgarden-
+  // catalog reports (see web/skillgarden-admin.ts) — cached in this one
+  // module-level variable, not per-agent like gatewayLoadedFor, since
+  // the catalog itself never varies by agent. renderSkillsTabHtml
+  // regenerates the whole Skills panel (including this subsection's own
+  // markup) on every agent switch/refresh, so loadSkillgardenCatalogSection
+  // re-renders from this cache instead of re-fetching every time — only
+  // the very first time this tab is opened in the page's lifetime hits
+  // the network at all. ----
+  var skillgardenCatalog = null;
+
+  function skillgardenCatalogListEl() {
+    var panel = skillsPanelEl();
+    return panel ? panel.querySelector('#skillgardenCatalogList') : null;
+  }
+
+  function renderSkillgardenCatalogEntry(entry) {
+    return '<div class="source" data-category="' + escapeHtml(entry.category) + '" data-id="' + escapeHtml(entry.id) + '">' +
+      '<div class="source-head">' +
+        '<h4><span class="skillgarden-category-badge">' + escapeHtml(entry.category) + '</span>' + escapeHtml(entry.id) + '</h4>' +
+        '<span>' +
+          '<button type="button" class="skillgarden-view-btn" data-category="' + escapeHtml(entry.category) + '" data-id="' + escapeHtml(entry.id) + '">View</button> ' +
+          '<button type="button" class="skillgarden-add-btn" data-category="' + escapeHtml(entry.category) + '" data-id="' + escapeHtml(entry.id) + '">Add to this agent</button>' +
+        '</span>' +
+      '</div>' +
+      '<p class="hint">' + escapeHtml(entry.description) + '</p>' +
+      '<div class="skillgarden-catalog-body" style="display:none"></div>' +
+      '</div>';
+  }
+
+  function renderSkillgardenCatalogList(entries) {
+    return entries.length ? entries.map(renderSkillgardenCatalogEntry).join('') : '<p class="hint">No skills match.</p>';
+  }
+
+  function applySkillgardenCatalog(name, entries) {
+    var listEl = skillgardenCatalogListEl();
+    if (!listEl) return;
+    listEl.innerHTML = renderSkillgardenCatalogList(entries);
+    wireSkillgardenCatalogHandlers(name);
+  }
+
+  function filteredSkillgardenCatalog(filterText) {
+    if (!filterText) return skillgardenCatalog;
+    var needle = filterText.toLowerCase();
+    return skillgardenCatalog.filter(function (entry) {
+      return entry.category.toLowerCase().indexOf(needle) !== -1 || entry.id.toLowerCase().indexOf(needle) !== -1;
+    });
+  }
+
+  function loadSkillgardenCatalogSection(name) {
+    var listEl = skillgardenCatalogListEl();
+    if (!listEl) return;
+    if (skillgardenCatalog) {
+      var panel = skillsPanelEl();
+      var filterInput = panel ? panel.querySelector('#skillgardenFilterInput') : null;
+      applySkillgardenCatalog(name, filteredSkillgardenCatalog(filterInput ? filterInput.value.trim() : ''));
+      return;
+    }
+    listEl.innerHTML = '<p class="hint">Loading&hellip;</p>';
+    fetch('/skillgarden-catalog')
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.body.error || 'request failed');
+        skillgardenCatalog = result.body;
+        if (currentName !== name) return;
+        applySkillgardenCatalog(name, skillgardenCatalog);
+      })
+      .catch(function (err) {
+        if (currentName !== name) return;
+        listEl.innerHTML = '<p class="error">Could not load skillgarden catalog: ' + escapeHtml(err.message) + '</p>';
+      });
+  }
+
+  // force=true retries as an explicit overwrite after the operator
+  // confirms — same "ask once a plain add collides, don't ask up front"
+  // flow the rest of this page never has to think about since nothing
+  // else lets an operator add something whose id they don't already
+  // control the uniqueness of themselves.
+  function performSkillgardenAdd(name, category, id, btn, originalText, force) {
+    fetch('/agents/' + encodeURIComponent(name) + '/skillgarden-catalog/' + encodeURIComponent(category) + '/' + encodeURIComponent(id), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ force: !!force }),
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+      .then(function (result) {
+        if (result.ok) {
+          refreshSkillsDependentPanels(name);
+          return;
+        }
+        if (!force && /already exists/.test(result.body.error || '')) {
+          if (confirm('A skill named "' + id + '" already exists for this agent. Overwrite it?')) {
+            performSkillgardenAdd(name, category, id, btn, originalText, true);
+            return;
+          }
+          btn.disabled = false;
+          btn.textContent = originalText;
+          return;
+        }
+        throw new Error(result.body.error || 'request failed');
+      })
+      .catch(function (err) {
+        alert('Could not add "' + id + '": ' + err.message);
+        btn.disabled = false;
+        btn.textContent = originalText;
+      });
+  }
+
+  function wireSkillgardenCatalogHandlers(name) {
+    var listEl = skillgardenCatalogListEl();
+    if (!listEl) return;
+
+    var viewButtons = listEl.querySelectorAll('.skillgarden-view-btn');
+    for (var i = 0; i < viewButtons.length; i++) {
+      viewButtons[i].addEventListener('click', function (ev) {
+        var btn = ev.currentTarget;
+        var category = btn.getAttribute('data-category');
+        var id = btn.getAttribute('data-id');
+        var card = btn.closest('.source');
+        var bodyEl = card.querySelector('.skillgarden-catalog-body');
+        if (bodyEl.style.display !== 'none') {
+          bodyEl.style.display = 'none';
+          btn.textContent = 'View';
+          return;
+        }
+        if (bodyEl.getAttribute('data-loaded') === '1') {
+          bodyEl.style.display = 'block';
+          btn.textContent = 'Hide';
+          return;
+        }
+        btn.disabled = true;
+        fetch('/skillgarden-catalog/' + encodeURIComponent(category) + '/' + encodeURIComponent(id))
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (result) {
+            if (!result.ok) throw new Error(result.body.error || 'request failed');
+            bodyEl.innerHTML = renderMarkdownPreview(result.body.body);
+            bodyEl.setAttribute('data-loaded', '1');
+            bodyEl.style.display = 'block';
+            btn.textContent = 'Hide';
+          })
+          .catch(function (err) {
+            bodyEl.innerHTML = '<p class="error">' + escapeHtml(err.message) + '</p>';
+            bodyEl.style.display = 'block';
+          })
+          .then(function () { btn.disabled = false; });
+      });
+    }
+
+    var addButtons = listEl.querySelectorAll('.skillgarden-add-btn');
+    for (var j = 0; j < addButtons.length; j++) {
+      addButtons[j].addEventListener('click', function (ev) {
+        var btn = ev.currentTarget;
+        var category = btn.getAttribute('data-category');
+        var id = btn.getAttribute('data-id');
+        var originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Adding…';
+        performSkillgardenAdd(name, category, id, btn, originalText, false);
+      });
+    }
+  }
+
   function wireSkillsHandlers(name) {
     var panel = skillsPanelEl();
     if (!panel) return;
     var editingSkillId = null;
+
+    loadSkillgardenCatalogSection(name);
+    var skillgardenFilterInput = panel.querySelector('#skillgardenFilterInput');
+    if (skillgardenFilterInput) {
+      skillgardenFilterInput.addEventListener('input', function () {
+        if (!skillgardenCatalog) return;
+        applySkillgardenCatalog(name, filteredSkillgardenCatalog(skillgardenFilterInput.value.trim()));
+      });
+    }
 
     // Write/Preview toggle for the Body field — same idea as GitHub's own
     // issue/PR editor: the textarea and the rendered preview show/hide
@@ -1280,7 +1477,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
 
   function renderToolsTabHtml(cfg) {
     return '<section><h3>Local tools (' + cfg.localTools.length + ')</h3>' + renderTools(cfg.localTools) +
-      '<div class="http-tool-subsection"><h4>Create an HTTP tool</h4>' + renderHttpToolFormHtml() + '</div>' +
+      '<div class="admin-subsection"><h4>Create an HTTP tool</h4>' + renderHttpToolFormHtml() + '</div>' +
       '</section>' +
       '<section id="gatewayToolsSection">' +
         '<h3>Gateway Tools <button type="button" id="gatewayToolsRefreshBtn" class="hint-btn">Refresh</button></h3>' +
