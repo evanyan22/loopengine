@@ -658,15 +658,31 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '<dt>tenantFor</dt><dd>' + badge(cfg.tenantFor.indexOf('custom') === 0 ? 'custom' : 'default') + ' <span class="muted">' + escapeHtml(cfg.tenantFor) + '</span></dd>' +
         '<dt>isSafeTool</dt><dd>' + badge(cfg.isSafeTool === 'custom' ? 'custom' : 'default') + ' <span class="muted">' + escapeHtml(cfg.isSafeTool) + '</span></dd>' +
         '</dl></section>' +
-      '<section><h3>Limits &amp; budgets</h3><dl class="kv">' +
-        '<dt>maxTurns</dt><dd>' + escapeHtml(cfg.maxTurns) + '</dd>' +
-        '<dt>contextBudgetTokens</dt><dd>' + escapeHtml(cfg.contextBudgetTokens) + '</dd>' +
-        '<dt>skillIndexBudgetTokens</dt><dd>' + escapeHtml(cfg.skillIndexBudgetTokens) + '</dd>' +
-        '<dt>skillsDirs</dt><dd>' + escapeHtml(cfg.skillsDirs.join(', ') || '(none)') + '</dd>' +
-        '</dl></section>';
+      '<section><h3>Limits &amp; budgets <button type="button" class="edit-btn" id="editLimitsBtn">Edit</button></h3>' +
+        '<dl class="kv" id="limitsDisplay">' +
+          '<dt>maxTurns</dt><dd>' + escapeHtml(cfg.maxTurns) + '</dd>' +
+          '<dt>contextBudgetTokens</dt><dd>' + escapeHtml(cfg.contextBudgetTokens) + '</dd>' +
+          '<dt>skillIndexBudgetTokens</dt><dd>' + escapeHtml(cfg.skillIndexBudgetTokens) + '</dd>' +
+        '</dl>' +
+        '<form class="add-source" id="limitsForm" style="display:none">' +
+          '<label>Max turns <span class="hint">(hard cap on model calls in one turn)</span>' +
+            '<input type="number" name="maxTurns" min="1" step="1" value="' + escapeHtml(cfg.maxTurns) + '">' +
+          '</label>' +
+          '<label>Context budget <span class="hint">(tokens — triggers compaction of older messages once exceeded)</span>' +
+            '<input type="number" name="contextBudgetTokens" min="1" step="1" value="' + escapeHtml(cfg.contextBudgetTokens) + '">' +
+          '</label>' +
+          '<label>Skill index budget <span class="hint">(tokens — caps the always-loaded skill name/description index)</span>' +
+            '<input type="number" name="skillIndexBudgetTokens" min="1" step="1" value="' + escapeHtml(cfg.skillIndexBudgetTokens) + '">' +
+          '</label>' +
+          '<button type="submit">Save</button>' +
+          '<button type="button" id="cancelLimitsBtn">Cancel</button>' +
+          '<div class="error" id="limitsError"></div>' +
+        '</form>' +
+        '<dl class="kv"><dt>skillsDirs</dt><dd>' + escapeHtml(cfg.skillsDirs.join(', ') || '(none)') + '</dd></dl>' +
+      '</section>';
   }
 
-  // Wires the System prompt / Model Edit buttons rendered by
+  // Wires the System prompt / Model / Limits & budgets Edit buttons rendered by
   // renderOverviewHtml above — called every time that HTML gets (re)set
   // (renderDetail, refreshOverviewPanel, refreshSkillsDependentPanels),
   // same pattern every other tab's own wireXHandlers already follows.
@@ -763,6 +779,53 @@ export const agentsConfigPageHtml: string = `<!doctype html>
           })
           .catch(function (err) {
             modelError.textContent = err.message;
+            submitBtn.disabled = false;
+          });
+      });
+    }
+
+    var editLimitsBtn = overviewPanel.querySelector('#editLimitsBtn');
+    if (editLimitsBtn) {
+      var limitsDisplay = overviewPanel.querySelector('#limitsDisplay');
+      var limitsForm = overviewPanel.querySelector('#limitsForm');
+      var limitsError = overviewPanel.querySelector('#limitsError');
+
+      editLimitsBtn.addEventListener('click', function () {
+        limitsDisplay.style.display = 'none';
+        editLimitsBtn.style.display = 'none';
+        limitsForm.style.display = '';
+      });
+      overviewPanel.querySelector('#cancelLimitsBtn').addEventListener('click', function () {
+        limitsForm.style.display = 'none';
+        limitsDisplay.style.display = '';
+        editLimitsBtn.style.display = '';
+        limitsError.textContent = '';
+      });
+      limitsForm.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        limitsError.textContent = '';
+        var data = new FormData(limitsForm);
+        var submitBtn = limitsForm.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        var body = {
+          maxTurns: Number(data.get('maxTurns')),
+          contextBudgetTokens: Number(data.get('contextBudgetTokens')),
+          skillIndexBudgetTokens: Number(data.get('skillIndexBudgetTokens')),
+        };
+        fetch('/agents/' + encodeURIComponent(name), {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (result) {
+            if (!result.ok) throw new Error(result.body.error || 'request failed');
+            currentCfg = result.body;
+            overviewPanel.innerHTML = renderOverviewHtml(result.body);
+            wireOverviewHandlers(name);
+          })
+          .catch(function (err) {
+            limitsError.textContent = err.message;
             submitBtn.disabled = false;
           });
       });

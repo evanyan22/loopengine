@@ -125,4 +125,49 @@ export function createModelCall() {}
     expect(contents).toContain("systemPrompt: 'New prompt.'")
     expect(contents).toContain("model: { provider: 'openai', model: 'gpt-4o' }, // reads OPENAI_API_KEY")
   })
+
+  it('inserts maxTurns/contextBudgetTokens/skillIndexBudgetTokens as new properties when none of them are set yet', () => {
+    writeFixture(TEMPLATE)
+
+    const result = editAgentFile(AGENT_NAME, { maxTurns: 10, contextBudgetTokens: 12000, skillIndexBudgetTokens: 400 })
+
+    expect(result).toEqual({ maxTurns: 10, contextBudgetTokens: 12000, skillIndexBudgetTokens: 400 })
+    const contents = readFileSync(INDEX_PATH, 'utf8')
+    expect(contents).toContain('maxTurns: 10,')
+    expect(contents).toContain('contextBudgetTokens: 12000,')
+    expect(contents).toContain('skillIndexBudgetTokens: 400,')
+    // still a single well-formed config object, not two closing braces or
+    // a stray property outside it
+    expect(contents.match(/export const config: AgentConfig = \{/g)?.length).toBe(1)
+    // and it's still valid enough for a second edit to find the property
+    // it just inserted, proving this isn't just string-matching luck
+    const second = editAgentFile(AGENT_NAME, { maxTurns: 11 })
+    expect(second).toEqual({ maxTurns: 11 })
+    expect(readFileSync(INDEX_PATH, 'utf8')).toContain('maxTurns: 11,')
+  })
+
+  it('rewrites an existing maxTurns in place instead of inserting a duplicate', () => {
+    writeFixture(TEMPLATE.replace('model: { provider:', 'maxTurns: 5,\n  model: { provider:'))
+
+    const result = editAgentFile(AGENT_NAME, { maxTurns: 30 })
+
+    expect(result).toEqual({ maxTurns: 30 })
+    const contents = readFileSync(INDEX_PATH, 'utf8')
+    expect(contents).toContain('maxTurns: 30,')
+    expect(contents.match(/maxTurns/g)?.length).toBe(1)
+  })
+
+  it('rejects a non-integer or non-positive value, leaving the file untouched', () => {
+    writeFixture(TEMPLATE)
+
+    expect(() => editAgentFile(AGENT_NAME, { maxTurns: 0 })).toThrow(AgentEditNotSupportedError)
+    expect(() => editAgentFile(AGENT_NAME, { contextBudgetTokens: 1.5 })).toThrow(AgentEditNotSupportedError)
+    expect(readFileSync(INDEX_PATH, 'utf8')).toBe(TEMPLATE)
+  })
+
+  it('rejects an existing skillIndexBudgetTokens that is not a plain number literal', () => {
+    writeFixture(TEMPLATE.replace('model: { provider:', 'skillIndexBudgetTokens: computeBudget(),\n  model: { provider:'))
+
+    expect(() => editAgentFile(AGENT_NAME, { skillIndexBudgetTokens: 300 })).toThrow(AgentEditNotSupportedError)
+  })
 })

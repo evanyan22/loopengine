@@ -29,7 +29,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { pathToFileURL } from 'node:url'
 import { getEntry, listAgents, projectDir, registerAgent, updateAgent, type RegistryEntry } from '../core/agent-registry.js'
 import { loadAgentModule, synthesizeCreateModelCall } from '#core/discover-agents.js'
-import { editAgentFile, AgentEditNotSupportedError, AgentFileNotFoundError, type AgentEditResult } from '#web/agent-file-admin.js'
+import {
+  editAgentFile,
+  AgentEditNotSupportedError,
+  AgentFileNotFoundError,
+  type AgentEditResult,
+  type AgentEditableFields,
+} from '#web/agent-file-admin.js'
 import { createSessionStore } from '../core/session-store.js'
 import { createCheckpointStore, type TurnCheckpoint } from '#core/durable-approvals.js'
 import { runAgent, resumeAgent, loadRules, loadDefaultTools, loadSubagentAsTools, systemTools, systemSkillsDir } from '#core/run-agent.js'
@@ -605,6 +611,33 @@ function parseAgentTemplateOptions(body: Record<string, unknown>): { ok: true; v
   return { ok: true, value: options }
 }
 
+// The Overview tab's "Limits & budgets" edit form — kept separate from
+// parseAgentTemplateOptions since that one's shape (AgentTemplateOptions)
+// is shared with handleCreateAgent/scaffoldAgent, which has no notion of
+// these three at all (a freshly scaffolded agent always starts on
+// run-agent.ts's own defaults — see AgentConfig's own doc comments).
+// Each of the three is optional and independent, same as systemPrompt/
+// model above.
+function parsePositiveInt(value: unknown, field: string): { ok: true; value: number | undefined } | { ok: false; error: string } {
+  if (value === undefined || value === null) return { ok: true, value: undefined }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    return { ok: false, error: `${field} must be a positive integer` }
+  }
+  return { ok: true, value }
+}
+
+function parseAgentLimitsFields(
+  body: Record<string, unknown>,
+): { ok: true; value: Pick<AgentEditableFields, 'maxTurns' | 'contextBudgetTokens' | 'skillIndexBudgetTokens'> } | { ok: false; error: string } {
+  const value: Pick<AgentEditableFields, 'maxTurns' | 'contextBudgetTokens' | 'skillIndexBudgetTokens'> = {}
+  for (const field of ['maxTurns', 'contextBudgetTokens', 'skillIndexBudgetTokens'] as const) {
+    const parsed = parsePositiveInt(body[field], field)
+    if (!parsed.ok) return parsed
+    if (parsed.value !== undefined) value[field] = parsed.value
+  }
+  return { ok: true, value }
+}
+
 async function handleCreateAgent(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJsonBody(req)
   if (typeof body.name !== 'string' || !body.name) {
@@ -638,9 +671,11 @@ async function handleCreateAgent(req: IncomingMessage, res: ServerResponse): Pro
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ path: indexPath, registered: true }))
 }
 
-// Backs the Overview tab's System prompt / Model edit forms — either
-// field can be sent independently (see parseAgentTemplateOptions), the
-// other stays untouched both on disk and live. Persists via
+// Backs the Overview tab's System prompt / Model / Limits & budgets edit
+// forms — any subset of systemPrompt, model, maxTurns, contextBudgetTokens,
+// skillIndexBudgetTokens can be sent independently (see
+// parseAgentTemplateOptions/parseAgentLimitsFields), every other field
+// stays untouched both on disk and live. Persists via
 // agent-file-admin.ts's editAgentFile (see its own doc comment for why
 // this is a surgical AST edit, not a full file regeneration), then
 // applies the exact same resolved values to *this* running process via
@@ -660,14 +695,22 @@ async function handleEditAgent(req: IncomingMessage, res: ServerResponse, agentN
     res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsedOptions.error }))
     return
   }
-  if (parsedOptions.value.systemPrompt === undefined && parsedOptions.value.model === undefined) {
-    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'systemPrompt or model is required' }))
+  const parsedLimits = parseAgentLimitsFields(body)
+  if (!parsedLimits.ok) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsedLimits.error }))
+    return
+  }
+  const editFields: AgentEditableFields = { ...parsedOptions.value, ...parsedLimits.value }
+  if (Object.keys(editFields).length === 0) {
+    res
+      .writeHead(400, { 'content-type': 'application/json' })
+      .end(JSON.stringify({ error: 'systemPrompt, model, maxTurns, contextBudgetTokens, or skillIndexBudgetTokens is required' }))
     return
   }
 
   let result: AgentEditResult
   try {
-    result = editAgentFile(agentName, parsedOptions.value)
+    result = editAgentFile(agentName, editFields)
   } catch (err) {
     const status =
       err instanceof AgentEditNotSupportedError || err instanceof AgentModelError ? 400 : err instanceof AgentFileNotFoundError ? 404 : 500
@@ -677,6 +720,9 @@ async function handleEditAgent(req: IncomingMessage, res: ServerResponse, agentN
 
   const configPatch: Partial<AgentConfig> = {}
   if (result.systemPrompt !== undefined) configPatch.systemPrompt = result.systemPrompt
+  if (result.maxTurns !== undefined) configPatch.maxTurns = result.maxTurns
+  if (result.contextBudgetTokens !== undefined) configPatch.contextBudgetTokens = result.contextBudgetTokens
+  if (result.skillIndexBudgetTokens !== undefined) configPatch.skillIndexBudgetTokens = result.skillIndexBudgetTokens
   let createModelCall: RegistryEntry['createModelCall'] | undefined
   if (result.model) {
     configPatch.model = result.model

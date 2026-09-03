@@ -59,11 +59,17 @@ const MODEL_COMMENT_PATTERN = /^\/\/\s*reads\s+[A-Z_]+$/
 export interface AgentEditableFields {
   systemPrompt?: string
   model?: { provider: Provider; model?: string }
+  maxTurns?: number
+  contextBudgetTokens?: number
+  skillIndexBudgetTokens?: number
 }
 
 export interface AgentEditResult {
   systemPrompt?: string
   model?: { provider: Provider; model: string }
+  maxTurns?: number
+  contextBudgetTokens?: number
+  skillIndexBudgetTokens?: number
 }
 
 // Escapes a value for safe interpolation into a single-quoted TS string
@@ -109,6 +115,39 @@ interface TextEdit {
   start: number
   end: number
   text: string
+}
+
+// maxTurns/contextBudgetTokens/skillIndexBudgetTokens are the only three
+// AgentConfig fields this file edits that are *usually absent* — every
+// agent in this repo, and create-loopengine's own scaffold template,
+// leaves all three unset and rides run-agent.ts's own defaults (25 /
+// 8000 / 200), unlike systemPrompt/model which agentIndexTemplate always
+// writes out explicitly. So "the property isn't in this file" can't mean
+// refuse here the way it does for a genuinely unusual systemPrompt/model
+// shape — that would make every freshly scaffolded agent's limits
+// permanently uneditable through this API. Missing properties are
+// collected into `toInsert` instead and spliced in as new lines just
+// before the object literal's closing brace (see editAgentFile's own use
+// of this); an *existing* property whose value isn't a plain number
+// literal is still refused, same "don't guess" rule as everything else
+// in this file.
+function upsertNumericProperty(
+  configObj: ts.ObjectLiteralExpression,
+  sourceFile: ts.SourceFile,
+  edits: TextEdit[],
+  toInsert: string[],
+  name: string,
+  value: number,
+): void {
+  const prop = findProperty(configObj, name)
+  if (!prop) {
+    toInsert.push(`${name}: ${value}`)
+    return
+  }
+  if (!ts.isPropertyAssignment(prop) || !ts.isNumericLiteral(prop.initializer)) {
+    throw new AgentEditNotSupportedError(`${name} in this file is not a plain number literal — edit it directly.`)
+  }
+  edits.push({ start: prop.initializer.getStart(sourceFile), end: prop.initializer.getEnd(), text: String(value) })
 }
 
 /** Surgically rewrites just the fields given in `fields` — see this
@@ -175,6 +214,32 @@ export function editAgentFile(agentName: string, fields: AgentEditableFields): A
     if (comment && MODEL_COMMENT_PATTERN.test(source.slice(comment.pos, comment.end))) {
       edits.push({ start: comment.pos, end: comment.end, text: `// reads ${MODEL_ENV_VAR[provider]}` })
     }
+  }
+
+  const toInsert: string[] = []
+  for (const name of ['maxTurns', 'contextBudgetTokens', 'skillIndexBudgetTokens'] as const) {
+    const value = fields[name]
+    if (value === undefined) continue
+    if (!Number.isInteger(value) || value < 1) {
+      throw new AgentEditNotSupportedError(`${name} must be a positive integer.`)
+    }
+    upsertNumericProperty(configObj, sourceFile, edits, toInsert, name, value)
+    result[name] = value
+  }
+
+  if (toInsert.length) {
+    // Insert right before the closing "}", not right after the last
+    // property node — a hand-written trailing line comment there (like
+    // model's own "// reads ANTHROPIC_API_KEY" above) would otherwise end
+    // up with new properties spliced into the middle of it. The object's
+    // own pre-existing newline-before-"}" becomes the separator before
+    // the first inserted line for free; only an object with *no*
+    // properties at all needs its own leading newline.
+    const closeBracePos = configObj.getEnd() - 1
+    const hasProps = configObj.properties.length > 0
+    const needsLeadingComma = hasProps && !configObj.properties.hasTrailingComma
+    const text = (hasProps ? '' : '\n') + (needsLeadingComma ? ',' : '') + toInsert.map((p) => `  ${p},\n`).join('')
+    edits.push({ start: closeBracePos, end: closeBracePos, text })
   }
 
   if (!edits.length) return result
