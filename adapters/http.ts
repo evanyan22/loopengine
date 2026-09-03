@@ -281,9 +281,14 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
   // configured for *this* agent, so the config page's own Skills tab
   // deliberately doesn't mix it into skills/skillsDirs below.
   const skillsDirs = config.skillsDirs ?? [`agents/${config.name}/skills`]
-  const skillGarden = new SkillGarden({ dirs: skillsDirs, indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 })
+  // Same defaults, same reasoning, as run-agent.ts's own SkillGarden/
+  // BudgetTracker construction — kept in sync there and here since this
+  // is what a "Skills"/"Limits & budgets" tab shows an operator, and it
+  // has to describe what runAgent() would actually resolve, not a second
+  // guess (see this function's own header comment).
+  const skillGarden = new SkillGarden({ dirs: skillsDirs, indexBudgetTokens: config.skillIndexBudgetTokens ?? 2000 })
   const skillIndex = skillGarden.buildIndex().included
-  const systemSkillGarden = new SkillGarden({ dirs: [systemSkillsDir], indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 })
+  const systemSkillGarden = new SkillGarden({ dirs: [systemSkillsDir], indexBudgetTokens: config.skillIndexBudgetTokens ?? 2000 })
   const systemSkillIndex = systemSkillGarden.buildIndex().included
 
   return {
@@ -293,8 +298,8 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
       ? { provider: config.model.provider, model: config.model.model, maxTokens: config.model.maxTokens }
       : 'custom (module exports its own createModelCall)',
     maxTurns: config.maxTurns ?? 25,
-    contextBudgetTokens: config.contextBudgetTokens ?? 8000,
-    skillIndexBudgetTokens: config.skillIndexBudgetTokens ?? 200,
+    contextBudgetTokens: config.contextBudgetTokens ?? 100000,
+    skillIndexBudgetTokens: config.skillIndexBudgetTokens ?? 2000,
     skillsDirs: skillsDirs,
     skills: skillIndex.map((s) => ({ name: s.name, description: s.description })),
     systemSkills: systemSkillIndex.map((s) => ({ name: s.name, description: s.description })),

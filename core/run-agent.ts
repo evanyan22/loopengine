@@ -625,7 +625,12 @@ async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, optio
   // that doesn't exist (a flat-file agent with no skills at all)
   // harmless: an empty index, not an error.
   const skillsDirs = config.skillsDirs ?? [`agents/${config.name}/skills`]
-  const skillGarden = new SkillGarden({ dirs: [...skillsDirs, systemSkillsDir], indexBudgetTokens: config.skillIndexBudgetTokens ?? 200 })
+  // 2000, not an arbitrary round number: skillgarden's own default is
+  // ~1% of a real agent context window (~100k-200k tokens for the
+  // providers this repo wires up) — see its own SkillGardenOptions doc
+  // comment. loopengine used to default lower (200), which left barely
+  // enough room for a handful of skills before truncating the index.
+  const skillGarden = new SkillGarden({ dirs: [...skillsDirs, systemSkillsDir], indexBudgetTokens: config.skillIndexBudgetTokens ?? 2000 })
   const skillIndex = skillGarden.buildIndex().included
 
   // Also the tail-preservation window recover() below relies on — kept as
@@ -637,8 +642,17 @@ async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, optio
   // budgetTokens/softThreshold so a nudge firing and compaction's own
   // recovery target agree — see budget.ts's own BudgetTrackerOptions doc
   // comment.
-  const budgetTracker = new BudgetTracker({ budgetTokens: config.contextBudgetTokens ?? 8000 })
-  const compactor = new Compactor({ budgetTokens: config.contextBudgetTokens ?? 8000, softThreshold: budgetTracker.softThreshold, tailMessages })
+  // 100000, not 8000: the providers this repo wires up (Claude, GPT-4o,
+  // DeepSeek) all give a real conversation 128k-200k tokens of window,
+  // and 8000 was small enough that a handful of tool calls (each with a
+  // full JSON schema + result) routinely tripped compaction on an
+  // otherwise ordinary turn. 100000 leaves headroom under even the
+  // smallest of those windows for the system prompt, tool schemas, and
+  // the model's own response, while softThreshold's default 0.7 (a
+  // 70000-token nudge point) and hardThreshold's 0.92 still leave real
+  // margin before hitting it.
+  const budgetTracker = new BudgetTracker({ budgetTokens: config.contextBudgetTokens ?? 100000 })
+  const compactor = new Compactor({ budgetTokens: config.contextBudgetTokens ?? 100000, softThreshold: budgetTracker.softThreshold, tailMessages })
   const rules = loadRules(config)
   // AgentConfig.httpNotifier only ever stands in for the http channel —
   // see its own doc comment for why cli/http_stream never consult it at

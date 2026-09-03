@@ -190,7 +190,7 @@ loopengine run customer-service --json "order A-1001 arrived broken, can you ref
 
 ```
 {"type":"session","sessionId":"5a83c6b4-..."}
-{"type":"budget:check","action":"ok","usedTokens":2,"budgetTokens":8000,"ratio":0.00025}
+{"type":"budget:check","action":"ok","usedTokens":2,"budgetTokens":100000,"ratio":0.00002}
 {"type":"tool:started","id":"call_1","tool":"issue_refund", ...}
 {"type":"done","text":"Refunded $42.00..."}
 ```

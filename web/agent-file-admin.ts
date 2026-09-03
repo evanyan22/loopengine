@@ -121,7 +121,7 @@ interface TextEdit {
 // AgentConfig fields this file edits that are *usually absent* — every
 // agent in this repo, and create-loopengine's own scaffold template,
 // leaves all three unset and rides run-agent.ts's own defaults (25 /
-// 8000 / 200), unlike systemPrompt/model which agentIndexTemplate always
+// 100000 / 2000), unlike systemPrompt/model which agentIndexTemplate always
 // writes out explicitly. So "the property isn't in this file" can't mean
 // refuse here the way it does for a genuinely unusual systemPrompt/model
 // shape — that would make every freshly scaffolded agent's limits
