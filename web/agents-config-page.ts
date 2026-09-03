@@ -132,6 +132,18 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     letter-spacing: normal;
     padding: 2px 8px;
   }
+  .http-tool-subsection {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed light-dark(#eee, #2a2a2e);
+  }
+  .http-tool-subsection h4 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: light-dark(#666, #999);
+    margin: 0 0 8px;
+  }
   pre {
     background: light-dark(#fff, #26262b);
     border: 1px solid light-dark(#ddd, #3a3a3e);
@@ -1146,12 +1158,178 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   // describeGatewayTools), a real cost not worth paying up front. ----
 
   function renderToolsTabHtml(cfg) {
-    return '<section><h3>Local tools (' + cfg.localTools.length + ')</h3>' + renderTools(cfg.localTools) + '</section>' +
+    return '<section><h3>Local tools (' + cfg.localTools.length + ')</h3>' + renderTools(cfg.localTools) +
+      '<div class="http-tool-subsection"><h4>Create an HTTP tool</h4>' + renderHttpToolFormHtml() + '</div>' +
+      '</section>' +
       '<section id="gatewayToolsSection">' +
         '<h3>Gateway Tools <button type="button" id="gatewayToolsRefreshBtn" class="hint-btn">Refresh</button></h3>' +
         '<div id="gatewayToolsContent"><p class="hint">Loading&hellip;</p></div>' +
       '</section>' +
       '<section><h3>Agent as Tools (' + cfg.agentAsTools.length + ')</h3>' + renderTools(cfg.agentAsTools) + '</section>';
+  }
+
+  // ---- Create an HTTP tool: generates a real agents/:name/tools/<tool>.ts
+  // file from this form (loopengine's own createHttpTool), never arbitrary
+  // code — only one shape, a parameterized HTTP call. See
+  // web/http-tool-admin.ts's own header comment for why this is the line
+  // this repo draws instead of, say, storing code in a SKILL.md and
+  // executing it at request time. ----
+
+  var httpToolFieldRowCount = 0;
+  var httpToolHeaderRowCount = 0;
+
+  function renderHttpToolFieldRow(index) {
+    return '<div class="http-tool-field-row" data-row="' + index + '">' +
+      '<input type="text" class="http-tool-field-name" placeholder="field_name" pattern="[a-zA-Z_][a-zA-Z0-9_]*">' +
+      '<select class="http-tool-field-type">' +
+        '<option value="string">string</option>' +
+        '<option value="number">number</option>' +
+        '<option value="boolean">boolean</option>' +
+      '</select>' +
+      '<input type="text" class="http-tool-field-description" placeholder="description (optional)">' +
+      '<label class="http-tool-inline-label"><input type="checkbox" class="http-tool-field-required" checked> required</label>' +
+      '<button type="button" class="delete-btn http-tool-remove-row" title="Remove this field" aria-label="Remove this field">Delete</button>' +
+      '</div>';
+  }
+
+  function renderHttpToolHeaderRow(index) {
+    return '<div class="http-tool-header-row" data-row="' + index + '">' +
+      '<input type="text" class="http-tool-header-key" placeholder="Header-Name">' +
+      '<input type="text" class="http-tool-header-value" placeholder="value, {field}, or {{ENV_VAR}}">' +
+      '<button type="button" class="delete-btn http-tool-remove-row" title="Remove this header" aria-label="Remove this header">Delete</button>' +
+      '</div>';
+  }
+
+  function renderHttpToolFormHtml() {
+    httpToolFieldRowCount = 0;
+    httpToolHeaderRowCount = 0;
+    return '<form class="add-source" id="httpToolForm">' +
+      '<label>Name <span class="hint">(snake_case, e.g. lookup_order_status)</span>' +
+        '<input type="text" name="name" required pattern="[a-z][a-z0-9_]*" placeholder="lookup_order_status">' +
+      '</label>' +
+      '<label>Description' +
+        '<input type="text" name="description" required placeholder="What this tool does">' +
+      '</label>' +
+      '<label>Fields' +
+        '<div id="httpToolFieldRows"></div>' +
+        '<button type="button" id="httpToolAddFieldBtn" class="hint-btn">Add field</button>' +
+      '</label>' +
+      '<label>Method &amp; URL <span class="hint">(use {field} for a field defined above)</span>' +
+        '<div class="http-tool-method-url">' +
+          '<select name="method">' +
+            '<option value="GET">GET</option>' +
+            '<option value="POST">POST</option>' +
+            '<option value="PUT">PUT</option>' +
+            '<option value="PATCH">PATCH</option>' +
+            '<option value="DELETE">DELETE</option>' +
+          '</select>' +
+          '<input type="text" name="url" required placeholder="https://api.example.com/orders/{orderId}">' +
+        '</div>' +
+      '</label>' +
+      '<label>Headers <span class="hint">(a value may reference {field} or {{ENV_VAR}} &mdash; never paste a real secret here)</span>' +
+        '<div id="httpToolHeaderRows"></div>' +
+        '<button type="button" id="httpToolAddHeaderBtn" class="hint-btn">Add header</button>' +
+      '</label>' +
+      '<label class="http-tool-inline-label"><input type="checkbox" name="sendFieldsAsJsonBody"> Send fields as a JSON body (POST/PUT/PATCH only)</label>' +
+      '<label>Response JSON path <span class="hint">(optional &mdash; e.g. data.status; leave blank to return the raw response text)</span>' +
+        '<input type="text" name="responseJsonPath" placeholder="data.status">' +
+      '</label>' +
+      '<label>Grant permission <span class="hint">(optional &mdash; leave blank to leave this tool at actauth&#39;s own default, typically deny)</span>' +
+        '<select name="decision">' +
+          '<option value="">(leave unset)</option>' +
+          '<option value="allow">allow</option>' +
+          '<option value="ask">ask</option>' +
+          '<option value="deny">deny</option>' +
+        '</select>' +
+      '</label>' +
+      '<button type="submit" id="httpToolSubmitBtn">Create tool</button>' +
+      '<div id="httpToolError" class="error"></div>' +
+      '</form>';
+  }
+
+  function wireHttpToolRemoveButton(row) {
+    var btn = row.querySelector('.http-tool-remove-row');
+    btn.addEventListener('click', function () {
+      row.parentNode.removeChild(row);
+    });
+  }
+
+  function wireHttpToolFormHandlers(name) {
+    var form = detail.querySelector('#httpToolForm');
+    if (!form) return;
+
+    var fieldRows = detail.querySelector('#httpToolFieldRows');
+    var headerRows = detail.querySelector('#httpToolHeaderRows');
+    var addFieldBtn = detail.querySelector('#httpToolAddFieldBtn');
+    var addHeaderBtn = detail.querySelector('#httpToolAddHeaderBtn');
+    var errorEl = detail.querySelector('#httpToolError');
+    var submitBtn = detail.querySelector('#httpToolSubmitBtn');
+
+    addFieldBtn.addEventListener('click', function () {
+      fieldRows.insertAdjacentHTML('beforeend', renderHttpToolFieldRow(httpToolFieldRowCount++));
+      wireHttpToolRemoveButton(fieldRows.lastElementChild);
+    });
+    addHeaderBtn.addEventListener('click', function () {
+      headerRows.insertAdjacentHTML('beforeend', renderHttpToolHeaderRow(httpToolHeaderRowCount++));
+      wireHttpToolRemoveButton(headerRows.lastElementChild);
+    });
+
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      errorEl.textContent = '';
+
+      var fields = [];
+      var fieldRowEls = fieldRows.querySelectorAll('.http-tool-field-row');
+      for (var i = 0; i < fieldRowEls.length; i++) {
+        var row = fieldRowEls[i];
+        var fieldName = row.querySelector('.http-tool-field-name').value.trim();
+        if (!fieldName) continue;
+        fields.push({
+          name: fieldName,
+          type: row.querySelector('.http-tool-field-type').value,
+          description: row.querySelector('.http-tool-field-description').value.trim() || undefined,
+          required: row.querySelector('.http-tool-field-required').checked,
+        });
+      }
+
+      var headers = [];
+      var headerRowEls = headerRows.querySelectorAll('.http-tool-header-row');
+      for (var j = 0; j < headerRowEls.length; j++) {
+        var hrow = headerRowEls[j];
+        var headerKey = hrow.querySelector('.http-tool-header-key').value.trim();
+        if (!headerKey) continue;
+        headers.push({ key: headerKey, value: hrow.querySelector('.http-tool-header-value').value });
+      }
+
+      var formData = new FormData(form);
+      var payload = {
+        name: formData.get('name'),
+        description: formData.get('description'),
+        fields: fields,
+        method: formData.get('method'),
+        url: formData.get('url'),
+        headers: headers,
+        sendFieldsAsJsonBody: formData.get('sendFieldsAsJsonBody') === 'on',
+        responseJsonPath: formData.get('responseJsonPath') ? formData.get('responseJsonPath') : undefined,
+        decision: formData.get('decision') ? formData.get('decision') : undefined,
+      };
+
+      submitBtn.disabled = true;
+      fetch('/agents/' + encodeURIComponent(name) + '/tools/http', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+        .then(function (result) {
+          if (!result.ok) throw new Error(result.body.error || 'request failed');
+          selectAgent(name);
+        })
+        .catch(function (err) {
+          errorEl.textContent = err.message;
+          submitBtn.disabled = false;
+        });
+    });
   }
 
   // Removing a source used to be one "Remove" button per source, at the
@@ -1566,6 +1744,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
 
     wireSkillsHandlers(cfg.name);
     wireOverviewHandlers(cfg.name);
+    wireHttpToolFormHandlers(cfg.name);
     var gatewayRefreshBtn = detail.querySelector('#gatewayToolsRefreshBtn');
     if (gatewayRefreshBtn) {
       gatewayRefreshBtn.addEventListener('click', function () { loadGatewayTab(cfg.name, true); });

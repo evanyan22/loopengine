@@ -26,6 +26,7 @@
 // file's call — see AgentConfig.sessionIdFor and defaultSessionIdFor below.
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { pathToFileURL } from 'node:url'
 import { getEntry, listAgents, projectDir, registerAgent, updateAgent, type RegistryEntry } from '../core/agent-registry.js'
 import { loadAgentModule, synthesizeCreateModelCall } from '#core/discover-agents.js'
 import { editAgentFile, AgentEditNotSupportedError, AgentFileNotFoundError, type AgentEditResult } from '#web/agent-file-admin.js'
@@ -55,6 +56,7 @@ import {
   type GatewayToolDecision,
 } from '#core/gateway-tools.js'
 import { readSkill, writeSkill, deleteSkill, SkillInvalidIdError, SkillNotFoundError } from '#web/skills-admin.js'
+import { createHttpTool, HttpToolNameError, HttpToolExistsError, HttpToolIndexShapeError, type HttpToolSpec } from '#web/http-tool-admin.js'
 import {
   readActauthConfig,
   addActauthRule,
@@ -404,6 +406,105 @@ async function handleGatewayToolSlugDelete(res: ServerResponse, agentName: strin
   }
   const sources = await describeGatewayTools(agentName)
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ sources }))
+}
+
+function parseHttpToolBody(body: Record<string, unknown>): { ok: true; value: HttpToolSpec; decision?: Decision } | { ok: false; error: string } {
+  if (typeof body.name !== 'string' || !body.name) return { ok: false, error: 'name is required' }
+  if (typeof body.description !== 'string' || !body.description) return { ok: false, error: 'description is required' }
+  if (!Array.isArray(body.fields) || !body.fields.every((f) => f && typeof f === 'object')) {
+    return { ok: false, error: 'fields must be an array' }
+  }
+  const fields = body.fields as Record<string, unknown>[]
+  for (const f of fields) {
+    if (typeof f.name !== 'string' || !f.name) return { ok: false, error: 'every field needs a name' }
+    if (f.type !== 'string' && f.type !== 'number' && f.type !== 'boolean') return { ok: false, error: `field "${f.name}" has an invalid type` }
+  }
+  const method = body.method
+  if (method !== 'GET' && method !== 'POST' && method !== 'PUT' && method !== 'PATCH' && method !== 'DELETE') {
+    return { ok: false, error: 'method must be one of GET, POST, PUT, PATCH, DELETE' }
+  }
+  if (typeof body.url !== 'string' || !body.url) return { ok: false, error: 'url is required' }
+  if (!Array.isArray(body.headers) || !body.headers.every((h) => h && typeof h === 'object' && typeof (h as Record<string, unknown>).key === 'string' && typeof (h as Record<string, unknown>).value === 'string')) {
+    return { ok: false, error: 'headers must be an array of {key, value} strings' }
+  }
+  if (body.responseJsonPath !== undefined && typeof body.responseJsonPath !== 'string') {
+    return { ok: false, error: 'responseJsonPath must be a string' }
+  }
+  if (body.decision !== undefined && !isDecision(body.decision)) {
+    return { ok: false, error: 'decision must be allow, ask, or deny' }
+  }
+
+  return {
+    ok: true,
+    value: {
+      name: body.name,
+      description: body.description,
+      fields: fields as unknown as HttpToolSpec['fields'],
+      method,
+      url: body.url,
+      headers: body.headers as HttpToolSpec['headers'],
+      sendFieldsAsJsonBody: body.sendFieldsAsJsonBody === true,
+      responseJsonPath: body.responseJsonPath as string | undefined,
+    },
+    decision: body.decision as Decision | undefined,
+  }
+}
+
+// Backs the Tools tab's "Create an HTTP tool" form — generates a real
+// agents/:name/tools/<tool>.ts file (web/http-tool-admin.ts's
+// createHttpTool), then splices the freshly-imported ToolDefinition
+// straight into this process's own live registry via updateAgent
+// (core/agent-registry.ts) — the same "no restart needed" mechanism a
+// newly-created agent already gets (see registerAgent's own doc
+// comment), and deliberately not a reliance on tsx watch picking up the
+// new file: this way the tool is callable immediately under `serve`
+// (no watch) too, not just `dev`. An optional `decision` seeds one
+// actauth.yml rule via the already-existing addActauthRule, mirroring
+// gateway-tools.ts's own "a rule is opt-in, omitting it falls through
+// to default_decision" precedent — never a hardcoded default here.
+async function handleHttpToolPost(req: IncomingMessage, res: ServerResponse, agentName: string): Promise<void> {
+  const entry = getEntry(agentName)
+  if (!entry) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  const body = await readJsonBody(req)
+  const parsed = parseHttpToolBody(body)
+  if (!parsed.ok) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsed.error }))
+    return
+  }
+
+  let tool: ToolDefinition
+  try {
+    const result = await createHttpTool(agentName, parsed.value)
+    tool = result.tool
+  } catch (err) {
+    const status = err instanceof HttpToolExistsError ? 409 : err instanceof HttpToolNameError || err instanceof HttpToolIndexShapeError ? 400 : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+
+  const currentTools = entry.config.tools ?? (await loadDefaultTools(entry.config))
+  updateAgent(agentName, { config: { tools: [...currentTools, tool] } })
+
+  if (parsed.decision) {
+    try {
+      addActauthRule(agentName, { name: `${parsed.value.name}-admin-created`, scope: '*/*', tool: parsed.value.name, decision: parsed.decision })
+    } catch (err) {
+      // The tool file and live registration above already succeeded —
+      // a rule-seeding failure (near-impossible: only real cause is a
+      // same-named rule already existing) shouldn't roll either back,
+      // just surface as a warning-shaped success so the operator can
+      // add the rule by hand via the Actauth tab instead.
+      res.writeHead(200, { 'content-type': 'application/json' }).end(
+        JSON.stringify({ tool: describeTool(tool), ruleWarning: err instanceof Error ? err.message : String(err) }),
+      )
+      return
+    }
+  }
+
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ tool: describeTool(tool) }))
 }
 
 // Backs GET /composio/connections and GET /composio/tools — not scoped
@@ -1741,6 +1842,12 @@ const server = createServer(async (req, res) => {
     }
     if (gatewayToolsMatch && req.method === 'POST') {
       await handleToolSourcesPost(req, res, decodeURIComponent(gatewayToolsMatch[1]))
+      return
+    }
+
+    const httpToolMatch = req.method === 'POST' && pathname.match(/^\/agents\/([^/]+)\/tools\/http$/)
+    if (httpToolMatch) {
+      await handleHttpToolPost(req, res, decodeURIComponent(httpToolMatch[1]))
       return
     }
 
