@@ -472,6 +472,7 @@ function parseHttpToolBody(body: Record<string, unknown>): { ok: true; value: Ht
       headers: body.headers as HttpToolSpec['headers'],
       sendFieldsAsJsonBody: body.sendFieldsAsJsonBody === true,
       responseJsonPath: body.responseJsonPath as string | undefined,
+      safe: body.safe === true,
     },
     decision: body.decision as Decision | undefined,
   }

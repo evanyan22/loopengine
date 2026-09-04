@@ -1570,6 +1570,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '<button type="button" id="httpToolAddHeaderBtn" class="hint-btn">Add header</button>' +
       '</label>' +
       '<label class="http-tool-inline-label"><input type="checkbox" name="sendFieldsAsJsonBody"> Send fields as a JSON body (POST/PUT/PATCH only)</label>' +
+      '<label class="http-tool-inline-label"><input type="checkbox" name="safe"> Parallel-safe <span class="hint">(read-only, no side effects &mdash; safe to run alongside other calls)</span></label>' +
       '<label>Response JSON path <span class="hint">(optional &mdash; e.g. data.status; leave blank to return the raw response text)</span>' +
         '<input type="text" name="responseJsonPath" placeholder="data.status">' +
       '</label>' +
@@ -1656,6 +1657,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
       }
 
       form.querySelector('[name="sendFieldsAsJsonBody"]').checked = spec.sendFieldsAsJsonBody;
+      form.querySelector('[name="safe"]').checked = spec.safe === true;
       form.querySelector('[name="responseJsonPath"]').value = spec.responseJsonPath || '';
     }
 
@@ -1737,6 +1739,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         url: formData.get('url'),
         headers: headers,
         sendFieldsAsJsonBody: formData.get('sendFieldsAsJsonBody') === 'on',
+        safe: formData.get('safe') === 'on',
         responseJsonPath: formData.get('responseJsonPath') ? formData.get('responseJsonPath') : undefined,
         decision: formData.get('decision') ? formData.get('decision') : undefined,
       };

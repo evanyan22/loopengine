@@ -49,6 +49,14 @@ export interface HttpToolSpec {
   headers: { key: string; value: string }[]
   sendFieldsAsJsonBody: boolean
   responseJsonPath?: string
+  /** Same meaning as ToolDefinition.safe (core/agent-config.ts) — true
+   * only for a read-only call with no side effects, so ToolLane can run
+   * it in its parallel lane. Defaults to false/omitted (unsafe) rather
+   * than inferring from `method`, since a GET can still have side
+   * effects (e.g. a webhook-triggering endpoint) and the operator who
+   * knows the real API is in a better position to say than a guess
+   * based on HTTP verb alone. */
+  safe?: boolean
 }
 
 const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/
@@ -201,6 +209,7 @@ ${envReads}    const res = await fetch(\`${urlInner}\`, {
 ${headersObj}${bodyLine}    })
     if (!res.ok) throw new Error(\`${spec.name}: HTTP \${res.status}\`)
 ${responseHandling}  },
+  safe: ${spec.safe === true},
 }
 `
 }

@@ -134,6 +134,14 @@ describe('createHttpTool', () => {
     expect(result).toBe(JSON.stringify('shipped'))
   })
 
+  it('generated tool.safe reflects spec.safe, defaulting to false when omitted', async () => {
+    const { tool: unsafeTool } = await createHttpTool(AGENT_NAME, spec())
+    expect(unsafeTool.safe).toBe(false)
+
+    const { tool: safeTool } = await createHttpTool(AGENT_NAME, spec({ name: 'read_only_lookup', safe: true }))
+    expect(safeTool.safe).toBe(true)
+  })
+
   it('generated tool throws when the missing env var is unset at call time', async () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
