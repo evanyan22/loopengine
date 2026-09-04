@@ -1,7 +1,18 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createHttpTool, HttpToolExistsError, HttpToolIndexShapeError, HttpToolNameError, type HttpToolSpec } from '../web/http-tool-admin.js'
+import {
+  createHttpTool,
+  updateHttpTool,
+  readHttpToolSpec,
+  listEditableHttpToolNames,
+  HttpToolExistsError,
+  HttpToolIndexShapeError,
+  HttpToolNameError,
+  HttpToolNotFoundError,
+  HttpToolNotEditableError,
+  type HttpToolSpec,
+} from '../web/http-tool-admin.js'
 
 // createHttpTool resolves agents/<name>/... the same way gateway-tools.ts's
 // own agentDir does — so, same as tests/gateway-tools.test.ts, this fixture
@@ -135,5 +146,60 @@ describe('createHttpTool', () => {
 
     await expect(tool.execute({ orderId: '1' })).rejects.toThrow('TEST_UNSET_KEY is not set')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('readHttpToolSpec / listEditableHttpToolNames', () => {
+  it('returns null for a tool with no saved spec (hand-written, or never created here)', () => {
+    mkdirSync(TOOLS_DIR, { recursive: true })
+    writeFileSync(join(TOOLS_DIR, 'hand_written.ts'), 'export const handWritten = { name: "hand_written" }\n')
+
+    expect(readHttpToolSpec(AGENT_NAME, 'hand_written')).toBeNull()
+    expect(listEditableHttpToolNames(AGENT_NAME)).toEqual([])
+  })
+
+  it('returns the exact spec createHttpTool saved, and lists it as editable', async () => {
+    await createHttpTool(AGENT_NAME, spec())
+
+    expect(readHttpToolSpec(AGENT_NAME, 'lookup_order_status')).toEqual(spec())
+    expect(listEditableHttpToolNames(AGENT_NAME)).toEqual(['lookup_order_status'])
+  })
+})
+
+describe('updateHttpTool', () => {
+  it('overwrites the generated file and sidecar spec in place, without touching tools/index.ts', async () => {
+    await createHttpTool(AGENT_NAME, spec())
+    const indexBefore = readFileSync(join(TOOLS_DIR, 'index.ts'), 'utf8')
+
+    const { tool } = await updateHttpTool(
+      AGENT_NAME,
+      'lookup_order_status',
+      spec({ description: 'An updated description', url: 'https://api.example.com/v2/orders/{orderId}' }),
+    )
+
+    expect(tool.description).toBe('An updated description')
+    const source = readFileSync(join(TOOLS_DIR, 'lookup_order_status.ts'), 'utf8')
+    expect(source).toContain('v2/orders')
+    expect(readHttpToolSpec(AGENT_NAME, 'lookup_order_status')?.description).toBe('An updated description')
+    expect(readFileSync(join(TOOLS_DIR, 'index.ts'), 'utf8')).toBe(indexBefore)
+  })
+
+  it('throws HttpToolNameError, and writes nothing, when the spec name does not match toolName', async () => {
+    await createHttpTool(AGENT_NAME, spec())
+
+    await expect(updateHttpTool(AGENT_NAME, 'lookup_order_status', spec({ name: 'renamed' }))).rejects.toThrow(HttpToolNameError)
+    expect(existsSync(join(TOOLS_DIR, 'renamed.ts'))).toBe(false)
+  })
+
+  it('throws HttpToolNotFoundError for a tool file that does not exist', async () => {
+    await expect(updateHttpTool(AGENT_NAME, 'never_created', spec({ name: 'never_created' }))).rejects.toThrow(HttpToolNotFoundError)
+  })
+
+  it('throws HttpToolNotEditableError, and leaves the file untouched, for a tool with no saved spec', async () => {
+    mkdirSync(TOOLS_DIR, { recursive: true })
+    writeFileSync(join(TOOLS_DIR, 'hand_written.ts'), 'export const handWritten = { name: "hand_written" }\n')
+
+    await expect(updateHttpTool(AGENT_NAME, 'hand_written', spec({ name: 'hand_written' }))).rejects.toThrow(HttpToolNotEditableError)
+    expect(readFileSync(join(TOOLS_DIR, 'hand_written.ts'), 'utf8')).toBe('export const handWritten = { name: "hand_written" }\n')
   })
 })

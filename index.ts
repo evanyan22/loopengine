@@ -116,7 +116,17 @@ export type { PendingQuestion } from './core/system-tools/index.js'
 export { editAgentFile, AgentEditNotSupportedError, AgentFileNotFoundError } from './web/agent-file-admin.js'
 export type { AgentEditableFields, AgentEditResult } from './web/agent-file-admin.js'
 
-export { createHttpTool, HttpToolNameError, HttpToolExistsError, HttpToolIndexShapeError } from './web/http-tool-admin.js'
+export {
+  createHttpTool,
+  updateHttpTool,
+  readHttpToolSpec,
+  listEditableHttpToolNames,
+  HttpToolNameError,
+  HttpToolExistsError,
+  HttpToolIndexShapeError,
+  HttpToolNotFoundError,
+  HttpToolNotEditableError,
+} from './web/http-tool-admin.js'
 export type { HttpToolSpec, HttpToolField } from './web/http-tool-admin.js'
 
 export { agentsConfigPageHtml } from './web/agents-config-page.js'

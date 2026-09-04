@@ -63,7 +63,18 @@ import {
 } from '#core/gateway-tools.js'
 import { readSkill, writeSkill, deleteSkill, SkillInvalidIdError, SkillNotFoundError } from '#web/skills-admin.js'
 import { listSkillgardenCatalog, readSkillgardenCatalogEntry, addSkillgardenSkillToAgent, SkillgardenUnavailableError } from '#web/skillgarden-admin.js'
-import { createHttpTool, HttpToolNameError, HttpToolExistsError, HttpToolIndexShapeError, type HttpToolSpec } from '#web/http-tool-admin.js'
+import {
+  createHttpTool,
+  updateHttpTool,
+  readHttpToolSpec,
+  listEditableHttpToolNames,
+  HttpToolNameError,
+  HttpToolExistsError,
+  HttpToolIndexShapeError,
+  HttpToolNotFoundError,
+  HttpToolNotEditableError,
+  type HttpToolSpec,
+} from '#web/http-tool-admin.js'
 import {
   readActauthConfig,
   addActauthRule,
@@ -253,6 +264,10 @@ function describeTool(t: { name: string; description: string; safe?: boolean; in
 
 async function describeAgent(entry: RegistryEntry): Promise<Record<string, unknown>> {
   const { config } = entry
+  // Which localTools the Tools tab's Edit button applies to — only the
+  // ones with a saved spec (web/http-tool-admin.ts's own sidecar file),
+  // i.e. only tools this same admin UI generated in the first place.
+  const editableHttpToolNames = new Set(listEditableHttpToolNames(config.name))
   // Kept separate (not just concatenated into one `tools` array — though
   // that's still returned too, below, for Overview's own at-a-glance
   // count) so the "Tools" tab can show where each one actually comes
@@ -309,7 +324,7 @@ async function describeAgent(entry: RegistryEntry): Promise<Record<string, unkno
     // schema here — never executed, so the console-prompt fallback its
     // own doc comment mentions never applies to this call.
     systemTools: [...systemTools, createAskUserTool({ agent: config.name })].map(describeTool),
-    localTools: localTools.map(describeTool),
+    localTools: localTools.map((t) => ({ ...describeTool(t), httpToolEditable: editableHttpToolNames.has(t.name) })),
     agentAsTools: agentAsTools.map(describeTool),
     gatewayTools: gatewayTools.map(describeTool),
     permissions: {
@@ -521,6 +536,72 @@ async function handleHttpToolPost(req: IncomingMessage, res: ServerResponse, age
       return
     }
   }
+
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ tool: describeTool(tool) }))
+}
+
+// Backs the Tools tab's Edit button on a Local tool: GET populates the
+// form from the spec createHttpTool/updateHttpTool saved alongside the
+// generated file, PUT saves it back. 404s for any tool without a saved
+// spec (hand-written, or created before this sidecar existed) — same
+// signal describeAgent's own httpToolEditable flag uses to decide
+// whether to show the button at all, so this only ever rejects a request
+// the UI itself shouldn't have been able to send.
+function handleHttpToolGet(res: ServerResponse, agentName: string, toolName: string): void {
+  if (!getEntry(agentName)) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  const spec = readHttpToolSpec(agentName, toolName)
+  if (!spec) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(
+      JSON.stringify({ error: `No admin-created HTTP tool named '${toolName}' for '${agentName}' — hand-written tools aren't editable through this form.` }),
+    )
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(spec))
+}
+
+async function handleHttpToolPut(req: IncomingMessage, res: ServerResponse, agentName: string, toolName: string): Promise<void> {
+  const entry = getEntry(agentName)
+  if (!entry) {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
+    return
+  }
+  const body = await readJsonBody(req)
+  const parsed = parseHttpToolBody(body)
+  if (!parsed.ok) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: parsed.error }))
+    return
+  }
+
+  // Same ordering reasoning as handleHttpToolPost above: resolved before
+  // updateHttpTool touches disk.
+  const currentTools = entry.config.tools ?? (await loadDefaultTools(entry.config))
+
+  let tool: ToolDefinition
+  try {
+    const result = await updateHttpTool(agentName, toolName, parsed.value)
+    tool = result.tool
+  } catch (err) {
+    const status =
+      err instanceof HttpToolNotFoundError || err instanceof HttpToolNotEditableError
+        ? 409
+        : err instanceof HttpToolNameError || err instanceof HttpToolIndexShapeError
+          ? 400
+          : 500
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    return
+  }
+
+  // Replaces the edited tool in place (same array position, same
+  // reference identity for everything else) rather than the create
+  // path's append — an edit doesn't seed a new actauth rule either,
+  // unlike creation: the tool's permission is unchanged by this, still
+  // governed by whatever rule (if any) creation seeded or an operator
+  // added since, editable separately via the Actauth tab.
+  const nextTools = currentTools.map((t) => (t.name === toolName ? tool : t))
+  updateAgent(agentName, { config: { tools: nextTools } })
 
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ tool: describeTool(tool) }))
 }
@@ -1978,6 +2059,18 @@ const server = createServer(async (req, res) => {
     const httpToolMatch = req.method === 'POST' && pathname.match(/^\/agents\/([^/]+)\/tools\/http$/)
     if (httpToolMatch) {
       await handleHttpToolPost(req, res, decodeURIComponent(httpToolMatch[1]))
+      return
+    }
+
+    // Backs the Tools tab's Edit button on a Local tool — GET to populate
+    // the form, PUT to save (see handleHttpToolGet/Put above).
+    const httpToolItemMatch = pathname.match(/^\/agents\/([^/]+)\/tools\/http\/([^/]+)$/)
+    if (httpToolItemMatch && req.method === 'GET') {
+      handleHttpToolGet(res, decodeURIComponent(httpToolItemMatch[1]), decodeURIComponent(httpToolItemMatch[2]))
+      return
+    }
+    if (httpToolItemMatch && req.method === 'PUT') {
+      await handleHttpToolPut(req, res, decodeURIComponent(httpToolItemMatch[1]), decodeURIComponent(httpToolItemMatch[2]))
       return
     }
 

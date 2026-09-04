@@ -582,6 +582,28 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     return '<table><thead><tr><th>Name</th><th>Description</th><th>Parallel-safe</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
 
+  // Local tools' own table, unlike renderTools above (shared by Agent as
+  // Tools, which has nothing editable through this UI) — adds an Actions
+  // column with an Edit button, but only for tools describeAgent flagged
+  // httpToolEditable: those created through this same Tools tab's HTTP
+  // tool builder (web/http-tool-admin.ts's own sidecar spec file is what
+  // that flag is actually derived from). A hand-written tools/<name>.ts
+  // has no spec to repopulate an edit form from, so it just gets a blank
+  // cell — not a button that would 404 the moment it's clicked.
+  function renderLocalTools(tools) {
+    if (!tools.length) return '<p class="muted">No tools.</p>';
+    var rows = tools.map(function (t) {
+      var actions = t.httpToolEditable
+        ? '<button type="button" class="edit-http-tool-btn" data-name="' + escapeHtml(t.name) + '">Edit</button>'
+        : '';
+      return '<tr><td><code>' + escapeHtml(t.name) + '</code></td>' +
+        '<td>' + escapeHtml(t.description) + '</td>' +
+        '<td>' + (t.safe ? 'yes' : 'no') + '</td>' +
+        '<td>' + actions + '</td></tr>';
+    }).join('');
+    return '<table><thead><tr><th>Name</th><th>Description</th><th>Parallel-safe</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
   // Overview's own tools table, unlike the Tools tab's three separately-
   // headed sections (Local tools / Gateway Tools / Agent as Tools), is
   // one flat list (cfg.tools) — without a Type column there's no way to
@@ -1475,8 +1497,8 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   // describeGatewayTools), a real cost not worth paying up front. ----
 
   function renderToolsTabHtml(cfg) {
-    return '<section><h3>Local tools (' + cfg.localTools.length + ')</h3>' + renderTools(cfg.localTools) +
-      '<div class="admin-subsection"><h4>Create an HTTP tool</h4>' + renderHttpToolFormHtml() + '</div>' +
+    return '<section><h3>Local tools (' + cfg.localTools.length + ')</h3>' + renderLocalTools(cfg.localTools) +
+      '<div class="admin-subsection"><h4 id="httpToolFormHeading">Create an HTTP tool</h4>' + renderHttpToolFormHtml() + '</div>' +
       '</section>' +
       '<section id="gatewayToolsSection">' +
         '<h3>Gateway Tools <button type="button" id="gatewayToolsRefreshBtn" class="hint-btn">Refresh</button></h3>' +
@@ -1522,7 +1544,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     httpToolHeaderRowCount = 0;
     return '<form class="add-source" id="httpToolForm">' +
       '<label>Name <span class="hint">(snake_case, e.g. lookup_order_status)</span>' +
-        '<input type="text" name="name" required pattern="[a-z][a-z0-9_]*" placeholder="lookup_order_status">' +
+        '<input type="text" name="name" id="httpToolNameInput" required pattern="[a-z][a-z0-9_]*" placeholder="lookup_order_status">' +
       '</label>' +
       '<label>Description' +
         '<textarea name="description" id="httpToolDescriptionInput" required placeholder="What this tool does"></textarea>' +
@@ -1551,7 +1573,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
       '<label>Response JSON path <span class="hint">(optional &mdash; e.g. data.status; leave blank to return the raw response text)</span>' +
         '<input type="text" name="responseJsonPath" placeholder="data.status">' +
       '</label>' +
-      '<label>Grant permission <span class="hint">(optional &mdash; leave blank to leave this tool at actauth&#39;s own default, typically deny)</span>' +
+      '<label id="httpToolDecisionField">Grant permission <span class="hint">(optional &mdash; leave blank to leave this tool at actauth&#39;s own default, typically deny)</span>' +
         '<select name="decision">' +
           '<option value="">(leave unset)</option>' +
           '<option value="allow">allow</option>' +
@@ -1560,6 +1582,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '</select>' +
       '</label>' +
       '<button type="submit" id="httpToolSubmitBtn">Create tool</button>' +
+      '<button type="button" id="httpToolCancelBtn" style="display:none">Cancel</button>' +
       '<div id="httpToolError" class="error"></div>' +
       '</form>';
   }
@@ -1581,6 +1604,15 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     var addHeaderBtn = detail.querySelector('#httpToolAddHeaderBtn');
     var errorEl = detail.querySelector('#httpToolError');
     var submitBtn = detail.querySelector('#httpToolSubmitBtn');
+    var cancelBtn = detail.querySelector('#httpToolCancelBtn');
+    var nameInput = detail.querySelector('#httpToolNameInput');
+    var decisionField = detail.querySelector('#httpToolDecisionField');
+    var headingEl = detail.querySelector('#httpToolFormHeading');
+    // Non-null only while editing an existing tool — the name field is
+    // disabled then (renaming isn't supported, see updateHttpTool's own
+    // doc comment), so the submitted name always has to come from here,
+    // never from the (excluded-from-FormData) disabled input.
+    var editingHttpToolName = null;
 
     addFieldBtn.addEventListener('click', function () {
       fieldRows.insertAdjacentHTML('beforeend', renderHttpToolFieldRow(httpToolFieldRowCount++));
@@ -1590,6 +1622,84 @@ export const agentsConfigPageHtml: string = `<!doctype html>
       headerRows.insertAdjacentHTML('beforeend', renderHttpToolHeaderRow(httpToolHeaderRowCount++));
       wireHttpToolRemoveButton(headerRows.lastElementChild);
     });
+
+    // Repopulates the (blank, create-mode-shaped) form from a saved spec
+    // — same field/header row-building addFieldBtn/addHeaderBtn already
+    // do, just filled in immediately instead of left blank for typing.
+    function populateHttpToolForm(spec) {
+      nameInput.value = spec.name;
+      form.querySelector('#httpToolDescriptionInput').value = spec.description;
+
+      fieldRows.innerHTML = '';
+      for (var i = 0; i < spec.fields.length; i++) {
+        var f = spec.fields[i];
+        fieldRows.insertAdjacentHTML('beforeend', renderHttpToolFieldRow(httpToolFieldRowCount++));
+        var row = fieldRows.lastElementChild;
+        row.querySelector('.http-tool-field-name').value = f.name;
+        row.querySelector('.http-tool-field-type').value = f.type;
+        row.querySelector('.http-tool-field-description').value = f.description || '';
+        row.querySelector('.http-tool-field-required').checked = f.required;
+        wireHttpToolRemoveButton(row);
+      }
+
+      form.querySelector('[name="method"]').value = spec.method;
+      form.querySelector('[name="url"]').value = spec.url;
+
+      headerRows.innerHTML = '';
+      for (var j = 0; j < spec.headers.length; j++) {
+        var h = spec.headers[j];
+        headerRows.insertAdjacentHTML('beforeend', renderHttpToolHeaderRow(httpToolHeaderRowCount++));
+        var hrow = headerRows.lastElementChild;
+        hrow.querySelector('.http-tool-header-key').value = h.key;
+        hrow.querySelector('.http-tool-header-value').value = h.value;
+        wireHttpToolRemoveButton(hrow);
+      }
+
+      form.querySelector('[name="sendFieldsAsJsonBody"]').checked = spec.sendFieldsAsJsonBody;
+      form.querySelector('[name="responseJsonPath"]').value = spec.responseJsonPath || '';
+    }
+
+    function resetHttpToolForm() {
+      form.reset();
+      fieldRows.innerHTML = '';
+      headerRows.innerHTML = '';
+      nameInput.disabled = false;
+      if (headingEl) headingEl.textContent = 'Create an HTTP tool';
+      submitBtn.textContent = 'Create tool';
+      cancelBtn.style.display = 'none';
+      decisionField.style.display = '';
+      errorEl.textContent = '';
+      editingHttpToolName = null;
+    }
+
+    cancelBtn.addEventListener('click', resetHttpToolForm);
+
+    // Local tools table's own Edit buttons (renderLocalTools) — only
+    // present for tools describeAgent flagged httpToolEditable, so this
+    // GET should never actually 404 in normal use.
+    var editButtons = detail.querySelectorAll('.edit-http-tool-btn');
+    for (var k = 0; k < editButtons.length; k++) {
+      editButtons[k].addEventListener('click', function (ev) {
+        var toolName = ev.currentTarget.getAttribute('data-name');
+        errorEl.textContent = '';
+        fetch('/agents/' + encodeURIComponent(name) + '/tools/http/' + encodeURIComponent(toolName))
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (result) {
+            if (!result.ok) throw new Error(result.body.error || 'request failed');
+            populateHttpToolForm(result.body);
+            nameInput.disabled = true;
+            if (headingEl) headingEl.textContent = 'Edit HTTP tool "' + toolName + '"';
+            submitBtn.textContent = 'Save';
+            cancelBtn.style.display = '';
+            decisionField.style.display = 'none';
+            editingHttpToolName = toolName;
+            form.scrollIntoView({ block: 'nearest' });
+          })
+          .catch(function (err) {
+            errorEl.textContent = 'Could not load tool "' + toolName + '": ' + err.message;
+          });
+      });
+    }
 
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
@@ -1620,7 +1730,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
 
       var formData = new FormData(form);
       var payload = {
-        name: formData.get('name'),
+        name: editingHttpToolName || formData.get('name'),
         description: formData.get('description'),
         fields: fields,
         method: formData.get('method'),
@@ -1631,9 +1741,12 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         decision: formData.get('decision') ? formData.get('decision') : undefined,
       };
 
+      var isEdit = !!editingHttpToolName;
+      var url = '/agents/' + encodeURIComponent(name) + '/tools/http' + (isEdit ? '/' + encodeURIComponent(editingHttpToolName) : '');
+
       submitBtn.disabled = true;
-      fetch('/agents/' + encodeURIComponent(name) + '/tools/http', {
-        method: 'POST',
+      fetch(url, {
+        method: isEdit ? 'PUT' : 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
       })
