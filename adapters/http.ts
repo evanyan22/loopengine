@@ -487,6 +487,13 @@ async function handleHttpToolPost(req: IncomingMessage, res: ServerResponse, age
     return
   }
 
+  // Resolved *before* createHttpTool writes anything to disk. Reading it
+  // after would risk a cold import of the freshly-written tools/index.ts
+  // (folder-form agents don't cache config.tools) — which already contains
+  // the new tool by then, so the ...currentTools, tool below would append
+  // it a second time.
+  const currentTools = entry.config.tools ?? (await loadDefaultTools(entry.config))
+
   let tool: ToolDefinition
   try {
     const result = await createHttpTool(agentName, parsed.value)
@@ -497,7 +504,6 @@ async function handleHttpToolPost(req: IncomingMessage, res: ServerResponse, age
     return
   }
 
-  const currentTools = entry.config.tools ?? (await loadDefaultTools(entry.config))
   updateAgent(agentName, { config: { tools: [...currentTools, tool] } })
 
   if (parsed.decision) {
