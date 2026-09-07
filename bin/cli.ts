@@ -350,6 +350,9 @@ async function main(): Promise<void> {
       const { installed } = await installPackage(agent, spec)
       console.log(`Installed into agents/${agent}/:`)
       for (const p of installed) console.log(`  ${p}`)
+      console.log()
+      console.log('Already running under `npx loopengine dev`? The new tool becomes active automatically.')
+      console.log('Running under `serve` (or nothing yet)? Restart the server to pick it up.')
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err))
       process.exitCode = 1

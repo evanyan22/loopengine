@@ -21,15 +21,11 @@ import { execFileSync } from 'node:child_process'
 import { basename, join } from 'node:path'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { pathToFileURL } from 'node:url'
 import { parse as parseYaml } from 'yaml'
 import semver from 'semver'
 import { agentDir } from '../core/gateway-tools.js'
-import { getEntry, updateAgent } from '../core/agent-registry.js'
-import { loadDefaultTools } from '../core/run-agent.js'
 import { addToolToIndex, toCamelCase } from '../web/http-tool-admin.js'
 import { addActauthRule, updateActauthRule, removeActauthRule, readActauthConfig, type ActauthRuleInput } from '../web/actauth-admin.js'
-import type { ToolDefinition } from '../core/agent-config.js'
 
 export class PackageManifestError extends Error {}
 export class PackageVersionError extends Error {}
@@ -188,7 +184,19 @@ function checkLoopengineVersion(manifest: PackageManifest, installedRangeOverrid
       throw new PackageVersionError(`This project's package.json has no "loopengine" dependency — can't check compatibility.`)
     }
   }
-  const floor = semver.minVersion(installedRange)
+  // A non-registry dependency specifier (file:, git:, workspace:, ...) —
+  // common for local development against an unpublished loopengine
+  // build — isn't a semver range at all, so minVersion throws rather
+  // than returning null; nothing meaningful to compare against, so skip
+  // the check rather than crash the whole command on it (same "nothing
+  // to compare, nothing to refuse" reasoning the this-repo-itself skip
+  // above already uses).
+  let floor: semver.SemVer | null
+  try {
+    floor = semver.minVersion(installedRange)
+  } catch {
+    return
+  }
   if (!floor || !semver.satisfies(floor, manifest.loopengineVersion)) {
     throw new PackageVersionError(
       `Package '${manifest.name}' needs loopengine ${manifest.loopengineVersion}, but this project depends on loopengine ${installedRange} — bump the dependency first.`,
@@ -217,12 +225,30 @@ function parseActauthRules(packageDir: string, manifest: PackageManifest): Actau
  * createHttpTool does), copies each skill directory verbatim (a raw
  * cpSync, not skills-admin.ts's writeSkill — that regenerates
  * frontmatter from scratch and can't carry a package's own
- * frontmatter/assets), appends each actauth rule (addActauthRule), then
- * splices the newly-imported tools into the live agent registry so
- * they're callable immediately, no restart — same updateAgent call
- * adapters/http.ts's handleHttpToolPost already makes. All-or-nothing:
- * every collision check below runs, and the whole install is refused,
- * before a single file is written. */
+ * frontmatter/assets), and appends each actauth rule (addActauthRule).
+ *
+ * Deliberately does *not* attempt a live in-memory registry splice the
+ * way adapters/http.ts's own handleHttpToolPost does for an
+ * admin-created tool — that works there because the HTTP request
+ * creating the tool runs *inside the same process* as the already-running
+ * server, so updateAgent's mutation is visible to every later request in
+ * that same process immediately. `add-package` is a separate, one-off
+ * CLI process with no connection to whatever server might be running
+ * elsewhere — even a successful getEntry/updateAgent call here would
+ * only mutate *this* CLI invocation's own throwaway registry, then
+ * vanish the moment the process exits, having done nothing to the real
+ * running server. (Confirmed live: this used to import
+ * core/agent-registry.js, whose own discoverAgents does a top-level
+ * directory scan relative to *its own compiled file's location* —
+ * inside node_modules/loopengine when this runs there, not the
+ * consuming project's real agents/ at all, throwing ENOENT immediately.)
+ * Same reason add-agent/add-subagent above don't attempt this either —
+ * a new tool becomes active the same way a new agent does: the next
+ * request under `serve`, or automatically under `npx loopengine dev`'s
+ * file watcher once tools/index.ts's own edit is picked up.
+ *
+ * All-or-nothing: every collision check below runs, and the whole
+ * install is refused, before a single file is written. */
 export async function installPackage(agentName: string, spec: string, options: FetchOptions = {}): Promise<{ installed: string[] }> {
   const fetch = options.fetchPackageDir ?? fetchPackageDir
   const packageDir = fetch(spec)
@@ -276,19 +302,11 @@ export async function installPackage(agentName: string, spec: string, options: F
 
   const contentHashes: Record<string, string> = {}
 
-  // Write tool files, patch tools/index.ts, dynamic-import each fresh
-  // file. currentTools is captured once, before any write — accumulate
-  // newly-installed tools locally and splice with one final updateAgent
-  // call, avoiding the exact double-append hazard handleHttpToolPost's
-  // own comment already warns about for a folder-form agent with no
-  // cached config.tools (re-reading tools/index.ts after it's already
-  // been patched would see the just-added entry a second time).
+  // Write tool files and patch tools/index.ts — pure filesystem
+  // operations, no dynamic import and no registry interaction (see this
+  // function's own doc comment for why: a CLI process can't live-splice
+  // into a separate, already-running server).
   if (toolNames.length > 0) {
-    const entry = getEntry(agentName)
-    if (!entry) throw new Error(`Unknown agent '${agentName}'.`)
-    const currentTools = entry.config.tools ?? (await loadDefaultTools(entry.config))
-    const newTools: ToolDefinition[] = []
-
     mkdirSync(toolsDir, { recursive: true })
     const indexPath = join(toolsDir, 'index.ts')
     for (const toolFile of toolFiles) {
@@ -307,12 +325,7 @@ export async function installPackage(agentName: string, spec: string, options: F
           `import type { ToolDefinition } from 'loopengine'\nimport { ${exportName} } from './${toolName}.js'\n\nexport const tools: ToolDefinition[] = [${exportName}]\n`,
         )
       }
-
-      const mod = (await import(pathToFileURL(destPath).href)) as Record<string, ToolDefinition>
-      newTools.push(mod[exportName])
     }
-
-    updateAgent(agentName, { config: { tools: [...currentTools, ...newTools] } })
   }
 
   // Copy skill directories verbatim.
