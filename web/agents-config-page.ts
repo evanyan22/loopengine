@@ -426,6 +426,8 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   // Same idea, for the Actauth tab's own separately-fetched GET
   // .../actauth (see renderActauthTabPlaceholder's own doc comment).
   var actauthLoadedFor = null;
+  // Same idea again, for the Environment tab's own GET .../env.
+  var envLoadedFor = null;
   // The full /agents/:name/config response the currently-open agent was
   // last rendered from — kept around so refreshActauthDependentPanels/
   // refreshSkillsDependentPanels below can re-fetch and re-render just
@@ -1126,6 +1128,95 @@ export const agentsConfigPageHtml: string = `<!doctype html>
       .catch(function (err) {
         if (currentName !== name) return;
         content.innerHTML = '<p class="error">Could not load actauth rules: ' + escapeHtml(err.message) + '</p>';
+      });
+  }
+
+  // ---- Environment tab: every env var a package (see PACKAGES.md,
+  // bin/package-manager.ts) declared it needs for this agent, across
+  // every package installed — status only, a value is never shown once
+  // set, matching env-admin.ts's own never-echo-a-secret rule. Lazily
+  // loaded the same way Actauth is, for the same reason (avoid a
+  // redundant fetch on every agent switch for a tab that isn't always
+  // opened). ----
+
+  function renderEnvTabPlaceholder() {
+    return '<section id="envSection"><div id="envContent"><p class="hint">Loading&hellip;</p></div></section>';
+  }
+
+  function renderEnvRow(v) {
+    return '<tr>' +
+      '<td><code>' + escapeHtml(v.name) + '</code></td>' +
+      '<td>' + escapeHtml(v.description || '') + '</td>' +
+      '<td class="hint">' + escapeHtml(v.packageName) + '</td>' +
+      '<td>' + (v.set ? '<span class="hint">set</span>' : '<span class="error">not set</span>') + '</td>' +
+      '<td><form class="add-source env-var-form" data-name="' + escapeHtml(v.name) + '">' +
+        '<input type="' + (v.secret ? 'password' : 'text') + '" name="value" placeholder="' + (v.set ? 'unchanged unless you type a new value' : 'value') + '" required>' +
+        '<button type="submit">Save</button>' +
+      '</form></td>' +
+      '</tr>';
+  }
+
+  function renderEnvConfigHtml(vars) {
+    if (!vars.length) return '<p class="hint">No installed package has declared any environment variables for this agent yet.</p>';
+    var rows = vars.map(renderEnvRow).join('');
+    return '<table><thead><tr><th>Name</th><th>Description</th><th>Package</th><th>Status</th><th>Set value</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  function envContentEl() {
+    return detail.querySelector('#envContent');
+  }
+
+  function wireEnvHandlers(name) {
+    var content = envContentEl();
+    if (!content) return;
+    var forms = content.querySelectorAll('.env-var-form');
+    for (var i = 0; i < forms.length; i++) {
+      forms[i].addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        var form = ev.currentTarget;
+        var varName = form.getAttribute('data-name');
+        var value = new FormData(form).get('value');
+        var submitBtn = form.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        fetch('/agents/' + encodeURIComponent(name) + '/env/' + encodeURIComponent(varName), {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ value: value }),
+        })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (result) {
+            if (!result.ok) throw new Error(result.body.error || 'request failed');
+            loadEnvTab(name);
+          })
+          .catch(function (err) {
+            alert('Could not set value: ' + err.message);
+            submitBtn.disabled = false;
+          });
+      });
+    }
+  }
+
+  function applyEnvConfig(name, vars) {
+    var content = envContentEl();
+    if (!content) return;
+    content.innerHTML = renderEnvConfigHtml(vars);
+    wireEnvHandlers(name);
+    envLoadedFor = name;
+  }
+
+  function loadEnvTab(name) {
+    var content = envContentEl();
+    if (!content) return;
+    content.innerHTML = '<p class="hint">Loading&hellip;</p>';
+    fetch('/agents/' + encodeURIComponent(name) + '/env')
+      .then(function (r) { return r.json(); })
+      .then(function (vars) {
+        if (currentName !== name) return;
+        applyEnvConfig(name, vars);
+      })
+      .catch(function (err) {
+        if (currentName !== name) return;
+        content.innerHTML = '<p class="error">Could not load environment variables: ' + escapeHtml(err.message) + '</p>';
       });
   }
 
@@ -2089,6 +2180,9 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     if (tab === 'actauth' && actauthLoadedFor !== currentName) {
       loadActauthTab(currentName);
     }
+    if (tab === 'env' && envLoadedFor !== currentName) {
+      loadEnvTab(currentName);
+    }
   }
 
   // Refreshes just Overview's own summary — used after anything that
@@ -2164,11 +2258,13 @@ export const agentsConfigPageHtml: string = `<!doctype html>
         '<button class="tab" data-tab="skills">Skills</button>' +
         '<button class="tab" data-tab="tools">Tools</button>' +
         '<button class="tab" data-tab="actauth">ActAuth</button>' +
+        '<button class="tab" data-tab="env">Environment</button>' +
       '</div>' +
       '<div class="tab-panel" data-tab-panel="overview">' + renderOverviewHtml(cfg) + '</div>' +
       '<div class="tab-panel" data-tab-panel="skills">' + renderSkillsTabHtml(cfg) + '</div>' +
       '<div class="tab-panel" data-tab-panel="tools">' + renderToolsTabHtml(cfg) + '</div>' +
-      '<div class="tab-panel" data-tab-panel="actauth">' + renderActauthTabPlaceholder() + '</div>';
+      '<div class="tab-panel" data-tab-panel="actauth">' + renderActauthTabPlaceholder() + '</div>' +
+      '<div class="tab-panel" data-tab-panel="env">' + renderEnvTabPlaceholder() + '</div>';
 
     var buttons = detail.querySelectorAll('.tabs button');
     for (var i = 0; i < buttons.length; i++) {
@@ -2192,6 +2288,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     currentName = name;
     gatewayLoadedFor = null;
     actauthLoadedFor = null;
+    envLoadedFor = null;
     var items = agentList.querySelectorAll('li');
     for (var i = 0; i < items.length; i++) {
       items[i].classList.toggle('active', items[i].dataset.name === name);

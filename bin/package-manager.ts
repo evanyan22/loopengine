@@ -1,0 +1,560 @@
+// Backs `loopengine add-package|upgrade-package|remove-package` (see
+// bin/cli.ts) — the install/upgrade/remove mechanics PACKAGES.md
+// specifies for a "loopengine package": a bundle of tool files, skill
+// directories, and actauth rules, installed by *copying* files into an
+// agent's own tree (never an npm import) so a package's code is exactly
+// as reviewable/hand-editable as anything the Admin UI's HTTP tool
+// builder already generates (see web/http-tool-admin.ts's own header
+// comment on `generateToolCode` for that same "real code, not an opaque
+// import" reasoning).
+//
+// Deliberately reimplements (rather than imports) the two techniques
+// create-loopengine's own `upgrade` command already has —
+// `fetchPublishedTemplateDir`'s npm-pack-and-extract, and
+// `threeWayMerge`'s `git merge-file --diff3` — since `loopengine` and
+// `create-loopengine` are separate published packages and a runtime
+// depending on a scaffolding tool (or vice versa) isn't a dependency
+// direction worth introducing to share ~30 lines (see PACKAGES.md's
+// "Upgrading" section).
+import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
+import { basename, join } from 'node:path'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { pathToFileURL } from 'node:url'
+import { parse as parseYaml } from 'yaml'
+import semver from 'semver'
+import { agentDir } from '../core/gateway-tools.js'
+import { getEntry, updateAgent } from '../core/agent-registry.js'
+import { loadDefaultTools } from '../core/run-agent.js'
+import { addToolToIndex, toCamelCase } from '../web/http-tool-admin.js'
+import { addActauthRule, updateActauthRule, removeActauthRule, readActauthConfig, type ActauthRuleInput } from '../web/actauth-admin.js'
+import type { ToolDefinition } from '../core/agent-config.js'
+
+export class PackageManifestError extends Error {}
+export class PackageVersionError extends Error {}
+export class PackageCollisionError extends Error {}
+export class PackageNotInstalledError extends Error {}
+export class PackageAlreadyInstalledError extends Error {}
+
+// Same character sets tool names / skill ids are already validated
+// against elsewhere (web/http-tool-admin.ts's TOOL_NAME_PATTERN,
+// web/skills-admin.ts's SKILL_ID_PATTERN) — re-checked here because a
+// name derived from an untrusted package's own manifest becomes a path
+// segment (agents/<agent>/tools/<name>.ts, .../skills/<id>/): without
+// this, a package declaring a skill dir literally named ".." would have
+// `basename('..')` hand back `'..'` unchanged (path.basename does not
+// strip it), and the later `cpSync` would land one directory up, inside
+// the agent's own root instead of its skills/ folder.
+const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/
+const SKILL_ID_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
+
+export interface PackageEnvDecl {
+  name: string
+  description?: string
+  secret?: boolean
+}
+
+export interface PackageManifest {
+  name: string
+  version: string
+  loopengineVersion: string
+  tools?: string[]
+  skills?: string[]
+  actauth?: string
+  env?: PackageEnvDecl[]
+}
+
+/** One agent's record of one installed package — the merge base a
+ * future upgrade needs, what remove needs to know is safe to delete,
+ * and (env) what the Admin UI's secrets section reads to know which
+ * vars to prompt for. Written to agents/<agent>/.loopengine-packages.json,
+ * same role .create-loopengine.json already plays for template files. */
+export interface InstalledPackageRecord {
+  version: string
+  tools: string[]
+  skills: string[]
+  actauthRules: string[]
+  env: PackageEnvDecl[]
+  /** relative path (e.g. "tools/foo.ts") -> sha256 hex, as of the last
+   * install/upgrade — remove-package's dirty-check compares against
+   * this rather than storing/refetching full content to diff. */
+  contentHashes: Record<string, string>
+}
+
+type ProvenanceFile = Record<string, InstalledPackageRecord>
+
+function provenancePath(agentName: string): string {
+  return join(agentDir(agentName), '.loopengine-packages.json')
+}
+
+function readProvenance(agentName: string): ProvenanceFile {
+  const path = provenancePath(agentName)
+  if (!existsSync(path)) return {}
+  return JSON.parse(readFileSync(path, 'utf8')) as ProvenanceFile
+}
+
+function writeProvenance(agentName: string, data: ProvenanceFile): void {
+  writeFileSync(provenancePath(agentName), JSON.stringify(data, null, 2) + '\n')
+}
+
+function sha256(content: string): string {
+  return createHash('sha256').update(content).digest('hex')
+}
+
+// ---- Fetch ----
+
+/** `npm pack <spec>` + tar extract — generalized from
+ * create-loopengine's own `fetchPublishedTemplateDir` (that function
+ * only ever fetches the hardcoded `create-loopengine@<version>`; this
+ * accepts anything `npm pack` does: a public/private registry spec, a
+ * git URL (`github:org/repo`, `git+ssh://...`), or a local `file:../path`
+ * — the last of which is what this module's own tests point at, so no
+ * real network call is needed there; see PACKAGES.md's "Publishing a
+ * package" section). */
+export function fetchPackageDir(spec: string): string {
+  const workDir = mkdtempSync(join(tmpdir(), 'loopengine-package-'))
+  execFileSync('npm', ['pack', spec, '--pack-destination', workDir], { stdio: 'pipe' })
+  const tarball = readdirSync(workDir).find((f) => f.endsWith('.tgz'))
+  if (!tarball) {
+    throw new Error(`Could not fetch '${spec}' — check the package exists and is reachable (registry auth / git credentials / local path).`)
+  }
+  // Absolute path, not the bare filename readdirSync returns — same
+  // "tar resolves a relative first argument against the calling
+  // process's own cwd, not workDir" gotcha fetchPublishedTemplateDir's
+  // own comment already documents.
+  execFileSync('tar', ['-xzf', join(workDir, tarball), '-C', workDir], { stdio: 'pipe' })
+  return join(workDir, 'package')
+}
+
+export interface FetchOptions {
+  fetchPackageDir?: (spec: string) => string
+  /** Test-only override for the installing project's own "loopengine"
+   * dependency range — defaults to a real package.json read. Without
+   * this, checkLoopengineVersion's refusal path is unreachable from
+   * this repo's own test suite: this repo's package.json has no
+   * self-dependency to check against (see that function's own doc
+   * comment), so every real test run would silently skip the check
+   * instead of exercising it. */
+  installedLoopengineRange?: string
+}
+
+function readManifest(packageDir: string): PackageManifest {
+  const manifestPath = join(packageDir, 'loopengine.package.json')
+  if (!existsSync(manifestPath)) {
+    throw new PackageManifestError(`${packageDir} has no loopengine.package.json — not a valid loopengine package.`)
+  }
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as PackageManifest
+  if (!manifest.name || !manifest.version || !manifest.loopengineVersion) {
+    throw new PackageManifestError('loopengine.package.json must have "name", "version", and "loopengineVersion".')
+  }
+  return manifest
+}
+
+// The installing project's own dependencies.loopengine is itself a
+// range (e.g. "^0.1.10"), not a concrete installed version — checking
+// the *floor* of that range against the manifest's required range is
+// the conservative choice: if even the lowest version the range could
+// resolve to wouldn't satisfy the package, refuse now rather than risk
+// the exact silent-failure gap the Parallel-safe checkbox already hit
+// (a feature that imports an export an *actually installed* older
+// version doesn't have yet, with no error, just quietly not working).
+function checkLoopengineVersion(manifest: PackageManifest, installedRangeOverride?: string): void {
+  let installedRange = installedRangeOverride
+  if (!installedRange) {
+    // process.cwd(), not core/agent-registry.ts's own projectDir() —
+    // that function resolves relative to *this compiled file's own
+    // location*, correct only when agents/ is compiled alongside
+    // dist/core/, which doesn't hold for a real scaffolded project
+    // (loopengine lives in node_modules/loopengine/dist/, but the
+    // project's own package.json is at the project root). Every other
+    // cwd-relative path in this CLI (bin/cli.ts's requireAdapterFile,
+    // core/gateway-tools.ts's own agentsRootDir, which agentDir() above
+    // already relies on throughout this file) already resolves this way
+    // — confirmed live: a real `npm pack file:...` install against this
+    // repo's own dist/bin/cli.js failed against projectDir() here before
+    // this fix, for exactly this reason.
+    const ownPkgPath = join(process.cwd(), 'package.json')
+    const ownPkg = JSON.parse(readFileSync(ownPkgPath, 'utf8')) as { name?: string; dependencies?: Record<string, string> }
+    // A checkout of loopengine's own source (this repo, including its
+    // own test suite) has no "loopengine" entry to check against — it
+    // can't depend on itself. Same "detected by package.json's own
+    // name, not a flag to remember" distinction bin/cli.ts's own
+    // configImportSpecifier already makes for exactly this
+    // repo-vs-real-consumer-project case.
+    if (ownPkg.name === 'loopengine') return
+    installedRange = ownPkg.dependencies?.loopengine
+    if (!installedRange) {
+      throw new PackageVersionError(`This project's package.json has no "loopengine" dependency — can't check compatibility.`)
+    }
+  }
+  const floor = semver.minVersion(installedRange)
+  if (!floor || !semver.satisfies(floor, manifest.loopengineVersion)) {
+    throw new PackageVersionError(
+      `Package '${manifest.name}' needs loopengine ${manifest.loopengineVersion}, but this project depends on loopengine ${installedRange} — bump the dependency first.`,
+    )
+  }
+}
+
+function parseActauthRules(packageDir: string, manifest: PackageManifest): ActauthRuleInput[] {
+  if (!manifest.actauth) return []
+  const rulesPath = join(packageDir, manifest.actauth)
+  if (!existsSync(rulesPath)) {
+    throw new PackageManifestError(`Manifest references actauth file '${manifest.actauth}', which doesn't exist in the package.`)
+  }
+  const parsed: unknown = parseYaml(readFileSync(rulesPath, 'utf8'))
+  if (!Array.isArray(parsed)) {
+    throw new PackageManifestError(`'${manifest.actauth}' must be a YAML array of {name, scope, tool, decision} rules.`)
+  }
+  return parsed as ActauthRuleInput[]
+}
+
+// ---- Install ----
+
+/** Installs `spec` (anything `npm pack` accepts) for `agentName`:
+ * writes each manifest-listed tool file and patches tools/index.ts
+ * (reusing addToolToIndex exactly as web/http-tool-admin.ts's own
+ * createHttpTool does), copies each skill directory verbatim (a raw
+ * cpSync, not skills-admin.ts's writeSkill — that regenerates
+ * frontmatter from scratch and can't carry a package's own
+ * frontmatter/assets), appends each actauth rule (addActauthRule), then
+ * splices the newly-imported tools into the live agent registry so
+ * they're callable immediately, no restart — same updateAgent call
+ * adapters/http.ts's handleHttpToolPost already makes. All-or-nothing:
+ * every collision check below runs, and the whole install is refused,
+ * before a single file is written. */
+export async function installPackage(agentName: string, spec: string, options: FetchOptions = {}): Promise<{ installed: string[] }> {
+  const fetch = options.fetchPackageDir ?? fetchPackageDir
+  const packageDir = fetch(spec)
+  const manifest = readManifest(packageDir)
+  checkLoopengineVersion(manifest, options.installedLoopengineRange)
+
+  const provenance = readProvenance(agentName)
+  if (provenance[manifest.name]) {
+    throw new PackageAlreadyInstalledError(`Package '${manifest.name}' is already installed for '${agentName}' — use upgrade-package instead.`)
+  }
+
+  const toolFiles = manifest.tools ?? []
+  const skillDirs = manifest.skills ?? []
+  const rules = parseActauthRules(packageDir, manifest)
+
+  const toolsDir = join(agentDir(agentName), 'tools')
+  const skillsDirPath = join(agentDir(agentName), 'skills')
+
+  // Collision checks — refuse the whole install before writing anything,
+  // same "refuse rather than guess" rule HttpToolExistsError/
+  // HttpToolIndexShapeError already enforce for a single admin-created
+  // tool, just applied package-wide.
+  const toolNames: string[] = []
+  for (const toolFile of toolFiles) {
+    const toolName = basename(toolFile, '.ts')
+    if (!TOOL_NAME_PATTERN.test(toolName)) {
+      throw new PackageManifestError(`Tool file '${toolFile}' doesn't name a valid tool (must be lowercase snake_case).`)
+    }
+    toolNames.push(toolName)
+    if (existsSync(join(toolsDir, `${toolName}.ts`))) {
+      throw new PackageCollisionError(`agents/${agentName}/tools/${toolName}.ts already exists.`)
+    }
+  }
+  const skillIds: string[] = []
+  for (const skillDir of skillDirs) {
+    const skillId = basename(skillDir)
+    if (!SKILL_ID_PATTERN.test(skillId)) {
+      throw new PackageManifestError(`Skill directory '${skillDir}' doesn't name a valid skill id (must be lowercase, hyphen-separated).`)
+    }
+    skillIds.push(skillId)
+    if (existsSync(join(skillsDirPath, skillId))) {
+      throw new PackageCollisionError(`agents/${agentName}/skills/${skillId}/ already exists.`)
+    }
+  }
+  const existingRuleNames = new Set(readActauthConfig(agentName).rules.map((r) => r.name))
+  for (const rule of rules) {
+    if (existingRuleNames.has(rule.name)) {
+      throw new PackageCollisionError(`An actauth rule named '${rule.name}' already exists for '${agentName}'.`)
+    }
+  }
+
+  const contentHashes: Record<string, string> = {}
+
+  // Write tool files, patch tools/index.ts, dynamic-import each fresh
+  // file. currentTools is captured once, before any write — accumulate
+  // newly-installed tools locally and splice with one final updateAgent
+  // call, avoiding the exact double-append hazard handleHttpToolPost's
+  // own comment already warns about for a folder-form agent with no
+  // cached config.tools (re-reading tools/index.ts after it's already
+  // been patched would see the just-added entry a second time).
+  if (toolNames.length > 0) {
+    const entry = getEntry(agentName)
+    if (!entry) throw new Error(`Unknown agent '${agentName}'.`)
+    const currentTools = entry.config.tools ?? (await loadDefaultTools(entry.config))
+    const newTools: ToolDefinition[] = []
+
+    mkdirSync(toolsDir, { recursive: true })
+    const indexPath = join(toolsDir, 'index.ts')
+    for (const toolFile of toolFiles) {
+      const toolName = basename(toolFile, '.ts')
+      const code = readFileSync(join(packageDir, toolFile), 'utf8')
+      const destPath = join(toolsDir, `${toolName}.ts`)
+      writeFileSync(destPath, code)
+      contentHashes[`tools/${toolName}.ts`] = sha256(code)
+
+      const exportName = toCamelCase(toolName)
+      if (existsSync(indexPath)) {
+        addToolToIndex(indexPath, toolName, exportName)
+      } else {
+        writeFileSync(
+          indexPath,
+          `import type { ToolDefinition } from 'loopengine'\nimport { ${exportName} } from './${toolName}.js'\n\nexport const tools: ToolDefinition[] = [${exportName}]\n`,
+        )
+      }
+
+      const mod = (await import(pathToFileURL(destPath).href)) as Record<string, ToolDefinition>
+      newTools.push(mod[exportName])
+    }
+
+    updateAgent(agentName, { config: { tools: [...currentTools, ...newTools] } })
+  }
+
+  // Copy skill directories verbatim.
+  for (const skillDir of skillDirs) {
+    const skillId = basename(skillDir)
+    const srcPath = join(packageDir, skillDir)
+    const destPath = join(skillsDirPath, skillId)
+    mkdirSync(skillsDirPath, { recursive: true })
+    cpSync(srcPath, destPath, { recursive: true })
+    const skillMdPath = join(destPath, 'SKILL.md')
+    if (existsSync(skillMdPath)) {
+      contentHashes[`skills/${skillId}/SKILL.md`] = sha256(readFileSync(skillMdPath, 'utf8'))
+    }
+  }
+
+  // Append actauth rules.
+  for (const rule of rules) {
+    addActauthRule(agentName, rule)
+  }
+
+  provenance[manifest.name] = {
+    version: manifest.version,
+    tools: toolNames,
+    skills: skillIds,
+    actauthRules: rules.map((r) => r.name),
+    env: manifest.env ?? [],
+    contentHashes,
+  }
+  writeProvenance(agentName, provenance)
+
+  return { installed: [...toolNames.map((n) => `tools/${n}.ts`), ...skillIds.map((id) => `skills/${id}/`), ...rules.map((r) => `actauth:${r.name}`)] }
+}
+
+// ---- Upgrade ----
+
+// git merge-file's own exit code *is* its conflict count (0 = clean),
+// not a pass/fail signal — same distinction create-loopengine's own
+// threeWayMerge already documents. Operates on a disposable scratch
+// copy, never the real project file directly.
+function mergeFile(mine: string, base: string, theirs: string): { merged: string; conflicted: boolean } {
+  const scratchDir = mkdtempSync(join(tmpdir(), 'loopengine-package-merge-'))
+  const minePath = join(scratchDir, 'mine')
+  const basePath = join(scratchDir, 'base')
+  const theirsPath = join(scratchDir, 'theirs')
+  writeFileSync(minePath, mine)
+  writeFileSync(basePath, base)
+  writeFileSync(theirsPath, theirs)
+
+  let conflicted = false
+  try {
+    execFileSync('git', ['merge-file', '--diff3', '-L', 'mine', '-L', 'base', '-L', 'latest', minePath, basePath, theirsPath], { stdio: 'pipe' })
+  } catch (err) {
+    if (err && typeof err === 'object' && 'status' in err && typeof (err as { status: unknown }).status === 'number') {
+      conflicted = true
+    } else {
+      throw new Error(`git merge-file failed — is git installed and on PATH? (${err instanceof Error ? err.message : String(err)})`)
+    }
+  }
+  const merged = readFileSync(minePath, 'utf8')
+  rmSync(scratchDir, { recursive: true, force: true })
+  return { merged, conflicted }
+}
+
+export interface UpgradeFileResult {
+  path: string
+  status: 'updated' | 'unchanged' | 'conflict'
+}
+
+/** Upgrades an already-installed package to whatever `spec` (defaulting
+ * to `packageName`, i.e. "latest") currently resolves to. Tool and skill
+ * files get a real three-way merge (mine = current file, possibly
+ * hand-edited since install; base = the version recorded at
+ * install/last-upgrade, refetched via `<spec>@<oldVersion>`; theirs =
+ * newly fetched) — identical technique to `create-loopengine upgrade`,
+ * just applied to package-managed files instead of template files.
+ * actauth rules upgrade per-rule instead: the target actauth.yml holds
+ * rules from other packages and hand-written ones too, so there's no
+ * coherent "whole file" base/theirs to merge — a rule unchanged since
+ * install updates cleanly; a hand-edited one is left alone and reported
+ * as a conflict rather than overwritten. */
+export async function upgradePackage(agentName: string, packageName: string, options: FetchOptions & { spec?: string } = {}): Promise<{ files: UpgradeFileResult[] }> {
+  const fetch = options.fetchPackageDir ?? fetchPackageDir
+  const provenance = readProvenance(agentName)
+  const record = provenance[packageName]
+  if (!record) {
+    throw new PackageNotInstalledError(`Package '${packageName}' isn't installed for '${agentName}'.`)
+  }
+  const spec = options.spec ?? packageName
+
+  const oldDir = fetch(`${spec}@${record.version}`)
+  const newDir = fetch(spec)
+  const oldManifest = readManifest(oldDir)
+  const newManifest = readManifest(newDir)
+  checkLoopengineVersion(newManifest, options.installedLoopengineRange)
+
+  const results: UpgradeFileResult[] = []
+  const newContentHashes: Record<string, string> = { ...record.contentHashes }
+
+  for (const toolName of record.tools) {
+    const relPath = `tools/${toolName}.ts`
+    const oldFile = (oldManifest.tools ?? []).find((f) => basename(f, '.ts') === toolName)
+    const newFile = (newManifest.tools ?? []).find((f) => basename(f, '.ts') === toolName)
+    if (!oldFile || !newFile) {
+      results.push({ path: relPath, status: 'unchanged' })
+      continue
+    }
+    const base = readFileSync(join(oldDir, oldFile), 'utf8')
+    const theirs = readFileSync(join(newDir, newFile), 'utf8')
+    if (base === theirs) {
+      results.push({ path: relPath, status: 'unchanged' })
+      continue
+    }
+    const minePath = join(agentDir(agentName), relPath)
+    const { merged, conflicted } = mergeFile(readFileSync(minePath, 'utf8'), base, theirs)
+    writeFileSync(minePath, merged)
+    if (!conflicted) newContentHashes[relPath] = sha256(merged)
+    results.push({ path: relPath, status: conflicted ? 'conflict' : 'updated' })
+  }
+
+  for (const skillId of record.skills) {
+    const relPath = `skills/${skillId}/SKILL.md`
+    const oldSkillDir = (oldManifest.skills ?? []).find((s) => basename(s) === skillId)
+    const newSkillDir = (newManifest.skills ?? []).find((s) => basename(s) === skillId)
+    const oldFile = oldSkillDir ? join(oldDir, oldSkillDir, 'SKILL.md') : null
+    const newFile = newSkillDir ? join(newDir, newSkillDir, 'SKILL.md') : null
+    if (!oldFile || !newFile || !existsSync(oldFile) || !existsSync(newFile)) {
+      results.push({ path: relPath, status: 'unchanged' })
+      continue
+    }
+    const base = readFileSync(oldFile, 'utf8')
+    const theirs = readFileSync(newFile, 'utf8')
+    if (base === theirs) {
+      results.push({ path: relPath, status: 'unchanged' })
+      continue
+    }
+    const minePath = join(agentDir(agentName), relPath)
+    const { merged, conflicted } = mergeFile(readFileSync(minePath, 'utf8'), base, theirs)
+    writeFileSync(minePath, merged)
+    if (!conflicted) newContentHashes[relPath] = sha256(merged)
+    results.push({ path: relPath, status: conflicted ? 'conflict' : 'updated' })
+  }
+
+  const oldRules = parseActauthRules(oldDir, oldManifest)
+  const newRules = parseActauthRules(newDir, newManifest)
+  const currentRules = new Map(readActauthConfig(agentName).rules.map((r) => [r.name, r]))
+  for (const ruleName of record.actauthRules) {
+    const oldRule = oldRules.find((r) => r.name === ruleName)
+    const newRule = newRules.find((r) => r.name === ruleName)
+    const current = currentRules.get(ruleName)
+    const path = `actauth:${ruleName}`
+    if (!oldRule || !newRule || !current) {
+      results.push({ path, status: 'unchanged' })
+      continue
+    }
+    const unchangedSinceInstall = current.scope === oldRule.scope && current.tool === oldRule.tool && current.decision === oldRule.decision
+    if (!unchangedSinceInstall) {
+      results.push({ path, status: 'conflict' })
+      continue
+    }
+    if (oldRule.scope === newRule.scope && oldRule.tool === newRule.tool && oldRule.decision === newRule.decision) {
+      results.push({ path, status: 'unchanged' })
+      continue
+    }
+    updateActauthRule(agentName, ruleName, { scope: newRule.scope, tool: newRule.tool, decision: newRule.decision })
+    results.push({ path, status: 'updated' })
+  }
+
+  provenance[packageName] = { ...record, version: newManifest.version, contentHashes: newContentHashes, env: newManifest.env ?? record.env }
+  writeProvenance(agentName, provenance)
+
+  return { files: results }
+}
+
+// ---- Remove ----
+
+function isDirty(path: string, recordedHash: string | undefined): boolean {
+  if (!existsSync(path)) return false
+  if (!recordedHash) return true
+  return sha256(readFileSync(path, 'utf8')) !== recordedHash
+}
+
+/** Removes an installed package's tool and skill files, and its actauth
+ * rules. A file whose content no longer matches the hash recorded at
+ * install/last-upgrade is refused (reported in `refused`, left on disk)
+ * unless `force` is passed — a concrete implementation of PACKAGES.md's
+ * "refuses if any of them look hand-modified," cheaper than storing full
+ * content or refetching the package to diff. Does not patch
+ * tools/index.ts to remove the now-dangling import — same "refuse
+ * rather than guess a second time" doctrine addToolToIndex's own doc
+ * comment already applies; a stale import surfaces as a clear build
+ * error, not a silent break. */
+export function removePackage(agentName: string, packageName: string, force = false): { removed: string[]; refused: string[] } {
+  const provenance = readProvenance(agentName)
+  const record = provenance[packageName]
+  if (!record) {
+    throw new PackageNotInstalledError(`Package '${packageName}' isn't installed for '${agentName}'.`)
+  }
+
+  const removed: string[] = []
+  const refused: string[] = []
+  const remainingTools: string[] = []
+  const remainingSkills: string[] = []
+
+  for (const toolName of record.tools) {
+    const relPath = `tools/${toolName}.ts`
+    const fullPath = join(agentDir(agentName), relPath)
+    if (!force && isDirty(fullPath, record.contentHashes[relPath])) {
+      refused.push(relPath)
+      remainingTools.push(toolName)
+      continue
+    }
+    rmSync(fullPath, { force: true })
+    removed.push(relPath)
+  }
+
+  for (const skillId of record.skills) {
+    const relPath = `skills/${skillId}/SKILL.md`
+    const fullPath = join(agentDir(agentName), relPath)
+    if (!force && isDirty(fullPath, record.contentHashes[relPath])) {
+      refused.push(relPath)
+      remainingSkills.push(skillId)
+      continue
+    }
+    rmSync(join(agentDir(agentName), 'skills', skillId), { recursive: true, force: true })
+    removed.push(`skills/${skillId}/`)
+  }
+
+  for (const ruleName of record.actauthRules) {
+    try {
+      removeActauthRule(agentName, ruleName)
+      removed.push(`actauth:${ruleName}`)
+    } catch {
+      // Already gone (hand-removed since install) — not a failure.
+    }
+  }
+
+  if (refused.length === 0) {
+    delete provenance[packageName]
+  } else {
+    provenance[packageName] = { ...record, tools: remainingTools, skills: remainingSkills, actauthRules: [] }
+  }
+  writeProvenance(agentName, provenance)
+
+  return { removed, refused }
+}

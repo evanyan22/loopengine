@@ -74,7 +74,7 @@ function tsStringLiteral(value: string): string {
 // "lookup_order_status" -> "lookupOrderStatus" — matches every
 // hand-written tool file's own convention (see agents/customer-service/
 // tools/*.ts: issue_refund.ts exports `issueRefund`, etc.).
-function toCamelCase(snakeCase: string): string {
+export function toCamelCase(snakeCase: string): string {
   return snakeCase.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase())
 }
 
@@ -224,7 +224,7 @@ ${responseHandling}  },
 // pattern doesn't recognize, it refuses instead of risking corrupting it
 // — same "refuse rather than guess" discipline agent-file-admin.ts's own
 // doc comment already establishes for index.ts edits.
-function addToolToIndex(toolsIndexPath: string, toolFileName: string, exportName: string): void {
+export function addToolToIndex(toolsIndexPath: string, toolFileName: string, exportName: string): void {
   const source = readFileSync(toolsIndexPath, 'utf8')
   const arrayMatch = source.match(/export const tools: ToolDefinition\[\] = \[([^\]]*)\]/)
   if (!arrayMatch) {

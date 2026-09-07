@@ -1,6 +1,6 @@
 {
   "name": "loopengine",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "type": "module",
   "description": "Runtime for tool-using AI agents with a transparent ReAct loop.",
   "license": "MIT",
@@ -23,6 +23,8 @@
     "dist/index.d.ts",
     "dist/bin/cli.js",
     "dist/bin/cli.d.ts",
+    "dist/bin/package-manager.js",
+    "dist/bin/package-manager.d.ts",
     "dist/core/run-agent.js",
     "dist/core/run-agent.d.ts",
     "dist/core/loop-events.js",
@@ -83,6 +85,7 @@
     "ioredis": "^6.0.0",
     "mcpplug": "^0.0.1",
     "openai": "^7.4.0",
+    "semver": "^7.8.5",
     "sessionknit": "^0.0.2",
     "skillgarden": "^0.0.9",
     "toollane": "^0.0.1",
@@ -91,6 +94,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "@types/semver": "^7.8.0",
     "tsx": "^4.19.0",
     "vitest": "^2.1.9"
   }

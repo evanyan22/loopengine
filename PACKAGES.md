@@ -138,7 +138,7 @@ my-order-tools/
 ## Installing
 
 ```
-npx loopengine add <npm-package> --agent customer-service
+npx loopengine add-package <npm-package> --agent customer-service
 ```
 
 A `loopengine` subcommand, not a `create-loopengine` one — two reasons.
@@ -152,13 +152,18 @@ template's `package.json` only lists `loopengine`/`actauth`/
 `skillgarden`), so every `npx create-loopengine@latest ...` invocation
 re-fetches the CLI package over the network — fine for `upgrade`, a
 rare per-release operation, but not for something that could be invoked
-as often as adding a package might be. `loopengine add` runs off the
-project's own already-installed `node_modules/.bin/loopengine` instead.
+as often as adding a package might be. `loopengine add-package` runs off
+the project's own already-installed `node_modules/.bin/loopengine`
+instead.
 
-`add`, not `install`, deliberately — same reasoning shadcn/ui's own
-`npx shadcn add <component>` already uses: "install" implies a live
-dependency you `import`; this copies files into the project instead, and
-the verb should say so.
+Named `add-package` — `add`, not `install`, for the same reasoning
+shadcn/ui's own `npx shadcn add <component>` already uses: "install"
+implies a live dependency you `import`; this copies files into the
+project instead, and the verb should say so. The `-package` suffix (not
+just bare `add`) keeps it alongside `upgrade-package`/`remove-package`
+as one clearly-related family, and leaves `add` itself free — `add-agent`/
+`add-subagent` already exist as their own, unrelated commands on this
+same CLI.
 
 What it does, in order — refusing outright, before writing anything, on
 the first check that fails:
@@ -287,7 +292,7 @@ shaped as above is a complete, valid loopengine package, whether that's
 `@company/pkg`, GitHub Packages, a self-hosted Verdaccio), or just a
 tagged commit in a private git repo with no registry involved at all —
 `npm pack` accepts any of those as its target, not just a public
-registry name, so `loopengine add`/`upgrade-package` take whatever
+registry name, so `loopengine add-package`/`upgrade-package` take whatever
 string the operator would already pass to `npm pack` (`@company/pkg`,
 `github:org/repo#v1.0.0`, `git+ssh://...`, even `file:../local-path` for
 testing) rather than assuming public npm. Auth for a private target
@@ -312,7 +317,7 @@ today.
   a natural v2, not required to ship v1's install/upgrade mechanics.
 - **Inter-package dependencies.** A package can't declare "requires
   package X installed first." Every package is self-contained.
-- **Semver-range installs** (`add <package>@^1.0.0`) — v1 always
+- **Semver-range installs** (`add-package <package>@^1.0.0`) — v1 always
   installs latest; ranges are a straightforward follow-on once the
   provenance-tracking above exists to check against.
 - **Per-user enable/disable of an installed package** (Pi's own

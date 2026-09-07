@@ -140,6 +140,9 @@ export type { SkillContent } from './web/skills-admin.js'
 export { listSkillgardenCatalog, readSkillgardenCatalogEntry, addSkillgardenSkillToAgent, SkillgardenUnavailableError } from './web/skillgarden-admin.js'
 export type { SkillgardenCatalogEntry, SkillgardenCatalogDetail } from './web/skillgarden-admin.js'
 
+export { listDeclaredEnvVars, setEnvVar, EnvVarNameError } from './web/env-admin.js'
+export type { DeclaredEnvVar } from './web/env-admin.js'
+
 export {
   readActauthConfig,
   addActauthRule,

@@ -13,6 +13,7 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { installPackage, upgradePackage, removePackage } from './package-manager.js'
 
 const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
 
@@ -255,6 +256,24 @@ async function requireAdapterFile(relPath: string): Promise<boolean> {
   return false
 }
 
+// Shared by add-package/upgrade-package/remove-package below — pulls a
+// `--flag value` pair out of argv, same inline style `run`'s own
+// `--input` handling already uses, factored out only because three
+// commands need the identical `--agent <name>` extraction (a single use
+// isn't worth a helper; three is).
+function extractFlagValue(args: string[], flag: string): { value: string | undefined; rest: string[] } {
+  const index = args.indexOf(flag)
+  if (index === -1) return { value: undefined, rest: args }
+  const value = args[index + 1]
+  return { value, rest: [...args.slice(0, index), ...args.slice(index + 2)] }
+}
+
+function extractFlagPresence(args: string[], flag: string): { present: boolean; rest: string[] } {
+  const index = args.indexOf(flag)
+  if (index === -1) return { present: false, rest: args }
+  return { present: true, rest: [...args.slice(0, index), ...args.slice(index + 1)] }
+}
+
 async function main(): Promise<void> {
   const [, , command, ...rest] = process.argv
 
@@ -309,6 +328,84 @@ async function main(): Promise<void> {
     console.log(`Fill in toolDescription: it's what '${parent}'s model reads to decide when to call '${name}'.`)
     console.log()
     console.log(`Run the top-level agent: npx tsx adapters/cli.ts --agent ${parent.split('/')[0]} "hello"`)
+    return
+  }
+
+  // Installs a loopengine package (see PACKAGES.md) — a bundle of tool
+  // files, skill directories, and actauth rules published as an ordinary
+  // npm package (public, private-registry, git, or a local file: path),
+  // copied into the target agent's own tree rather than added as a
+  // node_modules import (see package-manager.ts's own header comment for
+  // why). <spec> is whatever `npm pack` itself accepts.
+  if (command === 'add-package') {
+    const { value: agent, rest: withoutAgent } = extractFlagValue(rest, '--agent')
+    const [spec] = withoutAgent
+    if (!spec || !agent) {
+      console.error('Usage: loopengine add-package <spec> --agent <name>')
+      process.exitCode = 1
+      return
+    }
+
+    try {
+      const { installed } = await installPackage(agent, spec)
+      console.log(`Installed into agents/${agent}/:`)
+      for (const p of installed) console.log(`  ${p}`)
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err))
+      process.exitCode = 1
+    }
+    return
+  }
+
+  // Pulls in whatever <packageName> (or --spec, if the package moved)
+  // currently resolves to, three-way-merging each tool/skill file it
+  // manages against what changed upstream since install — a hand-edit
+  // survives a clean merge; a real conflict leaves <<<<<<< markers to
+  // resolve by hand, same as create-loopengine upgrade already does for
+  // template files.
+  if (command === 'upgrade-package') {
+    const { value: agent, rest: withoutAgent } = extractFlagValue(rest, '--agent')
+    const { value: spec, rest: withoutSpec } = extractFlagValue(withoutAgent, '--spec')
+    const [packageName] = withoutSpec
+    if (!packageName || !agent) {
+      console.error('Usage: loopengine upgrade-package <packageName> --agent <name> [--spec <spec>]')
+      process.exitCode = 1
+      return
+    }
+
+    try {
+      const { files } = await upgradePackage(agent, packageName, spec ? { spec } : {})
+      for (const f of files) console.log(`  ${f.status.padEnd(9)}${f.path}`)
+      const conflicts = files.filter((f) => f.status === 'conflict')
+      console.log(conflicts.length > 0 ? `${conflicts.length} file(s)/rule(s) need resolving by hand.` : 'No conflicts.')
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err))
+      process.exitCode = 1
+    }
+    return
+  }
+
+  // Removes a package's tool/skill files and actauth rules — refuses a
+  // file whose content no longer matches what was recorded at
+  // install/last-upgrade (a hand-edit since) unless --force is given.
+  if (command === 'remove-package') {
+    const { value: agent, rest: withoutAgent } = extractFlagValue(rest, '--agent')
+    const { present: force, rest: withoutForce } = extractFlagPresence(withoutAgent, '--force')
+    const [packageName] = withoutForce
+    if (!packageName || !agent) {
+      console.error('Usage: loopengine remove-package <packageName> --agent <name> [--force]')
+      process.exitCode = 1
+      return
+    }
+
+    try {
+      const { removed, refused } = removePackage(agent, packageName, force)
+      for (const p of removed) console.log(`  removed  ${p}`)
+      for (const p of refused) console.log(`  refused  ${p}  (hand-modified since install — pass --force to remove anyway)`)
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err))
+      process.exitCode = 1
+    }
     return
   }
 
@@ -394,6 +491,9 @@ async function main(): Promise<void> {
 
   console.error('Usage: loopengine add-agent <name>')
   console.error('       loopengine add-subagent <parent> <name>')
+  console.error('       loopengine add-package <spec> --agent <name>')
+  console.error('       loopengine upgrade-package <packageName> --agent <name> [--spec <spec>]')
+  console.error('       loopengine remove-package <packageName> --agent <name> [--force]')
   console.error('       loopengine run <agent> [--session <id>] "<message>"')
   console.error('       loopengine serve')
   console.error('       loopengine dev')
