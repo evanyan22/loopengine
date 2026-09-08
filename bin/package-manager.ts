@@ -68,6 +68,14 @@ export interface PackageManifest {
  * same role .create-loopengine.json already plays for template files. */
 export interface InstalledPackageRecord {
   version: string
+  /** The exact spec (bare registry name, "name@version", a git+ssh/
+   * git+https URL with a #committish, a file: path, ...) last used to
+   * successfully install or upgrade this package — see
+   * oldContentSpec's own doc comment for why upgradePackage needs this
+   * stored verbatim rather than reconstructed from `packageName`.
+   * Optional only because a package installed before this field existed
+   * has no recorded value — see oldContentSpec's own fallback. */
+  spec?: string
   tools: string[]
   skills: string[]
   actauthRules: string[]
@@ -348,6 +356,7 @@ export async function installPackage(agentName: string, spec: string, options: F
 
   provenance[manifest.name] = {
     version: manifest.version,
+    spec,
     tools: toolNames,
     skills: skillIds,
     actauthRules: rules.map((r) => r.name),
@@ -394,18 +403,54 @@ export interface UpgradeFileResult {
   status: 'updated' | 'unchanged' | 'conflict'
 }
 
+// A git+ssh/git+https/git: URL, a plain https: tarball URL, or a local
+// file:/relative/absolute path all already pin to exact, immutable
+// content on their own (a #committish, or the file/tarball's own
+// content) — appending "@version" to one of these doesn't select an
+// older version the way it does for a registry specifier, it corrupts
+// the spec. Confirmed live: `npm pack 'git+file://...#v1.0.0@1.0.0'`
+// fails outright ("The git reference could not be found... pathspec
+// 'v1.0.0@1.0.0'"), it doesn't fall back to resolving just the tag.
+const PINNED_SPEC = /^(git\+|git:|https?:|file:|\.\.?\/|\/)/
+
+/** What to fetch to reconstruct the exact content that was installed or
+ * last upgraded to, for use as the three-way merge's `base` — as
+ * distinct from `spec`, which is what the *new* content resolves to.
+ * A plain registry specifier (bare or scoped name, with or without its
+ * own "@version") is repinned to `version` — the manifest's own
+ * declared version at that install/upgrade, which is what actually got
+ * written to disk, regardless of whether the range originally given
+ * would still resolve there today. A git/file/URL spec is returned
+ * as-is — see PINNED_SPEC's own doc comment for why appending "@version"
+ * to one of those breaks instead of pinning. `recordedSpec` is only
+ * absent for a package installed before InstalledPackageRecord.spec
+ * existed; falling back to `packageName` there reproduces this
+ * function's own old (buggy for a git/file install) behavior exactly —
+ * no worse than before, and only for a package that hasn't upgraded
+ * since. */
+function oldContentSpec(recordedSpec: string | undefined, packageName: string, version: string): string {
+  const base = recordedSpec ?? packageName
+  if (PINNED_SPEC.test(base)) return base
+  // Strip any version/tag the spec already carries (a scoped name's own
+  // leading '@' isn't this — only a second '@' after the name is) before
+  // repinning, so re-upgrading an already-version-pinned install doesn't
+  // produce a doubled-up "name@1.0.0@1.0.0".
+  const bareName = base.startsWith('@') ? `@${base.slice(1).split('@')[0]}` : base.split('@')[0]
+  return `${bareName}@${version}`
+}
+
 /** Upgrades an already-installed package to whatever `spec` (defaulting
  * to `packageName`, i.e. "latest") currently resolves to. Tool and skill
  * files get a real three-way merge (mine = current file, possibly
  * hand-edited since install; base = the version recorded at
- * install/last-upgrade, refetched via `<spec>@<oldVersion>`; theirs =
- * newly fetched) — identical technique to `create-loopengine upgrade`,
- * just applied to package-managed files instead of template files.
- * actauth rules upgrade per-rule instead: the target actauth.yml holds
- * rules from other packages and hand-written ones too, so there's no
- * coherent "whole file" base/theirs to merge — a rule unchanged since
- * install updates cleanly; a hand-edited one is left alone and reported
- * as a conflict rather than overwritten. */
+ * install/last-upgrade, refetched via oldContentSpec; theirs = newly
+ * fetched) — identical technique to `create-loopengine upgrade`, just
+ * applied to package-managed files instead of template files. actauth
+ * rules upgrade per-rule instead: the target actauth.yml holds rules
+ * from other packages and hand-written ones too, so there's no coherent
+ * "whole file" base/theirs to merge — a rule unchanged since install
+ * updates cleanly; a hand-edited one is left alone and reported as a
+ * conflict rather than overwritten. */
 export async function upgradePackage(agentName: string, packageName: string, options: FetchOptions & { spec?: string } = {}): Promise<{ files: UpgradeFileResult[] }> {
   const fetch = options.fetchPackageDir ?? fetchPackageDir
   const provenance = readProvenance(agentName)
@@ -415,7 +460,7 @@ export async function upgradePackage(agentName: string, packageName: string, opt
   }
   const spec = options.spec ?? packageName
 
-  const oldDir = fetch(`${spec}@${record.version}`)
+  const oldDir = fetch(oldContentSpec(record.spec, packageName, record.version))
   const newDir = fetch(spec)
   const oldManifest = readManifest(oldDir)
   const newManifest = readManifest(newDir)
@@ -493,7 +538,7 @@ export async function upgradePackage(agentName: string, packageName: string, opt
     results.push({ path, status: 'updated' })
   }
 
-  provenance[packageName] = { ...record, version: newManifest.version, contentHashes: newContentHashes, env: newManifest.env ?? record.env }
+  provenance[packageName] = { ...record, version: newManifest.version, spec, contentHashes: newContentHashes, env: newManifest.env ?? record.env }
   writeProvenance(agentName, provenance)
 
   return { files: results }
