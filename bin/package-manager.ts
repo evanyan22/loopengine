@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os'
 import { parse as parseYaml } from 'yaml'
 import semver from 'semver'
 import { agentDir } from '../core/gateway-tools.js'
-import { addToolToIndex, toCamelCase } from '../web/http-tool-admin.js'
+import { addToolToIndex, removeToolFromIndex, toCamelCase } from '../web/http-tool-admin.js'
 import { addActauthRule, updateActauthRule, removeActauthRule, readActauthConfig, type ActauthRuleInput } from '../web/actauth-admin.js'
 
 export class PackageManifestError extends Error {}
@@ -574,6 +574,7 @@ export function removePackage(agentName: string, packageName: string, force = fa
   const remainingTools: string[] = []
   const remainingSkills: string[] = []
 
+  const toolsIndexPath = join(agentDir(agentName), 'tools', 'index.ts')
   for (const toolName of record.tools) {
     const relPath = `tools/${toolName}.ts`
     const fullPath = join(agentDir(agentName), relPath)
@@ -583,6 +584,14 @@ export function removePackage(agentName: string, packageName: string, force = fa
       continue
     }
     rmSync(fullPath, { force: true })
+    // Undoes installPackage's own addToolToIndex call — without this, a
+    // deleted tool's import survives in tools/index.ts, and either fails
+    // the next build (a dangling import to a file that no longer exists)
+    // or, worse, silently duplicates on a later add-package of the same
+    // tool (addToolToIndex used to have no idempotence check at all —
+    // now it does, but this is the actual fix: the stale entry shouldn't
+    // be there to begin with).
+    removeToolFromIndex(toolsIndexPath, toolName, toCamelCase(toolName))
     removed.push(relPath)
   }
 

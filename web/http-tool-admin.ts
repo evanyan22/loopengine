@@ -231,14 +231,54 @@ export function addToolToIndex(toolsIndexPath: string, toolFileName: string, exp
     throw new HttpToolIndexShapeError(`${toolsIndexPath} doesn't match the expected "export const tools: ToolDefinition[] = [...]" shape — add this tool to it by hand instead.`)
   }
 
+  // Idempotent — a caller that adds the same tool twice (e.g. package-
+  // manager.ts's removePackage not having cleaned up this same file
+  // before a re-add, or simply calling this twice by mistake) gets a
+  // no-op the second time instead of a duplicate `import { X }`
+  // declaration, which is a TypeScript syntax error ("Duplicate
+  // identifier"), not just a harmless extra line.
+  const arrayEntries = arrayMatch[1]
+    .split(',')
+    .map((e) => e.trim())
+    .filter(Boolean)
+  if (arrayEntries.includes(exportName)) return
+
   const importLine = `import { ${exportName} } from './${toolFileName}.js'\n`
   const lastImportMatch = [...source.matchAll(/^import .+\n/gm)].pop()
   const insertAt = lastImportMatch ? lastImportMatch.index! + lastImportMatch[0].length : 0
   const withImport = source.slice(0, insertAt) + importLine + source.slice(insertAt)
 
-  const existingEntries = arrayMatch[1].trim()
-  const newEntries = existingEntries ? `${existingEntries}, ${exportName}` : exportName
+  const newEntries = [...arrayEntries, exportName].join(', ')
   const withEntry = withImport.replace(/export const tools: ToolDefinition\[\] = \[([^\]]*)\]/, `export const tools: ToolDefinition[] = [${newEntries}]`)
+
+  writeFileSync(toolsIndexPath, withEntry)
+}
+
+/** addToolToIndex's own undo — removes the named tool's import line and
+ * array entry. Best-effort, not "refuse rather than guess" like
+ * addToolToIndex: this only ever runs against a tool package-manager.ts
+ * itself installed (so the exact shape addToolToIndex wrote is known),
+ * and the caller (removePackage) has already deleted the tool's .ts
+ * file — leaving a stale entry behind, the previous behavior, means a
+ * dangling import that fails the next build, which is strictly worse
+ * than a no-op here if the file turns out not to match (hand-edited
+ * since). No-ops (rather than throwing) when the file is missing
+ * entirely, or the expected import/array-entry shape isn't found. */
+export function removeToolFromIndex(toolsIndexPath: string, toolFileName: string, exportName: string): void {
+  if (!existsSync(toolsIndexPath)) return
+  const source = readFileSync(toolsIndexPath, 'utf8')
+
+  const importLineRe = new RegExp(`^import \\{ ${exportName} \\} from '\\./${toolFileName}\\.js'\\n`, 'm')
+  const withoutImport = source.replace(importLineRe, '')
+
+  const arrayMatch = withoutImport.match(/export const tools: ToolDefinition\[\] = \[([^\]]*)\]/)
+  if (!arrayMatch) return
+
+  const remainingEntries = arrayMatch[1]
+    .split(',')
+    .map((e) => e.trim())
+    .filter((e) => e && e !== exportName)
+  const withEntry = withoutImport.replace(/export const tools: ToolDefinition\[\] = \[([^\]]*)\]/, `export const tools: ToolDefinition[] = [${remainingEntries.join(', ')}]`)
 
   writeFileSync(toolsIndexPath, withEntry)
 }

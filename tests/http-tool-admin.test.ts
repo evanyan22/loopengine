@@ -6,6 +6,8 @@ import {
   updateHttpTool,
   readHttpToolSpec,
   listEditableHttpToolNames,
+  addToolToIndex,
+  removeToolFromIndex,
   HttpToolExistsError,
   HttpToolIndexShapeError,
   HttpToolNameError,
@@ -71,6 +73,17 @@ describe('createHttpTool', () => {
     expect(indexSource.match(/^import /gm)?.length).toBe(3)
     expect(indexSource).toContain("import { issueRefund } from './issue_refund.js'")
     expect(indexSource).toContain('export const tools: ToolDefinition[] = [lookupOrder, issueRefund]')
+  })
+
+  it('addToolToIndex is idempotent — calling it again for a tool already in the array is a no-op', async () => {
+    await createHttpTool(AGENT_NAME, spec())
+    const before = readFileSync(join(TOOLS_DIR, 'index.ts'), 'utf8')
+
+    addToolToIndex(join(TOOLS_DIR, 'index.ts'), 'lookup_order_status', 'lookupOrderStatus')
+
+    const after = readFileSync(join(TOOLS_DIR, 'index.ts'), 'utf8')
+    expect(after).toBe(before)
+    expect(after.match(/^import \{ lookupOrderStatus \}/gm)?.length).toBe(1)
   })
 
   it('throws HttpToolIndexShapeError, and writes nothing to index.ts, when tools/index.ts has an unrecognized shape', async () => {
@@ -209,5 +222,53 @@ describe('updateHttpTool', () => {
 
     await expect(updateHttpTool(AGENT_NAME, 'hand_written', spec({ name: 'hand_written' }))).rejects.toThrow(HttpToolNotEditableError)
     expect(readFileSync(join(TOOLS_DIR, 'hand_written.ts'), 'utf8')).toBe('export const handWritten = { name: "hand_written" }\n')
+  })
+})
+
+describe('removeToolFromIndex', () => {
+  it('removes the only entry: both the import line and the array entry', async () => {
+    await createHttpTool(AGENT_NAME, spec())
+
+    removeToolFromIndex(join(TOOLS_DIR, 'index.ts'), 'lookup_order_status', 'lookupOrderStatus')
+
+    const source = readFileSync(join(TOOLS_DIR, 'index.ts'), 'utf8')
+    expect(source).not.toContain('lookupOrderStatus')
+    expect(source).toContain('export const tools: ToolDefinition[] = []')
+  })
+
+  it('removes one of several entries, leaving the others and their import order intact', async () => {
+    await createHttpTool(AGENT_NAME, spec())
+    await createHttpTool(AGENT_NAME, spec({ name: 'issue_refund', fields: [{ name: 'orderId', type: 'string', required: true }] }))
+
+    removeToolFromIndex(join(TOOLS_DIR, 'index.ts'), 'lookup_order_status', 'lookupOrderStatus')
+
+    const source = readFileSync(join(TOOLS_DIR, 'index.ts'), 'utf8')
+    expect(source).not.toContain('lookupOrderStatus')
+    expect(source).toContain("import { issueRefund } from './issue_refund.js'")
+    expect(source).toContain('export const tools: ToolDefinition[] = [issueRefund]')
+  })
+
+  it('is a no-op when the index file does not exist', () => {
+    expect(() => removeToolFromIndex(join(TOOLS_DIR, 'index.ts'), 'lookup_order_status', 'lookupOrderStatus')).not.toThrow()
+  })
+
+  it('is a no-op when the named tool is not actually in the index', async () => {
+    await createHttpTool(AGENT_NAME, spec())
+    const before = readFileSync(join(TOOLS_DIR, 'index.ts'), 'utf8')
+
+    removeToolFromIndex(join(TOOLS_DIR, 'index.ts'), 'never_added', 'neverAdded')
+
+    expect(readFileSync(join(TOOLS_DIR, 'index.ts'), 'utf8')).toBe(before)
+  })
+
+  it('a remove followed by re-adding the same tool produces exactly one import and one array entry, not a duplicate', async () => {
+    await createHttpTool(AGENT_NAME, spec())
+
+    removeToolFromIndex(join(TOOLS_DIR, 'index.ts'), 'lookup_order_status', 'lookupOrderStatus')
+    addToolToIndex(join(TOOLS_DIR, 'index.ts'), 'lookup_order_status', 'lookupOrderStatus')
+
+    const source = readFileSync(join(TOOLS_DIR, 'index.ts'), 'utf8')
+    expect(source.match(/^import \{ lookupOrderStatus \}/gm)?.length).toBe(1)
+    expect(source).toContain('export const tools: ToolDefinition[] = [lookupOrderStatus]')
   })
 })

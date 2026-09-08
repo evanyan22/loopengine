@@ -213,4 +213,36 @@ describe('removePackage', () => {
   it('throws PackageNotInstalledError for a package never installed', () => {
     expect(() => removePackage(AGENT_NAME, 'never-installed')).toThrow(PackageNotInstalledError)
   })
+
+  it('removes the tool from tools/index.ts, not just the .ts file', async () => {
+    const packageDir = buildFixturePackage()
+    await installPackage(AGENT_NAME, 'fixture-package', { fetchPackageDir: () => packageDir })
+    expect(readFileSync(join(AGENT_DIR, 'tools', 'index.ts'), 'utf8')).toContain('fixtureTool')
+
+    removePackage(AGENT_NAME, 'fixture-package')
+
+    const indexSource = readFileSync(join(AGENT_DIR, 'tools', 'index.ts'), 'utf8')
+    expect(indexSource).not.toContain('fixtureTool')
+    expect(indexSource).toContain('export const tools: ToolDefinition[] = []')
+  })
+
+  it('reinstalling the same package right after removing it does not duplicate the tool in tools/index.ts', async () => {
+    // The exact sequence a real "pick up upstream changes" workflow uses
+    // when upgrade-package isn't an option (see upgradePackage's own
+    // oldContentSpec doc comment) — confirmed live to have corrupted
+    // tools/index.ts with a duplicate `import { fixtureTool }` (a
+    // TypeScript "Duplicate identifier" build error) before
+    // removeToolFromIndex existed: removePackage used to leave the
+    // stale import behind entirely, and addToolToIndex had no
+    // idempotence check to catch it on the way back in.
+    const packageDir = buildFixturePackage()
+    await installPackage(AGENT_NAME, 'fixture-package', { fetchPackageDir: () => packageDir })
+
+    removePackage(AGENT_NAME, 'fixture-package')
+    await installPackage(AGENT_NAME, 'fixture-package', { fetchPackageDir: () => packageDir })
+
+    const indexSource = readFileSync(join(AGENT_DIR, 'tools', 'index.ts'), 'utf8')
+    expect(indexSource.match(/^import \{ fixtureTool \}/gm)?.length).toBe(1)
+    expect(indexSource).toContain('export const tools: ToolDefinition[] = [fixtureTool]')
+  })
 })
