@@ -3,6 +3,7 @@
 import type { Rule, Decision, Scope } from 'actauth'
 import type { Redis } from 'ioredis'
 import type { SafetyClassifier } from 'toollane'
+import type { Summarizer } from './compaction.js'
 
 /** Which channel a runAgent() call is on — the value RunAgentOptions.channel
  * carries, checked against directly by AgentConfig.httpNotifier's own
@@ -394,6 +395,21 @@ export interface AgentConfig {
   skillsDirs?: string[]
   skillIndexBudgetTokens?: number
   contextBudgetTokens?: number
+  /** How compaction.ts's Compactor compresses old history once a turn
+   * goes over contextBudgetTokens. Omitted entirely defaults to
+   * TruncatingSummarizer — a real, dependency-free fallback that just
+   * concatenates and cuts text, with no model call and no added latency
+   * or cost. Pass `new LLMSummarizer({ modelCall })` (llm-summarizer.js)
+   * to compact with a real model call instead — genuinely worth it for
+   * an agent whose sessions run long enough to hit compaction at all,
+   * since a fact stated once early on (an order number, an id) tends to
+   * survive a structured LLM summary but not a hard character cutoff.
+   * Not defaulted to LLMSummarizer automatically: that would add a
+   * hidden extra model call — cost, latency, and a new failure mode —
+   * to every agent, including ones that never expected compaction to do
+   * anything but this repo's own tests, which assert exact modelCall
+   * call counts. */
+  summarizer?: Summarizer
   /** Hard cap on model calls in one runAgent() invocation — the only thing
    * that stops a model stuck re-requesting the same (or ping-ponging)
    * tool calls forever, which nothing else in this loop bounds. Default

@@ -652,7 +652,12 @@ async function buildTurnContext(config: AgentConfig, modelCall: ModelCall, optio
   // 70000-token nudge point) and hardThreshold's 0.92 still leave real
   // margin before hitting it.
   const budgetTracker = new BudgetTracker({ budgetTokens: config.contextBudgetTokens ?? 100000 })
-  const compactor = new Compactor({ budgetTokens: config.contextBudgetTokens ?? 100000, softThreshold: budgetTracker.softThreshold, tailMessages })
+  const compactor = new Compactor({
+    budgetTokens: config.contextBudgetTokens ?? 100000,
+    softThreshold: budgetTracker.softThreshold,
+    tailMessages,
+    summarizer: config.summarizer,
+  })
   const rules = loadRules(config)
   // AgentConfig.httpNotifier only ever stands in for the http channel —
   // see its own doc comment for why cli/http_stream never consult it at

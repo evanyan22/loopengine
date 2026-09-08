@@ -87,6 +87,11 @@ export { agentAsTool } from './core/agent-as-tool.js'
 
 export { resumeAgent, loadRules, loadDefaultTools, loadSubagentAsTools, systemTools, systemSkillsDir } from './core/run-agent.js'
 
+export { Compactor, TruncatingSummarizer } from './core/compaction.js'
+export type { Summarizer, RecoverResult, RecoverAction } from './core/compaction.js'
+export { LLMSummarizer } from './core/llm-summarizer.js'
+export type { LLMSummarizerOptions } from './core/llm-summarizer.js'
+
 export { createCheckpointStore } from './core/durable-approvals.js'
 export type { TurnCheckpoint, CheckpointStore, OutstandingItem } from './core/durable-approvals.js'
 

@@ -656,6 +656,29 @@ describe('runAgent', () => {
     expect(result.history.length).toBeLessThan(22)
   })
 
+  it('uses AgentConfig.summarizer for compaction instead of the default TruncatingSummarizer', async () => {
+    const priorHistory: Message[] = []
+    for (let i = 0; i < 10; i++) {
+      priorHistory.push({ role: 'user', content: `turn ${i} question` })
+      priorHistory.push({ role: 'assistant', content: [{ type: 'text', text: `turn ${i} answer` }] })
+    }
+
+    let call = 0
+    const modelCall: ModelCall = vi.fn(async () => {
+      call++
+      if (call === 1) throw { status: 400, message: 'prompt is too long: exceeds maximum context length' }
+      return textResponse('ok')
+    })
+
+    const customSummarizer = { summarize: vi.fn(async () => ({ role: 'system', content: 'custom summary' })) }
+    const config = baseConfig({ contextBudgetTokens: 100, summarizer: customSummarizer })
+
+    const result = await runAgent(config, modelCall, 'new question', priorHistory)
+
+    expect(customSummarizer.summarize).toHaveBeenCalled()
+    expect(result.history.some((m) => m.content === 'custom summary')).toBe(true)
+  })
+
   it('newMessages is exactly this turn\'s content, decoupled from how history was reshaped', async () => {
     let call = 0
     const modelCall: ModelCall = vi.fn(async () => {
