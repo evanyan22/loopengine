@@ -285,6 +285,20 @@ describe('removeAbility', () => {
     expect(JSON.parse(readFileSync(join(AGENT_DIR, '.loopengine-abilities.json'), 'utf8'))).toEqual({})
   })
 
+  it('removing a namespaced skill also cleans up its now-empty ability-name namespace directory', async () => {
+    const firstDir = buildFixtureAbility()
+    await installAbility(AGENT_NAME, 'fixture-ability', { fetchAbilityDir: () => firstDir })
+    const secondDir = buildFixtureAbility({ name: 'fixture-ability-two', toolName: 'fixture_tool_two', ruleName: 'fixture-tool-two-allowed' })
+    await installAbility(AGENT_NAME, 'fixture-ability-two', { fetchAbilityDir: () => secondDir })
+    expect(existsSync(join(AGENT_DIR, 'skills', 'fixture-ability-two', 'fixture-skill'))).toBe(true)
+
+    removeAbility(AGENT_NAME, 'fixture-ability-two')
+
+    expect(existsSync(join(AGENT_DIR, 'skills', 'fixture-ability-two'))).toBe(false)
+    // The first ability's own (bare-named) skill is unaffected.
+    expect(existsSync(join(AGENT_DIR, 'skills', 'fixture-skill'))).toBe(true)
+  })
+
   it('refuses a hand-modified file without --force, but still removes untouched files and the actauth rule', async () => {
     const abilityDir = buildFixtureAbility()
     await installAbility(AGENT_NAME, 'fixture-ability', { fetchAbilityDir: () => abilityDir })

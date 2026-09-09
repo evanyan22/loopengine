@@ -19,7 +19,7 @@
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { basename, dirname, join } from 'node:path'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { parse as parseYaml } from 'yaml'
 import semver from 'semver'
@@ -743,6 +743,19 @@ export function removeAbility(agentName: string, abilityName: string, force = fa
     }
     rmSync(join(agentDir(agentName), 'skills', skillId), { recursive: true, force: true })
     removed.push(`skills/${skillId}/`)
+    // A namespaced skillId ("<ability-name>/<id>", see namespacedSkillId)
+    // leaves its own now-empty "<ability-name>/" namespace directory
+    // behind — best-effort cleanup, not "refuse rather than guess": rmdir
+    // itself already refuses (ENOTEMPTY) if another skill from this same
+    // ability is still namespaced under it, which is exactly the case
+    // this should leave alone.
+    if (skillId.includes('/')) {
+      try {
+        rmdirSync(join(agentDir(agentName), 'skills', dirname(skillId)))
+      } catch {
+        // Not empty, or already gone — either way, nothing to do.
+      }
+    }
   }
 
   for (const ruleName of record.actauthRules) {
