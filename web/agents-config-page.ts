@@ -1124,10 +1124,19 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   }
 
   function renderEnvRow(v) {
+    // More than one ability declaring the same name doesn't get resolved
+    // here — there's one .env per project, so both read whatever single
+    // value ends up set, whether that's actually correct or a coincidence
+    // (see env-admin.ts's own doc comment). Listing every ability instead
+    // of just the first one seen at least makes that visible to whoever's
+    // looking, instead of silently hiding all but one.
+    var sharedNote = v.abilityNames.length > 1
+      ? ' <span class="hint" title="More than one installed ability declares this name — there is only one value for it project-wide, so check whether they actually need the same one.">(shared)</span>'
+      : '';
     return '<tr>' +
       '<td><code>' + escapeHtml(v.name) + '</code></td>' +
       '<td>' + escapeHtml(v.description || '') + '</td>' +
-      '<td class="hint">' + escapeHtml(v.abilityName) + '</td>' +
+      '<td class="hint">' + escapeHtml(v.abilityNames.join(', ')) + sharedNote + '</td>' +
       '<td>' + (v.set ? '<span class="hint">set</span>' : '<span class="error">not set</span>') + '</td>' +
       '<td><form class="add-source env-var-form" data-name="' + escapeHtml(v.name) + '">' +
         '<input type="' + (v.secret ? 'password' : 'text') + '" name="value" placeholder="' + (v.set ? 'unchanged unless you type a new value' : 'value') + '" required>' +
@@ -1139,7 +1148,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   function renderEnvConfigHtml(vars) {
     if (!vars.length) return '<p class="hint">No installed ability has declared any environment variables for this agent yet.</p>';
     var rows = vars.map(renderEnvRow).join('');
-    return '<table><thead><tr><th>Name</th><th>Description</th><th>Ability</th><th>Status</th><th>Set value</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    return '<table><thead><tr><th>Name</th><th>Description</th><th>Required by</th><th>Status</th><th>Set value</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
 
   function envContentEl() {

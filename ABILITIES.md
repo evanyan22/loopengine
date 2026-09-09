@@ -282,8 +282,11 @@ Mechanically:
 
 - The Admin UI reads every installed ability's `env` list (from every
   agent's `.loopengine-abilities.json`) and shows one row per declared
-  var: name, description, and whether `process.env[name]` currently has
-  a value.
+  var name: description, which ability(ies) declare it, and whether
+  `process.env[name]` currently has a value. More than one ability
+  declaring the same name merges into that one row rather than hiding
+  all but the first — see the "Open questions" section below for why
+  that's surfaced, not resolved.
 - Submitting a new value does two things, not one: upserts the
   `KEY=VALUE` line into the project's `.env` file (a new small
   parse-and-upsert utility — preserve every other line/comment, replace
@@ -387,10 +390,21 @@ today.
 - Does `loopengineVersion` need to be checked against `actauth`'s own
   version too, given an ability's tool content could equally depend on
   an actauth feature that's version-gated?
-- There's one `.env` per *project*, not per agent — if two agents in the
-  same project each install a (possibly different) ability that happens
-  to declare the same env var name for an unrelated purpose, the Admin
-  UI's "set/not set" status and the single value in `.env` can't
-  actually distinguish them. Does the manifest need to namespace/prefix
-  declared names somehow, or is a same-name collision across unrelated
-  abilities rare enough in practice to leave undetected for v1?
+- There's one `.env` per *project*, not per agent — if two abilities
+  happen to declare the same env var name for an unrelated purpose,
+  there is genuinely only one value for it, shared by both, whether
+  that's actually correct or a coincidence. Unlike a tool or skill name
+  collision, this can't be resolved by namespacing: an env var name is a
+  literal `process.env.X` reference baked into the ability's own code,
+  not a label loopengine's generated glue controls, so there's nothing
+  safe to rename here the way there is for those two. What the Admin UI
+  *does* do: `listDeclaredEnvVars` (web/env-admin.ts) surfaces every
+  ability that declares a given name instead of silently keeping only
+  the first one seen — so the Environment tab's "Required by" column
+  makes the overlap visible, even though it still can't tell a real
+  conflict (two unrelated services, one ability's own var needs
+  renaming) apart from an intentional shared credential. Still open:
+  should the manifest format itself encourage/require a namespaced
+  default (e.g. an ability's own name as an implicit prefix) rather than
+  leaving collision-avoidance entirely up to each author picking a
+  specific enough name?

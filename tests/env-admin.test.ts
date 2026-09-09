@@ -56,13 +56,13 @@ describe('listDeclaredEnvVars', () => {
 
     expect(vars).toEqual(
       expect.arrayContaining([
-        { name: 'LOOPENGINE_TEST_FIXTURE_VAR_A', description: 'from a', secret: true, abilityName: 'ability-a', set: false },
-        { name: 'LOOPENGINE_TEST_FIXTURE_VAR_B', description: 'from b', secret: false, abilityName: 'ability-b', set: true },
+        { name: 'LOOPENGINE_TEST_FIXTURE_VAR_A', description: 'from a', secret: true, abilityNames: ['ability-a'], set: false },
+        { name: 'LOOPENGINE_TEST_FIXTURE_VAR_B', description: 'from b', secret: false, abilityNames: ['ability-b'], set: true },
       ]),
     )
   })
 
-  it('deduplicates a name declared by more than one ability, keeping the first', () => {
+  it('merges a name declared by more than one ability into one row, listing every ability instead of hiding all but the first', () => {
     writeProvenance({
       'ability-a': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_SHARED', description: 'from a' }] },
       'ability-b': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_SHARED', description: 'from b' }] },
@@ -70,7 +70,19 @@ describe('listDeclaredEnvVars', () => {
 
     const vars = listDeclaredEnvVars(AGENT_NAME)
     expect(vars).toHaveLength(1)
-    expect(vars[0].abilityName).toBe('ability-a')
+    expect(vars[0].abilityNames).toEqual(['ability-a', 'ability-b'])
+    expect(vars[0].description).toBe('from a')
+  })
+
+  it('treats a name as secret if any declaring ability marks it secret, even if another one checked first does not', () => {
+    writeProvenance({
+      'ability-a': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_SHARED', secret: false }] },
+      'ability-b': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_SHARED', secret: true }] },
+    })
+
+    const vars = listDeclaredEnvVars(AGENT_NAME)
+    expect(vars).toHaveLength(1)
+    expect(vars[0].secret).toBe(true)
   })
 })
 

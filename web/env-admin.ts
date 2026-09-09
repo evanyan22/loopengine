@@ -19,7 +19,10 @@ export interface DeclaredEnvVar {
   name: string
   description?: string
   secret: boolean
-  abilityName: string
+  /** Every ability that declares this name, in install order — usually
+   * one, but see listDeclaredEnvVars's own doc comment for why this is
+   * an array, not a single name. */
+  abilityNames: string[]
   set: boolean
 }
 
@@ -28,34 +31,53 @@ function provenancePath(agentName: string): string {
 }
 
 /** Every env var any ability installed for `agentName` declared it
- * needs, deduplicated by name — ABILITIES.md's own open question on
- * cross-ability name collisions applies here too (one .env per
- * *project*, not per agent, so two unrelated abilities declaring the
- * same name can't actually be told apart; the first one seen wins the
- * description shown). `set` is read live off `process.env`, not cached,
- * so it reflects whatever the last `setEnvVar` call — or a plain
- * restart picking up `.env` — actually did. */
+ * needs, merged by name. There's one .env per *project*, not per agent
+ * or per ability, so this can't actually resolve a genuine cross-ability
+ * name collision (two abilities declaring, say, "API_KEY" for two
+ * unrelated services still both read whichever single value ends up
+ * set — there is no per-ability slot to give them) — unlike a tool or
+ * skill name collision (see ability-manager.ts's namespacedToolName/
+ * namespacedSkillId), an env var name is a literal `process.env.X`
+ * reference baked into the ability's own code, not a label loopengine's
+ * own generated glue controls, so there's nothing here to safely rename.
+ * What this *can* do, and used to not: surface every ability that
+ * declares a given name (`abilityNames`, plural) instead of silently
+ * keeping only the first one seen and hiding the rest — turns a
+ * collision from invisible into something a human looking at the
+ * Environment tab can actually notice and judge (a real conflict
+ * needing one ability's own env var renamed, or a coincidence that's
+ * actually fine because both intentionally share one real credential).
+ * `secret` is true if *any* declaring ability marked it secret — the
+ * safer default, since treating a real secret as non-secret because a
+ * different ability's own declaration happened to be checked first
+ * would be the one direction genuinely worth avoiding. `set` is read
+ * live off `process.env`, not cached, so it reflects whatever the last
+ * `setEnvVar` call — or a plain restart picking up `.env` — actually
+ * did. */
 export function listDeclaredEnvVars(agentName: string): DeclaredEnvVar[] {
   const path = provenancePath(agentName)
   if (!existsSync(path)) return []
 
   const provenance = JSON.parse(readFileSync(path, 'utf8')) as Record<string, InstalledAbilityRecord>
-  const seen = new Set<string>()
-  const result: DeclaredEnvVar[] = []
+  const byName = new Map<string, DeclaredEnvVar>()
   for (const [abilityName, record] of Object.entries(provenance)) {
     for (const decl of record.env) {
-      if (seen.has(decl.name)) continue
-      seen.add(decl.name)
-      result.push({
+      const existing = byName.get(decl.name)
+      if (existing) {
+        existing.abilityNames.push(abilityName)
+        existing.secret = existing.secret || decl.secret === true
+        continue
+      }
+      byName.set(decl.name, {
         name: decl.name,
         description: decl.description,
         secret: decl.secret === true,
-        abilityName,
+        abilityNames: [abilityName],
         set: process.env[decl.name] !== undefined,
       })
     }
   }
-  return result
+  return [...byName.values()]
 }
 
 // process.cwd(), matching exactly where bin/cli.ts's own runTsx passes
