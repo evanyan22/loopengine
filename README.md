@@ -7,25 +7,36 @@ and permission rules, run through a transparent ReAct loop. No chain DSL,
 no hidden control flow — `core/run-agent.ts` is a single function you can read
 top to bottom. Run agents over a CLI, an HTTP API, or both.
 
-Once you define an agent, the loop turns it into something you can put in
-front of real users or real systems:
+## Why LoopEngine
 
-- **Callable over CLI or HTTP** — a script you run locally, or a real
-  service other apps can hit.
-- **Does real work, safely** — tools can hit a database, send emails, call
+- **Up and running in one command.** `npx create-loopengine@latest` scaffolds
+  a real, standalone project — its own repo, a starter agent, CLI and HTTP
+  adapters already wired up. `npm install && npm run dev` and you have a
+  running agent server, not a half-finished template to wire up yourself.
+- **A real Admin UI, not just logs.** Open `/agents/config` in a browser to
+  see and edit a live agent: its resolved config, permission rules, skills,
+  tool connections, and secrets — no redeploy to change a rule or add a
+  skill. See [Admin UI](#admin-ui) below.
+- **Human-in-the-loop, wired for real notification channels.** A risky tool
+  call or a genuinely ambiguous question routes to a human — live in a chat
+  session, or durably via Slack, Lark, email, a generic webhook, or a
+  polling queue, resumable minutes or days later. See
+  [Human in the loop](#human-in-the-loop) below.
+- **Sessions persist automatically.** Send a message, get a reply, come
+  back later with the same session id and continue — no database to wire up
+  yourself. See [Sessions](#7-sessions) below.
+- **A package system for reusable capabilities.** Install a bundle of
+  tools, a skill, and the permission rules that gate them with one command
+  — real, reviewable files in your own repo, not an opaque dependency. See
+  [Package system](#package-system) below.
+- **Does real work, safely.** Tools can hit a database, send emails, call
   GitHub/Slack, anything with an `execute` function. Permission rules gate
-  what happens without a human: safe reads auto-run, risky actions (a
-  refund, a send) get approval or are denied outright, so you can wire up
-  powerful tools without trusting the model blindly.
-- **Remembers** — conversations persist across requests, so a caller can
-  send one message, get a reply, and continue later.
-- **Multi-tenant out of the box** — the same deployed agent can serve
-  different customers/orgs with different permission levels, with no
-  forking required.
-- **Composable into bigger agents** — drop one agent's folder under
-  another's `subagents/` and it becomes a tool the parent can delegate
-  to, own tools/rules/loop intact. No chain DSL for orchestration either:
-  the parent's model just decides when to call it, like any other tool.
+  what happens without a human: safe reads auto-run, risky actions get
+  approval or are denied outright.
+- **Multi-tenant and composable out of the box.** The same deployed agent
+  serves different customers with different permission levels, no forking
+  required — and one agent's folder drops under another's `subagents/` to
+  become a tool the parent can delegate to, own tools/rules/loop intact.
 
 So the payoff: you write one `AgentConfig`, and get a deployable,
 persistent, permission-safe service — not just a prompt-and-response demo.
@@ -92,6 +103,102 @@ export const config: AgentConfig = {
 See `agents/customer-service/` and `agents/file-agent/` for complete,
 working examples.
 
+## Admin UI
+
+Run the HTTP adapter and open `http://localhost:8787/agents/config` — a
+live, editable view of every registered agent, no code changes or
+redeploy needed for most of it:
+
+| Tab | What you can do |
+| --- | --- |
+| **Overview** | System prompt, model, every tool (with its JSON schema and parallel-safety), and a read-only view of the rules that would actually apply. |
+| **Skills** | Create, edit, and delete `SKILL.md` files for this agent directly in the browser — write the body, preview the rendered markdown, save. |
+| **Tools** | Local hand-written tools, gateway-sourced tools (see below), and subagents-as-tools, in one place. Connect a new external gateway source or add/remove a tool without touching a file. |
+| **ActAuth** | Add, edit, and delete permission rules — scope, tool, condition, decision — and change `default_decision`, live. |
+| **Environment** | Every env var a package (see [Package system](#package-system)) declared it needs, across everything installed for this agent — which ones are set, which are missing, and a form to set one. A value is never echoed back once set. |
+
+Every tab is backed by a real API (`GET /agents/:name/config`, `.../actauth`,
+`.../env`, ...) that reuses the exact same resolution `runAgent()` itself
+uses — so what you see here can't drift out of sync with what a real
+request actually gets, and never returns a model API key.
+
+## Human in the loop
+
+A risky tool call (`actauth`'s `ask` decision) or a genuinely ambiguous
+question the model itself raises both need a human — and LoopEngine
+handles both the same way, live or durable:
+
+- **Live** — someone's actively watching right now (a terminal, an open
+  chat session). The turn just waits; `cli`/`http_stream` get this
+  automatically, with nothing to configure.
+- **Durable** — nobody's watching (a webhook-triggered run, a ticket that
+  came in overnight). The turn ends immediately with a resumable pending
+  state, and a real notification goes out on whichever channel you've
+  configured — resolvable minutes or days later without holding any
+  process open in between.
+
+Six channels ship as real, working notifiers — configure one and the
+"send a notification" side is done for you:
+
+| Channel | What it does |
+| --- | --- |
+| `webhook` | Signed HMAC-SHA256 POST to any URL you own |
+| `slack` | An interactive message via `chat.postMessage`, with Approve/Deny buttons |
+| `lark` | A Lark/Feishu interactive card |
+| `email` | A signed, expiring magic-link per decision |
+| `database` | Writes a row for your own worker/dashboard to poll |
+| `redis` | Pushes a queue entry for your own worker to consume |
+
+```ts
+export const config: AgentConfig = {
+  // ...
+  httpNotifier: {
+    channel: 'slack',
+    config: { botToken: process.env.SLACK_BOT_TOKEN!, channelId: process.env.SLACK_CHANNEL_ID! },
+    events: ['approval', 'question'],
+  },
+}
+```
+
+Reference implementations for the receiving side (verifying a Slack
+click, a webhook HMAC signature, a magic-link token) ship under
+`examples/notifier-handler/` for the four channels that need one. See
+[`HUMAN_IN_THE_LOOP.md`](HUMAN_IN_THE_LOOP.md) for the full setup guide —
+live and durable, worked examples, and how resumption actually works
+under the hood.
+
+## Package system
+
+Giving an agent a new capability is usually three separate, hand-authored
+things: a tool file, a `SKILL.md` teaching the model when to use it, and
+an `actauth` rule allowing it to actually run. A **loopengine package**
+bundles all three into one installable unit:
+
+```bash
+npx loopengine add-package <spec> --agent customer-service
+```
+
+`<spec>` is anything `npm pack` understands — a public or private npm
+package, a scoped package on a private registry, or a plain git repo. The
+tool files, skill directory, and actauth rules all land as real files in
+the agent's own tree, copied in rather than imported as a `node_modules`
+dependency — reviewable, diffable, and editable the same as anything you
+would have hand-written, not an opaque black box.
+
+```bash
+npx loopengine upgrade-package <packageName> --agent customer-service
+npx loopengine remove-package <packageName> --agent customer-service
+```
+
+Upgrading does a real three-way merge per file — a hand-edit since install
+survives, a genuine conflict leaves `<<<<<<<` markers to resolve by hand
+instead of silently overwriting either side. Removing refuses a file
+that's been modified since install unless you pass `--force`. A package
+can also declare the env vars its tools need, which then show up in the
+Admin UI's [Environment tab](#admin-ui) automatically once installed. See
+[`PACKAGES.md`](PACKAGES.md) for the full design — format, publishing,
+and how the merge/upgrade mechanics work in detail.
+
 ## Core concepts
 
 ### 1. The Loop
@@ -103,9 +210,9 @@ hidden control flow: call the model, act on what it asks for, repeat.
 2. If it responds with tool calls, each one is checked against
    `AgentConfig.rules` — allowed calls run, denied calls are refused,
    "ask" calls go to whatever approver applies for the call's own channel
-   (see "Tool permission and multi-tenancy" below) — a live approver is
-   awaited right there; a durable one returns instantly and the call is
-   resolved later instead.
+   (see "Human in the loop" above) — a live approver is awaited right
+   there; a durable one returns instantly and the call is resolved later
+   instead.
 3. Approved calls execute and their results feed back into the
    conversation.
 4. Repeat from step 1 — until the model stops requesting tools
@@ -265,11 +372,9 @@ Beyond hand-written tools and subagents, an agent can pull tools from an
 external gateway — [Composio](https://composio.dev) today, with a
 `ToolSource` interface designed so more providers (Nango, Arcade,
 Scalekit, ...) slot in later as thin adapters, same shape. Unlike
-hand-written tools, these
-are meant to be managed by an operator at runtime, not committed to code:
-run the HTTP adapter, open `/agents/config`, pick an agent, and switch to
-its "Gateway tools" tab — alongside "Overview" and "Actauth" — to see its
-connected sources and add or remove one.
+hand-written tools, these are meant to be managed by an operator at
+runtime, not committed to code: open the [Admin UI](#admin-ui)'s Tools
+tab for an agent to see its connected sources and add or remove one.
 
 ```bash
 npx tsx --env-file-if-exists=.env adapters/http.ts
@@ -294,39 +399,9 @@ adding a source (or use the page's permission dropdown) to seed an
 Every tool call is gated by [`actauth`](https://www.npmjs.com/package/actauth):
 each rule in `AgentConfig.rules` maps a `scope` (tenant/environment) + tool
 name to `allow` / `ask` / `deny`. Anything not covered falls through to
-`defaultDecision`. An `ask` decision routes to whichever approver applies
-for the call's own channel: `cli`/`http_stream` always get the library's
-own live default (`ConsoleApprover`, blocking on stdin, for `cli`; a live
-approval popup for `http_stream`) — nothing to configure there — and
-`http` gets a durable one whenever `AgentConfig.httpNotifier` is
-configured for it (see below), falling back to the same kind of live
-default otherwise.
-
-`ask` approvers come in two shapes. A **live** one (`WebchatApprover`,
-`SlackChatApprover`, `ConsoleApprover`) is awaited directly — the turn stays
-suspended until a human decides, which only makes sense when someone's
-actually there right now (a terminal, an open chat connection). A
-**durable** one (`WebhookApprover`) fires a signed webhook and returns
-instantly instead — the turn ends with `stopReason: 'pending_approval'`,
-durably resumable minutes or days later via
-`POST /pending-approvals/:pendingId/resolve`, without holding any
-process open in between. See `HUMAN_IN_THE_LOOP.md` for the full design.
-
-The system `ask_user` tool (a model asking a human a genuinely ambiguous
-clarifying question mid-turn) gets the same live/durable split, via
-`RunAgentOptions.questionHandler` (or `AgentConfig.httpNotifier`'s own
-`'question'` event, for the `http` channel specifically): live by default
-(blocks on the channel it's raised on), or durable — a
-`DurableQuestionHandler` (e.g. `core/http-notify-triggers/webhook.ts`'s
-`WebhookNotifier`) instead ends the turn with `stopReason:
-'pending_question'`, resumable via
-`POST /pending-questions/:pendingId/answer`. See `HUMAN_IN_THE_LOOP.md`'s
-own "Durable questions" section.
-
-For the practical "what do I actually need to build" version of all of
-this — live chat setup, durable setup, and reference implementations for
-Slack/Lark/email/generic-webhook notification channels — see
-[`HUMAN_IN_THE_LOOP.md`](HUMAN_IN_THE_LOOP.md).
+`defaultDecision`. An `ask` decision routes to a human, live or durable —
+see [Human in the loop](#human-in-the-loop) above for how that actually
+works.
 
 A real agent's rules live in `agents/<name>/actauth.yml`:
 
@@ -359,7 +434,9 @@ A session is one ongoing conversation. Message history persists between
 requests automatically — send a message, get a reply, come back later with
 the same `sessionId` and continue where you left off. Two storage backends,
 picked automatically: a local file store, or Redis if `REDIS_URL` is set
-(needed for multiple server instances).
+(needed for multiple server instances). Storage is a durable, parent-linked
+log rather than a flat blob rewritten whole each turn, so it also survives
+a crash mid-turn cleanly — see `core/sessionknit.ts`.
 
 An agent can define `AgentConfig.sessionIdFor(body)` to control what
 counts as "one conversation" for its own domain (e.g. `customer-service`
@@ -442,18 +519,8 @@ plain-HTTP/CLI transport bindings, and a JSON Schema
 `core/client.ts` and the `examples/chatbox/react`/`examples/chatbox/vue`
 hooks are reference implementations of it.
 
-**Agent config page:** open `http://localhost:8787/agents/config`
-(optionally `?agent=<name>`) to browse every registered agent's resolved
-config — system prompt, model, tools (with their JSON schemas and
-parallel-safety), the actual ActAuth rules that would be enforced (source,
-default decision, per-rule scope/tool/decision/`when`), and whether
-`sessionIdFor`/`tenantFor`/`isSafeTool` are custom or defaulted, and
-whether the `http` channel's approver is custom (`httpNotifier` covers
-`'approval'`) or the library's own default. Backed
-by `GET /agents/:name/config`, which reuses the same
-rule/tool resolution `runAgent()` itself uses, so it can't drift out of
-sync with what a real request actually gets. Never returns
-`AgentModelConfig.apiKey`.
+**Agent config page:** this is the [Admin UI](#admin-ui) described above
+— open `http://localhost:8787/agents/config` (optionally `?agent=<name>`).
 
 ## Wiring a real model
 

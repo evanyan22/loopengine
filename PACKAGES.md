@@ -1,9 +1,8 @@
 # loopengine packages: installable tool+skill+actauth bundles
 
-**Status: design spec — not yet implemented.** This document specifies
-what a "loopengine package" is and how installing/upgrading one would
-work, so it can be built incrementally against a fixed contract instead
-of improvised per-PR. Nothing below exists in code yet.
+**Status: implemented.** `add-package`/`upgrade-package`/`remove-package`
+all work end-to-end as specified below — this document is now the design
+reference for how they work, not a pre-implementation spec.
 
 ## The problem this solves
 
