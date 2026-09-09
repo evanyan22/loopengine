@@ -186,4 +186,38 @@ describe('upgradeAbility', () => {
     expect(skillResult?.status).toBe('updated')
     expect(readFileSync(join(AGENT_DIR, 'skills', 'fixture-ability-two', 'fixture-skill', 'SKILL.md'), 'utf8')).toContain('v2 skill body')
   })
+
+  it('upgrades a namespaced tool correctly — matching against the manifest\'s bare name, not the installed namespaced one', async () => {
+    // Occupies the bare "fixture_tool" name first, so the second
+    // ability's own install below is forced to namespace under its own
+    // name (see ability-manager.ts's namespacedToolName).
+    const occupant = buildFixtureAbilityVersion('1.0.0', 'occupant-result', 'occupant skill body', 'allow')
+    await installAbility(AGENT_NAME, 'fixture-ability', { fetchAbilityDir: () => occupant })
+
+    function buildSecondAbilityVersion(version: string, toolBody: string): string {
+      const abilityDir = mkdtempSync(join(tmpdir(), 'loopengine-fixture-ability-two-'))
+      mkdirSync(join(abilityDir, 'tools'), { recursive: true })
+      writeFileSync(
+        join(abilityDir, 'tools', 'fixture_tool.ts'),
+        `import type { ToolDefinition } from '#core/agent-config.js'\n\nexport const fixtureTool: ToolDefinition = {\n  name: 'fixture_tool',\n  description: 'A second fixture tool',\n  input_schema: { type: 'object', properties: {} },\n  execute: async () => '${toolBody}',\n}\n`,
+      )
+      writeFileSync(join(abilityDir, 'package.json'), JSON.stringify({ name: 'fixture-ability-two', version, private: true }, null, 2))
+      writeFileSync(
+        join(abilityDir, 'loopengine.ability.json'),
+        JSON.stringify({ loopengineVersion: '*', tools: ['tools/fixture_tool.ts'], env: [] }, null, 2),
+      )
+      return abilityDir
+    }
+
+    const v1 = buildSecondAbilityVersion('1.0.0', 'v1-result')
+    const v2 = buildSecondAbilityVersion('2.0.0', 'v2-result')
+    await installAbility(AGENT_NAME, 'fixture-ability-two', { fetchAbilityDir: () => v1 })
+    expect(existsSync(join(AGENT_DIR, 'tools', 'fixture_ability_two__fixture_tool.ts'))).toBe(true)
+
+    const { files } = await upgradeAbility(AGENT_NAME, 'fixture-ability-two', { fetchAbilityDir: makeFetch(v1, v2) })
+
+    const toolResult = files.find((f) => f.path === 'tools/fixture_ability_two__fixture_tool.ts')
+    expect(toolResult?.status).toBe('updated')
+    expect(readFileSync(join(AGENT_DIR, 'tools', 'fixture_ability_two__fixture_tool.ts'), 'utf8')).toContain('v2-result')
+  })
 })

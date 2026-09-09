@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   installAbility,
@@ -151,14 +152,72 @@ describe('installAbility', () => {
     expect(existsSync(join(AGENT_DIR, 'tools'))).toBe(false)
   })
 
-  it('refuses (all-or-nothing) when a tool file already exists, without writing the skill or actauth rule', async () => {
+  it('namespaces its own tool under its own name when the bare tool name is already taken, without touching the existing file', async () => {
     mkdirSync(join(AGENT_DIR, 'tools'), { recursive: true })
     writeFileSync(join(AGENT_DIR, 'tools', 'fixture_tool.ts'), 'placeholder')
     const abilityDir = buildFixtureAbility()
 
-    await expect(installAbility(AGENT_NAME, 'fixture-ability', { fetchAbilityDir: () => abilityDir })).rejects.toThrow(AbilityCollisionError)
-    expect(existsSync(join(AGENT_DIR, 'skills', 'fixture-skill'))).toBe(false)
-    expect(existsSync(join(AGENT_DIR, 'actauth.yml'))).toBe(false)
+    const result = await installAbility(AGENT_NAME, 'fixture-ability', { fetchAbilityDir: () => abilityDir })
+
+    expect(result.installed).toContain('tools/fixture_ability__fixture_tool.ts')
+    expect(readFileSync(join(AGENT_DIR, 'tools', 'fixture_tool.ts'), 'utf8')).toBe('placeholder')
+    expect(existsSync(join(AGENT_DIR, 'skills', 'fixture-skill'))).toBe(true)
+    expect(existsSync(join(AGENT_DIR, 'actauth.yml'))).toBe(true)
+  })
+
+  it('namespaces a second ability\'s colliding tool name so both remain independently callable', async () => {
+    // Own, never-reused agent name/dir rather than the shared AGENT_NAME
+    // — this test dynamically imports the generated tools/index.ts, and
+    // Node's ESM import() cache is keyed by resolved file URL and never
+    // expires within a process, so reusing AGENT_DIR here could return a
+    // stale module from an earlier or later test that also imports it
+    // (see tests/subagent-tools.test.ts's own comment on this exact
+    // gotcha — a query-string cache-buster was tried here first and
+    // didn't reliably avoid it either, so this test follows that file's
+    // own proven fix instead: a name nothing else ever touches).
+    const coexistAgentName = 'ability-install-fixture-agent-tool-coexist'
+    const coexistAgentDir = join(process.cwd(), 'agents', coexistAgentName)
+    try {
+      const firstDir = buildFixtureAbility()
+      await installAbility(coexistAgentName, 'fixture-ability', { fetchAbilityDir: () => firstDir })
+
+      // Same bare tool name ("fixture_tool") as the first ability, but a
+      // distinct skill/rule name — isolates the tool-name collision from
+      // the skill/actauth-rule ones (already covered by their own tests).
+      const secondDir = buildFixtureAbility({
+        name: 'fixture-ability-two',
+        skillId: 'fixture-skill-two',
+        ruleName: 'fixture-tool-two-allowed',
+        executeReturn: "'second-result'",
+      })
+
+      const result = await installAbility(coexistAgentName, 'fixture-ability-two', { fetchAbilityDir: () => secondDir })
+
+      expect(result.installed).toContain('tools/fixture_ability_two__fixture_tool.ts')
+      expect(existsSync(join(coexistAgentDir, 'tools', 'fixture_tool.ts'))).toBe(true)
+      expect(existsSync(join(coexistAgentDir, 'tools', 'fixture_ability_two__fixture_tool.ts'))).toBe(true)
+
+      const provenance = JSON.parse(readFileSync(join(coexistAgentDir, '.loopengine-abilities.json'), 'utf8'))
+      expect(provenance['fixture-ability'].tools).toEqual(['fixture_tool'])
+      expect(provenance['fixture-ability-two'].tools).toEqual(['fixture_ability_two__fixture_tool'])
+
+      // Dynamically import the real, generated tools/index.ts — proves
+      // both tools are genuinely distinct, callable ToolDefinitions (not
+      // just that the generated source *looks* right), the same
+      // technique web/http-tool-admin.ts's own createHttpTool already
+      // uses to hand back a live tool.
+      const mod = (await import(pathToFileURL(join(coexistAgentDir, 'tools', 'index.ts')).href)) as {
+        tools: { name: string; execute: () => Promise<string> }[]
+      }
+      const names = mod.tools.map((t) => t.name).sort()
+      expect(names).toEqual(['fixture_ability_two__fixture_tool', 'fixture_tool'])
+      const second = mod.tools.find((t) => t.name === 'fixture_ability_two__fixture_tool')
+      expect(await second?.execute()).toBe('second-result')
+      const first = mod.tools.find((t) => t.name === 'fixture_tool')
+      expect(await first?.execute()).toBe('fixture-result')
+    } finally {
+      rmSync(coexistAgentDir, { recursive: true, force: true })
+    }
   })
 
   it('refuses when an actauth rule of the same name already exists', async () => {
@@ -287,5 +346,41 @@ describe('removeAbility', () => {
     const indexSource = readFileSync(join(AGENT_DIR, 'tools', 'index.ts'), 'utf8')
     expect(indexSource.match(/^import \{ fixtureTool \}/gm)?.length).toBe(1)
     expect(indexSource).toContain('export const tools: ToolDefinition[] = [fixtureTool]')
+  })
+
+  it('removes a namespaced tool cleanly — import, wrapper const, and array entry — leaving the other ability untouched', async () => {
+    // Own agent name/dir — see the earlier "namespaces a second
+    // ability's colliding tool name" test's own comment on why the
+    // shared AGENT_DIR isn't safe for a test that dynamically imports
+    // tools/index.ts.
+    const removeAgentName = 'ability-install-fixture-agent-tool-remove'
+    const removeAgentDir = join(process.cwd(), 'agents', removeAgentName)
+    try {
+      const firstDir = buildFixtureAbility()
+      await installAbility(removeAgentName, 'fixture-ability', { fetchAbilityDir: () => firstDir })
+      const secondDir = buildFixtureAbility({ name: 'fixture-ability-two', skillId: 'fixture-skill-two', ruleName: 'fixture-tool-two-allowed' })
+      await installAbility(removeAgentName, 'fixture-ability-two', { fetchAbilityDir: () => secondDir })
+
+      const { removed, refused } = removeAbility(removeAgentName, 'fixture-ability-two')
+
+      expect(refused).toEqual([])
+      expect(removed).toContain('tools/fixture_ability_two__fixture_tool.ts')
+      expect(existsSync(join(removeAgentDir, 'tools', 'fixture_ability_two__fixture_tool.ts'))).toBe(false)
+
+      const indexSource = readFileSync(join(removeAgentDir, 'tools', 'index.ts'), 'utf8')
+      expect(indexSource).not.toContain('fixture_ability_two')
+      expect(indexSource).toContain('export const tools: ToolDefinition[] = [fixtureTool]')
+
+      // The first ability's own (bare-named) tool survives untouched and
+      // still actually works — dynamically importing the patched
+      // tools/index.ts, not just checking its source text.
+      const mod = (await import(pathToFileURL(join(removeAgentDir, 'tools', 'index.ts')).href)) as {
+        tools: { name: string; execute: () => Promise<string> }[]
+      }
+      expect(mod.tools.map((t) => t.name)).toEqual(['fixture_tool'])
+      expect(await mod.tools[0].execute()).toBe('fixture-result')
+    } finally {
+      rmSync(removeAgentDir, { recursive: true, force: true })
+    }
   })
 })

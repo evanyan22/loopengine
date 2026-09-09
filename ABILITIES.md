@@ -115,7 +115,14 @@ two numbers to keep in sync instead of one.
 - `tools` — file paths, relative to the ability root, each expected to
   `export const <camelCase> : ToolDefinition`, one per file — same
   shape `generateToolCode`'s own output already has, so hand-written and
-  admin-generated tools are both valid ability contents unmodified.
+  admin-generated tools are both valid ability contents unmodified. Two
+  abilities declaring the same tool name (both ship a "web_search" tool,
+  say) can coexist too: if the bare name is already taken, the second
+  one installs as `tools/<ability-name>__<name>.ts` instead, with its
+  actual model-facing `name` field overridden to match (via a small
+  generated wrapper in `tools/index.ts`, not by editing the ability's
+  own file — see "Installing" below for why a tool needs this extra step
+  where a skill doesn't).
 - `skills` — directory paths, each a complete `SKILL.md` (+ any
   scripts/assets alongside it), copied as-is into the installing agent's
   `skills/` directory. Two abilities declaring the same skill id (both
@@ -123,7 +130,7 @@ two numbers to keep in sync instead of one.
   taken, the second one installs namespaced under its own ability name
   instead (`skills/<ability-name>/<id>/`) rather than refusing outright
   — see "Installing" below for why this is safe for skills specifically,
-  unlike a tool or actauth rule name collision.
+  unlike an actauth rule name collision.
 - `actauth` — one YAML file of rule objects (`name`, `scope`, `tool`,
   `decision` — same shape `agents/<name>/actauth.yml` already uses),
   appended into the installing agent's own `actauth.yml` rather than
@@ -183,28 +190,48 @@ the first check that fails:
    exact technique `fetchPublishedTemplateDir` already uses to pull a
    historical `create-loopengine` template; no new fetch mechanism
    needed.
-3. **Collision check.** For every tool the manifest lists, check whether
-   `agents/<agent>/tools/<name>.ts` already exists; for every actauth
-   rule, check whether a rule of that `name` already exists in the
-   target `actauth.yml`. Refuse the whole install on either collision —
-   same "refuse rather than guess" rule `HttpToolExistsError`/
-   `HttpToolIndexShapeError` already enforce for a single admin-created
-   tool, just applied ability-wide so an install is all-or-nothing, never
-   half-applied. A tool name has to be globally unique per agent (it's
-   what the model calls by name — two tools can't share one), and so
-   does an actauth rule name, so there's no coexistence option for
-   either. A skill id is different: it's only addressed through the
-   `Skill` meta-tool's own argument, which already supports a
-   `<namespace>:<id>` form (`SkillGarden`'s existing nested-directory
-   convention). So for every skill the manifest lists, check whether
-   `agents/<agent>/skills/<id>/` already exists — if it does, install
-   under `agents/<agent>/skills/<ability-name>/<id>/` instead (refusing
-   only if even *that* is somehow already taken) rather than refusing
-   the whole install over a name two unrelated abilities happened to
-   both pick.
+3. **Collision check.** For every actauth rule, check whether a rule of
+   that `name` already exists in the target `actauth.yml` — refuse the
+   whole install if it does, same "refuse rather than guess" rule
+   `HttpToolExistsError`/`HttpToolIndexShapeError` already enforce for a
+   single admin-created tool, just applied ability-wide so an install is
+   all-or-nothing, never half-applied. An actauth rule name has no
+   coexistence option: two rules can't share one name in the same
+   `actauth.yml`, and there's no namespacing convention for rule names
+   the way there is for tools/skills below.
+
+   A tool or skill name collision is handled differently — namespaced
+   under the ability's own name instead of refused outright, since both
+   have somewhere to put the disambiguated name that a *caller* (the
+   model) can still resolve:
+   - A **tool** name is what the model calls by, directly — `run-agent.ts`'s
+     own `dedupeToolsByName` keeps only the *last* same-named entry and
+     silently drops the rest before the model ever sees them (see that
+     function's own doc comment), so two same-named tools could never
+     actually both be callable without a name change. If
+     `agents/<agent>/tools/<name>.ts` already exists, this ability's own
+     tool installs as `tools/<ability-name>__<name>.ts` instead (refusing
+     only if even *that* is somehow already taken) — the file's own
+     content is untouched (so a later upgrade's three-way merge still
+     works unmodified), and only the *generated* `tools/index.ts` is
+     taught the disambiguated name, via a small wrapper object that
+     overrides `name` (see step 4).
+   - A **skill** id is only ever addressed through the `Skill` meta-tool's
+     own argument, which already supports a `<namespace>:<id>` form
+     (`SkillGarden`'s existing nested-directory convention). If
+     `agents/<agent>/skills/<id>/` already exists, this ability's own
+     skill installs under `agents/<agent>/skills/<ability-name>/<id>/`
+     instead (refusing only if even *that* is somehow already taken)
+     — addressable as `<ability-name>:<id>`, no changes needed on the
+     loading side at all.
 4. **Write tool files**, then patch `tools/index.ts` — reusing
-   `addToolToIndex` (`web/http-tool-admin.ts`) exactly as-is, called once
-   per tool in the ability.
+   `addToolToIndex` (`web/http-tool-admin.ts`), called once per tool in
+   the ability. For a plain (non-namespaced) tool this is exactly the
+   bare `import { x } from './x.js'` / `[x]` array-entry shape it's
+   always been; for a namespaced one, `addToolToIndex` also inserts one
+   `const <name>: ToolDefinition = { ...<aliasedImport>, name: '<ability-name>__<name>' }`
+   line between the import and the array — the only place the
+   disambiguated model-facing name actually gets set.
 5. **Copy skill directories** into `agents/<agent>/skills/`.
 6. **Append actauth rules** into `agents/<agent>/actauth.yml`, under a
    generated comment marking which ability/version they came from (see

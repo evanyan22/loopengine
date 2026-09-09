@@ -72,6 +72,53 @@ function namespacedSkillId(abilityName: string, skillId: string): string {
   return `${abilityName}/${skillId}`
 }
 
+// A tool name (unlike a skill id) is a flat identifier, not a path — it
+// has to satisfy TOOL_NAME_PATTERN on its own (it becomes both a file
+// basename and a JS identifier via toCamelCase), so an ability's raw
+// package.json "name" can't be used directly the way it can as a path
+// segment for a skill (hyphens, "@scope/", dots aren't valid there).
+// Collapsing every run of non-alphanumeric characters to a single "_"
+// and guaranteeing a leading letter (TOOL_NAME_PATTERN requires one)
+// always produces a safe result — never throws, unlike
+// namespacedSkillId, since there's no filesystem path to escape here.
+function sanitizeForToolName(name: string): string {
+  const cleaned = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return cleaned.length > 0 && /^[a-z]/.test(cleaned) ? cleaned : `a_${cleaned}`
+}
+
+/** Two abilities can each declare a tool with the same bare name too —
+ * but unlike a skill id, a tool's name is the literal, model-callable
+ * function name: run-agent.ts's own dedupeToolsByName keeps only the
+ * *last* same-named entry and silently drops the rest before the model
+ * ever sees them (its own doc comment: "a name collision would still
+ * show up twice in toolSchemas, confusing (or rejected outright by) a
+ * real model API"), so two same-named tools can never actually coexist
+ * as distinct, callable tools the way two same-named skills can — only
+ * namespacing the *name itself* avoids that silent drop. */
+function namespacedToolName(abilityName: string, toolName: string): string {
+  return `${sanitizeForToolName(abilityName)}__${toolName}`
+}
+
+/** Whether `manifestToolFile` (a bare path straight off a manifest, e.g.
+ * "tools/web_search.ts") is the file an installed `installedToolName`
+ * (bare, or namespaced under `abilityName` on a collision — see
+ * namespacedToolName) actually came from. Used by upgradeAbility to
+ * match a provenance-recorded, possibly-namespaced name back to the
+ * right manifest entry — comparing the *installed* name against a
+ * freshly-recomputed candidate, rather than trying to strip a namespace
+ * prefix back off `installedToolName` textually, since "<ability>__"
+ * isn't a structural separator the way a skill id's "/" is: a bare tool
+ * name could legitimately contain "__" on its own, so string-stripping
+ * it back off would be ambiguous in a way recomputing forward and
+ * comparing never is. */
+function matchesInstalledToolName(abilityName: string, manifestToolFile: string, installedToolName: string): boolean {
+  const bareToolName = basename(manifestToolFile, '.ts')
+  return bareToolName === installedToolName || namespacedToolName(abilityName, bareToolName) === installedToolName
+}
+
 export interface AbilityEnvDecl {
   name: string
   description?: string
@@ -327,14 +374,20 @@ export async function installAbility(agentName: string, spec: string, options: F
   // tool, just applied ability-wide.
   const toolNames: string[] = []
   for (const toolFile of toolFiles) {
-    const toolName = basename(toolFile, '.ts')
-    if (!TOOL_NAME_PATTERN.test(toolName)) {
+    const bareToolName = basename(toolFile, '.ts')
+    if (!TOOL_NAME_PATTERN.test(bareToolName)) {
       throw new AbilityManifestError(`Tool file '${toolFile}' doesn't name a valid tool (must be lowercase snake_case).`)
     }
-    toolNames.push(toolName)
-    if (existsSync(join(toolsDir, `${toolName}.ts`))) {
-      throw new AbilityCollisionError(`agents/${agentName}/tools/${toolName}.ts already exists.`)
+    // The bare name if it's free; otherwise namespace under this
+    // ability's own name rather than refusing the install outright —
+    // see namespacedToolName's own doc comment for why this still
+    // leaves both tools genuinely callable, unlike a same-named actauth
+    // rule (below), which has no such option.
+    const installedToolName = existsSync(join(toolsDir, `${bareToolName}.ts`)) ? namespacedToolName(manifest.name, bareToolName) : bareToolName
+    if (existsSync(join(toolsDir, `${installedToolName}.ts`))) {
+      throw new AbilityCollisionError(`agents/${agentName}/tools/${installedToolName}.ts already exists.`)
     }
+    toolNames.push(installedToolName)
   }
   const skillIds: string[] = []
   for (const skillDir of skillDirs) {
@@ -368,20 +421,37 @@ export async function installAbility(agentName: string, spec: string, options: F
   if (toolNames.length > 0) {
     mkdirSync(toolsDir, { recursive: true })
     const indexPath = join(toolsDir, 'index.ts')
-    for (const toolFile of toolFiles) {
-      const toolName = basename(toolFile, '.ts')
+    for (const [i, toolFile] of toolFiles.entries()) {
+      const bareToolName = basename(toolFile, '.ts')
+      const installedToolName = toolNames[i]
       const code = readFileSync(join(abilityDir, toolFile), 'utf8')
-      const destPath = join(toolsDir, `${toolName}.ts`)
+      const destPath = join(toolsDir, `${installedToolName}.ts`)
       writeFileSync(destPath, code)
-      contentHashes[`tools/${toolName}.ts`] = sha256(code)
+      contentHashes[`tools/${installedToolName}.ts`] = sha256(code)
 
-      const exportName = toCamelCase(toolName)
+      // Plain case: the file's own export is imported and used as-is,
+      // exactly as before. Namespaced case: the file's own internal
+      // export name is untouched (still whatever the ability itself
+      // authored — importing it under that same bare name from two
+      // different abilities' files would be a duplicate top-level
+      // identifier), so the import gets aliased, and a small wrapper
+      // `const` overrides the actual model-facing `name` field, which
+      // the JS identifier alone has no effect on. See addToolToIndex's
+      // own doc comment for why `importSpecifier`/`arrayExpression` are
+      // separate parameters.
+      const sourceExportName = toCamelCase(bareToolName)
+      const namespaced = installedToolName !== bareToolName
+      const arrayExpression = namespaced ? toCamelCase(installedToolName) : sourceExportName
+      const importSpecifier = namespaced ? `${sourceExportName} as ${arrayExpression}Source` : sourceExportName
+      const preamble = namespaced ? `const ${arrayExpression}: ToolDefinition = { ...${arrayExpression}Source, name: '${installedToolName}' }` : undefined
+
       if (existsSync(indexPath)) {
-        addToolToIndex(indexPath, toolName, exportName)
+        addToolToIndex(indexPath, installedToolName, importSpecifier, arrayExpression, preamble)
       } else {
+        const preambleBlock = preamble ? `${preamble}\n\n` : ''
         writeFileSync(
           indexPath,
-          `import type { ToolDefinition } from 'loopengine'\nimport { ${exportName} } from './${toolName}.js'\n\nexport const tools: ToolDefinition[] = [${exportName}]\n`,
+          `import type { ToolDefinition } from 'loopengine'\nimport { ${importSpecifier} } from './${installedToolName}.js'\n\n${preambleBlock}export const tools: ToolDefinition[] = [${arrayExpression}]\n`,
         )
       }
     }
@@ -530,8 +600,12 @@ export async function upgradeAbility(agentName: string, abilityName: string, opt
 
   for (const toolName of record.tools) {
     const relPath = `tools/${toolName}.ts`
-    const oldFile = (oldManifest.tools ?? []).find((f) => basename(f, '.ts') === toolName)
-    const newFile = (newManifest.tools ?? []).find((f) => basename(f, '.ts') === toolName)
+    // matchesInstalledToolName, not a bare basename(f, '.ts') === toolName
+    // comparison — toolName may be namespaced (see namespacedToolName),
+    // and "<ability>__" isn't a structural separator safe to strip back
+    // off textually the way a skill id's "/" is.
+    const oldFile = (oldManifest.tools ?? []).find((f) => matchesInstalledToolName(abilityName, f, toolName))
+    const newFile = (newManifest.tools ?? []).find((f) => matchesInstalledToolName(abilityName, f, toolName))
     if (!oldFile || !newFile) {
       results.push({ path: relPath, status: 'unchanged' })
       continue

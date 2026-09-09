@@ -218,13 +218,35 @@ ${responseHandling}  },
 // across every real example in this repo (agents/customer-service/
 // tools/index.ts, create-loopengine's own template) — a handful of
 // named imports, then one `export const tools: ToolDefinition[] = [...]`
-// array literal. This patches that exact shape with two small string
-// edits (one new import line, one new array entry) rather than a full
-// TS-AST rewrite; if the file has been hand-edited into something this
-// pattern doesn't recognize, it refuses instead of risking corrupting it
-// — same "refuse rather than guess" discipline agent-file-admin.ts's own
-// doc comment already establishes for index.ts edits.
-export function addToolToIndex(toolsIndexPath: string, toolFileName: string, exportName: string): void {
+// array literal. This patches that exact shape with small string edits
+// (one new import line, one new array entry, and — only for a namespaced
+// ability install, see ability-manager.ts's namespacedToolName — one
+// `const` line between them) rather than a full TS-AST rewrite; if the
+// file has been hand-edited into something this pattern doesn't
+// recognize, it refuses instead of risking corrupting it — same "refuse
+// rather than guess" discipline agent-file-admin.ts's own doc comment
+// already establishes for index.ts edits.
+//
+// `importSpecifier` and `arrayExpression` are deliberately separate
+// parameters, not always the same string: the common case (this
+// function's only caller until ability-manager.ts's own namespacing)
+// has them identical (a bare `import { X }`, then bare `X` in the
+// array), but a namespaced tool install needs an *aliased* import (two
+// abilities' own files can both export a same-named top-level `const` —
+// e.g. both literally `webSearch` — which would collide as two
+// identically-named imports in this one file even though the source
+// files differ) feeding into a small wrapper `const` that overrides the
+// object's own `name` field (aliasing the import only renames the JS
+// binding, never the `ToolDefinition.name` string the model actually
+// calls by) — `preamble` is that wrapper line, and `arrayExpression` is
+// its name, not the raw import's.
+export function addToolToIndex(
+  toolsIndexPath: string,
+  toolFileName: string,
+  importSpecifier: string,
+  arrayExpression: string = importSpecifier,
+  preamble?: string,
+): void {
   const source = readFileSync(toolsIndexPath, 'utf8')
   const arrayMatch = source.match(/export const tools: ToolDefinition\[\] = \[([^\]]*)\]/)
   if (!arrayMatch) {
@@ -241,44 +263,59 @@ export function addToolToIndex(toolsIndexPath: string, toolFileName: string, exp
     .split(',')
     .map((e) => e.trim())
     .filter(Boolean)
-  if (arrayEntries.includes(exportName)) return
+  if (arrayEntries.includes(arrayExpression)) return
 
-  const importLine = `import { ${exportName} } from './${toolFileName}.js'\n`
+  const importLine = `import { ${importSpecifier} } from './${toolFileName}.js'\n`
   const lastImportMatch = [...source.matchAll(/^import .+\n/gm)].pop()
   const insertAt = lastImportMatch ? lastImportMatch.index! + lastImportMatch[0].length : 0
-  const withImport = source.slice(0, insertAt) + importLine + source.slice(insertAt)
+  const preambleBlock = preamble ? `${preamble}\n` : ''
+  const withImport = source.slice(0, insertAt) + importLine + preambleBlock + source.slice(insertAt)
 
-  const newEntries = [...arrayEntries, exportName].join(', ')
+  const newEntries = [...arrayEntries, arrayExpression].join(', ')
   const withEntry = withImport.replace(/export const tools: ToolDefinition\[\] = \[([^\]]*)\]/, `export const tools: ToolDefinition[] = [${newEntries}]`)
 
   writeFileSync(toolsIndexPath, withEntry)
 }
 
-/** addToolToIndex's own undo — removes the named tool's import line and
- * array entry. Best-effort, not "refuse rather than guess" like
- * addToolToIndex: this only ever runs against a tool ability-manager.ts
- * itself installed (so the exact shape addToolToIndex wrote is known),
- * and the caller (removeAbility) has already deleted the tool's .ts
- * file — leaving a stale entry behind, the previous behavior, means a
- * dangling import that fails the next build, which is strictly worse
- * than a no-op here if the file turns out not to match (hand-edited
- * since). No-ops (rather than throwing) when the file is missing
- * entirely, or the expected import/array-entry shape isn't found. */
-export function removeToolFromIndex(toolsIndexPath: string, toolFileName: string, exportName: string): void {
+/** addToolToIndex's own undo — removes the named tool's import line,
+ * wrapper `const` (if a namespaced install added one), and array entry.
+ * Best-effort, not "refuse rather than guess" like addToolToIndex: this
+ * only ever runs against a tool ability-manager.ts itself installed (so
+ * the exact shape addToolToIndex wrote is known), and the caller
+ * (removeAbility) has already deleted the tool's .ts file — leaving a
+ * stale entry behind, the previous behavior, means a dangling import
+ * that fails the next build, which is strictly worse than a no-op here
+ * if the file turns out not to match (hand-edited since). No-ops (rather
+ * than throwing) when the file is missing entirely, or the expected
+ * import/array-entry shape isn't found.
+ *
+ * `arrayExpression` (not the raw import specifier) — same value
+ * addToolToIndex's own `arrayExpression` was called with, since that's
+ * what actually appears in the array literal and (for a namespaced
+ * install) names the wrapper `const` too. The import line is matched by
+ * `toolFileName` alone, not by the exact imported binding: a namespaced
+ * install aliases its import (`X as Y`), so matching on the file path —
+ * which uniquely identifies this one tool either way — is what makes
+ * this work for both shapes without the caller having to say which one
+ * it originally was. */
+export function removeToolFromIndex(toolsIndexPath: string, toolFileName: string, arrayExpression: string): void {
   if (!existsSync(toolsIndexPath)) return
-  const source = readFileSync(toolsIndexPath, 'utf8')
+  let source = readFileSync(toolsIndexPath, 'utf8')
 
-  const importLineRe = new RegExp(`^import \\{ ${exportName} \\} from '\\./${toolFileName}\\.js'\\n`, 'm')
-  const withoutImport = source.replace(importLineRe, '')
+  const importLineRe = new RegExp(`^import \\{ [^}]+ \\} from '\\./${toolFileName}\\.js'\\n`, 'm')
+  source = source.replace(importLineRe, '')
 
-  const arrayMatch = withoutImport.match(/export const tools: ToolDefinition\[\] = \[([^\]]*)\]/)
+  const preambleRe = new RegExp(`^const ${arrayExpression}: ToolDefinition = \\{[^\\n]*\\}\\n`, 'm')
+  source = source.replace(preambleRe, '')
+
+  const arrayMatch = source.match(/export const tools: ToolDefinition\[\] = \[([^\]]*)\]/)
   if (!arrayMatch) return
 
   const remainingEntries = arrayMatch[1]
     .split(',')
     .map((e) => e.trim())
-    .filter((e) => e && e !== exportName)
-  const withEntry = withoutImport.replace(/export const tools: ToolDefinition\[\] = \[([^\]]*)\]/, `export const tools: ToolDefinition[] = [${remainingEntries.join(', ')}]`)
+    .filter((e) => e && e !== arrayExpression)
+  const withEntry = source.replace(/export const tools: ToolDefinition\[\] = \[([^\]]*)\]/, `export const tools: ToolDefinition[] = [${remainingEntries.join(', ')}]`)
 
   writeFileSync(toolsIndexPath, withEntry)
 }
