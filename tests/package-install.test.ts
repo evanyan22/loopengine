@@ -74,9 +74,12 @@ function buildFixturePackage(options: FixturePackageOptions = {}): string {
   )
   writeFileSync(join(dir, 'skills', skillId, 'SKILL.md'), `---\nname: ${skillId}\ndescription: "A fixture skill"\n---\n\nFixture skill body.\n`)
   writeFileSync(join(dir, 'actauth', 'rules.yml'), `- name: ${ruleName}\n  scope: "*/*"\n  tool: ${toolName}\n  decision: ${ruleDecision}\n`)
+  // name/version live in package.json, not loopengine.package.json — see
+  // PackageManifest's own doc comment (bin/package-manager.ts).
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version, private: true }, null, 2))
   writeFileSync(
     join(dir, 'loopengine.package.json'),
-    JSON.stringify({ name, version, loopengineVersion, tools: [`tools/${toolName}.ts`], skills: [`skills/${skillId}`], actauth: 'actauth/rules.yml', env }, null, 2),
+    JSON.stringify({ loopengineVersion, tools: [`tools/${toolName}.ts`], skills: [`skills/${skillId}`], actauth: 'actauth/rules.yml', env }, null, 2),
   )
 
   return dir
@@ -163,6 +166,21 @@ describe('installPackage', () => {
 
   it('throws PackageManifestError for a package with no loopengine.package.json', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'loopengine-fixture-pkg-'))
+
+    await expect(installPackage(AGENT_NAME, 'not-a-package', { fetchPackageDir: () => dir })).rejects.toThrow(PackageManifestError)
+  })
+
+  it('throws PackageManifestError for a loopengine.package.json with no package.json sibling', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'loopengine-fixture-pkg-'))
+    writeFileSync(join(dir, 'loopengine.package.json'), JSON.stringify({ loopengineVersion: '*' }))
+
+    await expect(installPackage(AGENT_NAME, 'not-a-package', { fetchPackageDir: () => dir })).rejects.toThrow(PackageManifestError)
+  })
+
+  it('throws PackageManifestError when the sibling package.json has no name/version', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'loopengine-fixture-pkg-'))
+    writeFileSync(join(dir, 'loopengine.package.json'), JSON.stringify({ loopengineVersion: '*' }))
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ private: true }))
 
     await expect(installPackage(AGENT_NAME, 'not-a-package', { fetchPackageDir: () => dir })).rejects.toThrow(PackageManifestError)
   })

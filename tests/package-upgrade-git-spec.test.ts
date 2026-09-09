@@ -35,7 +35,7 @@ function writePackageVersion(version: string, toolBody: string): void {
   )
   writeFileSync(
     join(repoDir, 'loopengine.package.json'),
-    JSON.stringify({ name: 'fixture-git-package', version, loopengineVersion: '*', tools: ['tools/fixture_tool.ts'] }, null, 2),
+    JSON.stringify({ loopengineVersion: '*', tools: ['tools/fixture_tool.ts'] }, null, 2),
   )
   writeFileSync(join(repoDir, 'package.json'), JSON.stringify({ name: 'fixture-git-package', version }, null, 2))
 }

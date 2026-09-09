@@ -32,10 +32,13 @@ function buildFixturePackageVersion(version: string, toolBody: string, skillBody
   )
   writeFileSync(join(pkgDir, 'skills', 'fixture-skill', 'SKILL.md'), `---\nname: fixture-skill\ndescription: "A fixture skill"\n---\n\n${skillBody}\n`)
   writeFileSync(join(pkgDir, 'actauth', 'rules.yml'), `- name: fixture-tool-allowed\n  scope: "*/*"\n  tool: fixture_tool\n  decision: ${ruleDecision}\n`)
+  // name/version live in package.json, not loopengine.package.json — see
+  // PackageManifest's own doc comment (bin/package-manager.ts).
+  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: 'fixture-package', version, private: true }, null, 2))
   writeFileSync(
     join(pkgDir, 'loopengine.package.json'),
     JSON.stringify(
-      { name: 'fixture-package', version, loopengineVersion: '*', tools: ['tools/fixture_tool.ts'], skills: ['skills/fixture-skill'], actauth: 'actauth/rules.yml', env: [] },
+      { loopengineVersion: '*', tools: ['tools/fixture_tool.ts'], skills: ['skills/fixture-skill'], actauth: 'actauth/rules.yml', env: [] },
       null,
       2,
     ),

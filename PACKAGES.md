@@ -95,8 +95,6 @@ my-order-tools/
 
 ```json
 {
-  "name": "everymarket-order-tools",
-  "version": "1.0.0",
   "loopengineVersion": "^0.1.10",
   "tools": ["tools/get_order_onway.ts", "tools/get_order_shipments_detail.ts"],
   "skills": ["skills/order-lookup"],
@@ -107,6 +105,12 @@ my-order-tools/
   ]
 }
 ```
+
+No `name`/`version` here — those are read off the package's own sibling
+`package.json` instead, which already has to exist (and already has to
+carry real values) for `npm pack` to treat the directory as a fetchable
+package at all. Declaring them a second time in this file would just be
+two numbers to keep in sync instead of one.
 
 - `tools` — file paths, relative to the package root, each expected to
   `export const <camelCase> : ToolDefinition`, one per file — same

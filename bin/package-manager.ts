@@ -51,6 +51,12 @@ export interface PackageEnvDecl {
   secret?: boolean
 }
 
+/** `name`/`version` deliberately aren't declared here — they're read off
+ * the package's own sibling `package.json` instead (see readManifest),
+ * which already has to exist and already has to carry real, valid values
+ * for `npm pack` to treat the directory as a fetchable package at all.
+ * loopengine.package.json only ever needs to declare what npm has no
+ * vocabulary for. */
 export interface PackageManifest {
   name: string
   version: string
@@ -148,11 +154,24 @@ function readManifest(packageDir: string): PackageManifest {
   if (!existsSync(manifestPath)) {
     throw new PackageManifestError(`${packageDir} has no loopengine.package.json — not a valid loopengine package.`)
   }
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as PackageManifest
-  if (!manifest.name || !manifest.version || !manifest.loopengineVersion) {
-    throw new PackageManifestError('loopengine.package.json must have "name", "version", and "loopengineVersion".')
+  const declared = JSON.parse(readFileSync(manifestPath, 'utf8')) as Omit<PackageManifest, 'name' | 'version'>
+  if (!declared.loopengineVersion) {
+    throw new PackageManifestError('loopengine.package.json must have "loopengineVersion".')
   }
-  return manifest
+
+  // name/version come from package.json, not loopengine.package.json —
+  // see PackageManifest's own doc comment for why duplicating them here
+  // would just be two numbers to keep in sync instead of one.
+  const pkgJsonPath = join(packageDir, 'package.json')
+  if (!existsSync(pkgJsonPath)) {
+    throw new PackageManifestError(`${packageDir} has no package.json — every loopengine package needs one (name/version), even though its own metadata lives in loopengine.package.json.`)
+  }
+  const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf8')) as { name?: string; version?: string }
+  if (!pkgJson.name || !pkgJson.version) {
+    throw new PackageManifestError(`${pkgJsonPath} must have "name" and "version".`)
+  }
+
+  return { ...declared, name: pkgJson.name, version: pkgJson.version }
 }
 
 // The installing project's own dependencies.loopengine is itself a
