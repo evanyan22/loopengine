@@ -25,10 +25,10 @@ top to bottom. Run agents over a CLI, an HTTP API, or both.
 - **Sessions persist automatically.** Send a message, get a reply, come
   back later with the same session id and continue — no database to wire
   up yourself, and it survives a crash mid-turn cleanly.
-- **A package system for reusable capabilities.** Install a bundle of
+- **An ability system for reusable capabilities.** Install a bundle of
   tools, a skill, and the permission rules that gate them with one command
   — real, reviewable files in your own repo, not an opaque dependency. See
-  [Package system](#package-system) below.
+  [Ability system](#ability-system) below.
 - **Does real work, safely.** Tools can hit a database, send emails, call
   GitHub/Slack, anything with an `execute` function. Permission rules gate
   what happens without a human: safe reads auto-run, risky actions get
@@ -118,7 +118,7 @@ redeploy needed for most of it:
 | **Skills** | Create, edit, and delete `SKILL.md` files for this agent directly in the browser — write the body, preview the rendered markdown, save. |
 | **Tools** | Local hand-written tools, gateway-sourced tools (e.g. [Composio](https://composio.dev)), and subagents-as-tools, in one place. Connect a new external gateway source or add/remove a tool without touching a file. |
 | **ActAuth** | Add, edit, and delete permission rules — scope, tool, condition, decision — and change `default_decision`, live. |
-| **Environment** | Every env var a package (see [Package system](#package-system)) declared it needs, across everything installed for this agent — which ones are set, which are missing, and a form to set one. A value is never echoed back once set. |
+| **Environment** | Every env var an ability (see [Ability system](#ability-system)) declared it needs, across everything installed for this agent — which ones are set, which are missing, and a form to set one. A value is never echoed back once set. |
 
 Every tab is backed by a real API (`GET /agents/:name/config`, `.../actauth`,
 `.../env`, ...) that reuses the exact same resolution `runAgent()` itself
@@ -170,15 +170,15 @@ click, a webhook HMAC signature, a magic-link token) ship under
 live and durable, worked examples, and how resumption actually works
 under the hood.
 
-## Package system
+## Ability system
 
 Giving an agent a new capability is usually three separate, hand-authored
 things: a tool file, a `SKILL.md` teaching the model when to use it, and
-an `actauth` rule allowing it to actually run. A **loopengine package**
+an `actauth` rule allowing it to actually run. A **loopengine ability**
 bundles all three into one installable unit:
 
 ```bash
-npx loopengine add-package <spec> --agent customer-service
+npx loopengine add-ability <spec> --agent customer-service
 ```
 
 `<spec>` is anything `npm pack` understands — a public or private npm
@@ -189,17 +189,17 @@ dependency — reviewable, diffable, and editable the same as anything you
 would have hand-written, not an opaque black box.
 
 ```bash
-npx loopengine upgrade-package <packageName> --agent customer-service
-npx loopengine remove-package <packageName> --agent customer-service
+npx loopengine upgrade-ability <abilityName> --agent customer-service
+npx loopengine remove-ability <abilityName> --agent customer-service
 ```
 
 Upgrading does a real three-way merge per file — a hand-edit since install
 survives, a genuine conflict leaves `<<<<<<<` markers to resolve by hand
 instead of silently overwriting either side. Removing refuses a file
-that's been modified since install unless you pass `--force`. A package
+that's been modified since install unless you pass `--force`. An ability
 can also declare the env vars its tools need, which then show up in the
 Admin UI's [Environment tab](#admin-ui) automatically once installed. See
-[`PACKAGES.md`](PACKAGES.md) for the full design — format, publishing,
+[`ABILITIES.md`](ABILITIES.md) for the full design — format, publishing,
 and how the merge/upgrade mechanics work in detail.
 
 ## Running an agent

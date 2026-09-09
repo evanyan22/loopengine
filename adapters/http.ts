@@ -890,8 +890,8 @@ function handleSkillDelete(res: ServerResponse, agentName: string, skillId: stri
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }))
 }
 
-// Backs the Admin UI's "Environment" section — every env var a package
-// (see PACKAGES.md, bin/package-manager.ts) declared it needs for this
+// Backs the Admin UI's "Environment" section — every env var an ability
+// (see ABILITIES.md, bin/ability-manager.ts) declared it needs for this
 // agent, with set/not-set status only. Read-only, so no extra auth gate
 // beyond the normal Basic Auth middleware every admin route already has.
 function handleEnvGet(res: ServerResponse, agentName: string): void {
@@ -907,7 +907,7 @@ function handleEnvGet(res: ServerResponse, agentName: string): void {
 // credential), so unlike every other route here, this one refuses
 // outright when LOOPENGINE_ADMIN_AUTH isn't set at all, rather than just
 // warning at startup and proceeding open like the rest of this file does
-// (see PACKAGES.md's "Managing package secrets in the Admin UI" for why:
+// (see ABILITIES.md's "Managing ability secrets in the Admin UI" for why:
 // LOOPENGINE_ADMIN_AUTH being optional today is an acceptable gap for
 // config, not for secrets).
 async function handleEnvPut(req: IncomingMessage, res: ServerResponse, agentName: string, varName: string): Promise<void> {

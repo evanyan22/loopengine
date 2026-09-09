@@ -5,7 +5,7 @@ import { listDeclaredEnvVars, setEnvVar, EnvVarNameError } from '../web/env-admi
 
 // Same fixture-agent-under-the-real-agents-dir approach as
 // tests/actauth-admin.test.ts — env-admin.ts has no live-registry
-// mutation to worry about (unlike package-manager.ts's own tests), so a
+// mutation to worry about (unlike ability-manager.ts's own tests), so a
 // single shared constant name is fine here.
 const AGENT_NAME = 'env-admin-fixture-agent'
 const AGENT_DIR = join(process.cwd(), 'agents', AGENT_NAME)
@@ -36,41 +36,41 @@ afterEach(() => {
 
 function writeProvenance(record: unknown): void {
   mkdirSync(AGENT_DIR, { recursive: true })
-  writeFileSync(join(AGENT_DIR, '.loopengine-packages.json'), JSON.stringify(record, null, 2))
+  writeFileSync(join(AGENT_DIR, '.loopengine-abilities.json'), JSON.stringify(record, null, 2))
 }
 
 describe('listDeclaredEnvVars', () => {
-  it('returns [] when no package has been installed for this agent', () => {
+  it('returns [] when no ability has been installed for this agent', () => {
     expect(listDeclaredEnvVars(AGENT_NAME)).toEqual([])
   })
 
-  it('lists every declared var across every installed package, with live set/not-set status', () => {
+  it('lists every declared var across every installed ability, with live set/not-set status', () => {
     delete process.env.LOOPENGINE_TEST_FIXTURE_VAR_A
     process.env.LOOPENGINE_TEST_FIXTURE_VAR_B = 'already-set'
     writeProvenance({
-      'package-a': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_VAR_A', description: 'from a', secret: true }] },
-      'package-b': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_VAR_B', description: 'from b', secret: false }] },
+      'ability-a': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_VAR_A', description: 'from a', secret: true }] },
+      'ability-b': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_VAR_B', description: 'from b', secret: false }] },
     })
 
     const vars = listDeclaredEnvVars(AGENT_NAME)
 
     expect(vars).toEqual(
       expect.arrayContaining([
-        { name: 'LOOPENGINE_TEST_FIXTURE_VAR_A', description: 'from a', secret: true, packageName: 'package-a', set: false },
-        { name: 'LOOPENGINE_TEST_FIXTURE_VAR_B', description: 'from b', secret: false, packageName: 'package-b', set: true },
+        { name: 'LOOPENGINE_TEST_FIXTURE_VAR_A', description: 'from a', secret: true, abilityName: 'ability-a', set: false },
+        { name: 'LOOPENGINE_TEST_FIXTURE_VAR_B', description: 'from b', secret: false, abilityName: 'ability-b', set: true },
       ]),
     )
   })
 
-  it('deduplicates a name declared by more than one package, keeping the first', () => {
+  it('deduplicates a name declared by more than one ability, keeping the first', () => {
     writeProvenance({
-      'package-a': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_SHARED', description: 'from a' }] },
-      'package-b': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_SHARED', description: 'from b' }] },
+      'ability-a': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_SHARED', description: 'from a' }] },
+      'ability-b': { version: '1.0.0', tools: [], skills: [], actauthRules: [], contentHashes: {}, env: [{ name: 'LOOPENGINE_TEST_FIXTURE_SHARED', description: 'from b' }] },
     })
 
     const vars = listDeclaredEnvVars(AGENT_NAME)
     expect(vars).toHaveLength(1)
-    expect(vars[0].packageName).toBe('package-a')
+    expect(vars[0].abilityName).toBe('ability-a')
   })
 })
 

@@ -1,6 +1,6 @@
-# loopengine packages: installable tool+skill+actauth bundles
+# loopengine abilities: installable tool+skill+actauth bundles
 
-**Status: implemented.** `add-package`/`upgrade-package`/`remove-package`
+**Status: implemented.** `add-ability`/`upgrade-ability`/`remove-ability`
 all work end-to-end as specified below — this document is now the design
 reference for how they work, not a pre-implementation spec.
 
@@ -23,13 +23,13 @@ describing the inbound message format, and the actauth rules allowing
 them. There is currently no way to package that as one shareable,
 installable unit; every agent that wants it re-derives it from scratch.
 
-A **loopengine package** is that unit: a bundle of tool files, skill
+A **loopengine ability** is that unit: a bundle of tool files, skill
 directories, and actauth rule snippets, installed by copying files into
 an agent's own tree — not by adding a runtime `node_modules` dependency.
 
-## Private vs. public packages
+## Private vs. public abilities
 
-The FreeScout/Everymarket example above is a **private** package, and
+The FreeScout/Everymarket example above is a **private** ability, and
 it's worth being explicit about that rather than implying broader reuse
 than it actually has: `get_order_onway`/`get_order_shipments_detail`
 hardcode Everymarket's own API shape (its specific ransack-style query
@@ -38,16 +38,16 @@ params, its specific endpoint structure) — reusable across Everymarket's
 not by some other company, since nobody else's backend speaks that exact
 API.
 
-That's a legitimate, common case on its own — most packages most
-companies will ever write are private, internal-reuse packages like this
-one, published to a private registry or just a git repo, never intended
-for a public catalog. A **public** package is the narrower case: built
-against a genuinely multi-tenant API (Stripe, Shopify, Zendesk) that many
-different companies' agents could equally call. Nothing in the format
-above distinguishes the two — the difference is just where you publish
-it and who your tools' own `fetch()` calls actually point at — but the
-public catalog considered under "out of scope for v1" below only makes
-sense for the latter kind.
+That's a legitimate, common case on its own — most abilities most
+companies will ever write are private, internal-reuse abilities like
+this one, published to a private registry or just a git repo, never
+intended for a public catalog. A **public** ability is the narrower
+case: built against a genuinely multi-tenant API (Stripe, Shopify,
+Zendesk) that many different companies' agents could equally call.
+Nothing in the format above distinguishes the two — the difference is
+just where you publish it and who your tools' own `fetch()` calls
+actually point at — but the public catalog considered under "out of
+scope for v1" below only makes sense for the latter kind.
 
 ## Why copy, not import
 
@@ -62,25 +62,25 @@ actauth's ability to have been reasoned about at review time.
 
 Copying means:
 
-- A package's tool code is reviewable in the same PR that installs it —
+- An ability's tool code is reviewable in the same PR that installs it —
   it's just files in the repo, like any other change.
 - It can be hand-edited after install, same as an admin-generated HTTP
   tool already can be (with the same tradeoff: hand-edits and future
-  package upgrades can now conflict — see "Upgrading" below, which
+  ability upgrades can now conflict — see "Upgrading" below, which
   reuses the exact merge machinery `create-loopengine upgrade` already
   has for this reason).
 - No new "trust this code at import time" surface — actauth already
   governs *calling* a tool; this keeps *installing* one just as visible.
 
-## Package format
+## Ability format
 
-A package is a directory (published to npm or git, same distribution
+An ability is a directory (published to npm or git, same distribution
 `create-loopengine` itself already uses) with this shape:
 
 ```
 my-order-tools/
   package.json                # name, version — an ordinary npm package
-  loopengine.package.json      # the manifest (see below)
+  loopengine.ability.json      # the manifest (see below)
   tools/
     get_order_onway.ts
     get_order_shipments_detail.ts
@@ -91,7 +91,7 @@ my-order-tools/
     rules.yml
 ```
 
-`loopengine.package.json`:
+`loopengine.ability.json`:
 
 ```json
 {
@@ -106,16 +106,16 @@ my-order-tools/
 }
 ```
 
-No `name`/`version` here — those are read off the package's own sibling
+No `name`/`version` here — those are read off the ability's own sibling
 `package.json` instead, which already has to exist (and already has to
 carry real values) for `npm pack` to treat the directory as a fetchable
 package at all. Declaring them a second time in this file would just be
 two numbers to keep in sync instead of one.
 
-- `tools` — file paths, relative to the package root, each expected to
+- `tools` — file paths, relative to the ability root, each expected to
   `export const <camelCase> : ToolDefinition`, one per file — same
   shape `generateToolCode`'s own output already has, so hand-written and
-  admin-generated tools are both valid package contents unmodified.
+  admin-generated tools are both valid ability contents unmodified.
 - `skills` — directory paths, each a complete `SKILL.md` (+ any
   scripts/assets alongside it), copied as-is into the installing agent's
   `skills/` directory.
@@ -128,26 +128,26 @@ two numbers to keep in sync instead of one.
   refuse rather than install something that imports an export the
   installed `loopengine` version doesn't have yet (this is exactly the
   gap that caused the Parallel-safe checkbox to silently do nothing
-  earlier — a package install is a second place that exact failure mode
+  earlier — an ability install is a second place that exact failure mode
   can recur if unchecked).
-- `env` — optional. Every `process.env.X` a package's tools actually read
-  (the same env-sourced secrets the HTTP tool builder's own `{{ENV_VAR}}`
-  header syntax already produces, or a hand-written tool's own
-  `process.env` read — either way, declared once here rather than
+- `env` — optional. Every `process.env.X` an ability's tools actually
+  read (the same env-sourced secrets the HTTP tool builder's own
+  `{{ENV_VAR}}` header syntax already produces, or a hand-written tool's
+  own `process.env` read — either way, declared once here rather than
   buried in each tool file for an installer/admin to have to go find).
   `secret: true` means the Admin UI never echoes the value back once
-  set — see "Managing package secrets in the Admin UI" below.
+  set — see "Managing ability secrets in the Admin UI" below.
 
 ## Installing
 
 ```
-npx loopengine add-package <npm-package> --agent customer-service
+npx loopengine add-ability <npm-package> --agent customer-service
 ```
 
 A `loopengine` subcommand, not a `create-loopengine` one — two reasons.
 First, precedent: `bin/cli.ts` already has `scaffoldAgent`, adding a new
 *agent* to an already-scaffolded project, the same granularity of
-operation as adding a *package* to one — that's `loopengine`'s own
+operation as adding an *ability* to one — that's `loopengine`'s own
 territory already, not `create-loopengine`'s (whole-project creation and
 template-file upgrades only). Second, reliability: `create-loopengine`
 is never a dependency of the scaffolded project itself (its own
@@ -155,15 +155,15 @@ template's `package.json` only lists `loopengine`/`actauth`), so every
 `npx create-loopengine@latest ...` invocation
 re-fetches the CLI package over the network — fine for `upgrade`, a
 rare per-release operation, but not for something that could be invoked
-as often as adding a package might be. `loopengine add-package` runs off
-the project's own already-installed `node_modules/.bin/loopengine`
+as often as adding an ability might be. `loopengine add-ability` runs
+off the project's own already-installed `node_modules/.bin/loopengine`
 instead.
 
-Named `add-package` — `add`, not `install`, for the same reasoning
+Named `add-ability` — `add`, not `install`, for the same reasoning
 shadcn/ui's own `npx shadcn add <component>` already uses: "install"
 implies a live dependency you `import`; this copies files into the
-project instead, and the verb should say so. The `-package` suffix (not
-just bare `add`) keeps it alongside `upgrade-package`/`remove-package`
+project instead, and the verb should say so. The `-ability` suffix (not
+just bare `add`) keeps it alongside `upgrade-ability`/`remove-ability`
 as one clearly-related family, and leaves `add` itself free — `add-agent`/
 `add-subagent` already exist as their own, unrelated commands on this
 same CLI.
@@ -172,7 +172,7 @@ What it does, in order — refusing outright, before writing anything, on
 the first check that fails:
 
 1. **Version check.** Read the installing project's own `package.json`
-   `dependencies.loopengine`; refuse if it doesn't satisfy the package's
+   `dependencies.loopengine`; refuse if it doesn't satisfy the ability's
    `loopengineVersion` range.
 2. **Fetch.** `npm pack <package>` into a temp dir and extract — the
    exact technique `fetchPublishedTemplateDir` already uses to pull a
@@ -185,16 +185,16 @@ the first check that fails:
    `agents/<agent>/skills/<id>/` already exists. Refuse the whole
    install on any collision — same "refuse rather than guess" rule
    `HttpToolExistsError`/`HttpToolIndexShapeError` already enforce for a
-   single admin-created tool, just applied package-wide so an install is
+   single admin-created tool, just applied ability-wide so an install is
    all-or-nothing, never half-applied.
 4. **Write tool files**, then patch `tools/index.ts` — reusing
    `addToolToIndex` (`web/http-tool-admin.ts`) exactly as-is, called once
-   per tool in the package.
+   per tool in the ability.
 5. **Copy skill directories** into `agents/<agent>/skills/`.
 6. **Append actauth rules** into `agents/<agent>/actauth.yml`, under a
-   generated comment marking which package/version they came from (see
+   generated comment marking which ability/version they came from (see
    next section — this comment is what upgrade/uninstall key off of).
-7. **Record provenance** in `agents/<agent>/.loopengine-packages.json`:
+7. **Record provenance** in `agents/<agent>/.loopengine-abilities.json`:
 
    ```json
    {
@@ -213,7 +213,7 @@ the first check that fails:
    see next section. Installing doesn't write `.env` itself; it only
    registers that these names are now relevant.
 
-## Managing package secrets in the Admin UI
+## Managing ability secrets in the Admin UI
 
 Two things make this feature more sensitive than the rest of the admin
 surface, and the design accounts for both directly.
@@ -238,24 +238,24 @@ declared var, never the value.
 
 Mechanically:
 
-- The Admin UI reads every installed package's `env` list (from every
-  agent's `.loopengine-packages.json`) and shows one row per declared
+- The Admin UI reads every installed ability's `env` list (from every
+  agent's `.loopengine-abilities.json`) and shows one row per declared
   var: name, description, and whether `process.env[name]` currently has
   a value.
 - Submitting a new value does two things, not one: upserts the
   `KEY=VALUE` line into the project's `.env` file (a new small
   parse-and-upsert utility — preserve every other line/comment, replace
   or append the one key), and sets `process.env[name]` on the *current*
-  running process immediately, so a newly-installed package's tools work
-  without a restart.
+  running process immediately, so a newly-installed ability's tools
+  work without a restart.
 
 ## Upgrading
 
 ```
-npx loopengine upgrade-package everymarket-order-tools --agent customer-service
+npx loopengine upgrade-ability everymarket-order-tools --agent customer-service
 ```
 
-Per file the package manages, the same three-way merge technique
+Per file the ability manages, the same three-way merge technique
 `create-loopengine upgrade` already uses for template files
 (`threeWayMerge`, `git merge-file --diff3`) — reimplemented here rather
 than shared as code, since `loopengine` and `create-loopengine` are
@@ -277,31 +277,31 @@ gets three-way-merged, not silently overwritten.
 ## Uninstalling
 
 ```
-npx loopengine remove-package everymarket-order-tools --agent customer-service
+npx loopengine remove-ability everymarket-order-tools --agent customer-service
 ```
 
-Removes exactly the files `.loopengine-packages.json` recorded — refuses
-if any of them look hand-modified beyond what a normal upgrade would
-have produced (same conflict-detection the upgrade path already needs,
-reused here as a safety check rather than silently deleting edited
-work).
+Removes exactly the files `.loopengine-abilities.json` recorded —
+refuses if any of them look hand-modified beyond what a normal upgrade
+would have produced (same conflict-detection the upgrade path already
+needs, reused here as a safety check rather than silently deleting
+edited work).
 
-## Publishing a package
+## Publishing an ability
 
-No new tooling needed beyond `loopengine.package.json` itself — a
-package is an ordinary npm package. `npm publish` from a directory
-shaped as above is a complete, valid loopengine package, whether that's
+No new tooling needed beyond `loopengine.ability.json` itself — an
+ability is an ordinary npm package. `npm publish` from a directory
+shaped as above is a complete, valid loopengine ability, whether that's
 `npm publish` to the public registry, to a private one (a scoped
 `@company/pkg`, GitHub Packages, a self-hosted Verdaccio), or just a
 tagged commit in a private git repo with no registry involved at all —
 `npm pack` accepts any of those as its target, not just a public
-registry name, so `loopengine add-package`/`upgrade-package` take whatever
-string the operator would already pass to `npm pack` (`@company/pkg`,
-`github:org/repo#v1.0.0`, `git+ssh://...`, even `file:../local-path` for
-testing) rather than assuming public npm. Auth for a private target
-comes entirely from whatever `.npmrc` token or SSH key/git-credential
-helper is already configured in the environment running the command —
-no new auth system for loopengine itself to own.
+registry name, so `loopengine add-ability`/`upgrade-ability` take
+whatever string the operator would already pass to `npm pack`
+(`@company/pkg`, `github:org/repo#v1.0.0`, `git+ssh://...`, even
+`file:../local-path` for testing) rather than assuming public npm. Auth
+for a private target comes entirely from whatever `.npmrc` token or SSH
+key/git-credential helper is already configured in the environment
+running the command — no new auth system for loopengine itself to own.
 
 One correction to the fetch step above: it's the same `npm pack`
 *command* `fetchPublishedTemplateDir` already uses, generalized to a
@@ -317,38 +317,38 @@ today.
 - **A public catalog/marketplace UI.** The Admin UI's Skills tab used to
   have a small bundled-skill catalog browser, removed once it became
   clear a two-entry, hand-maintained registry wasn't earning its keep —
-  see `add-package` install straight from a spec instead of a curated
-  catalog. A real catalog/marketplace UI for tool packages is a bigger,
+  see `add-ability` install straight from a spec instead of a curated
+  catalog. A real catalog/marketplace UI for abilities is a bigger,
   separate bet, not required to ship v1's install/upgrade mechanics.
-- **Inter-package dependencies.** A package can't declare "requires
-  package X installed first." Every package is self-contained.
-- **Semver-range installs** (`add-package <package>@^1.0.0`) — v1 always
+- **Inter-ability dependencies.** An ability can't declare "requires
+  ability X installed first." Every ability is self-contained.
+- **Semver-range installs** (`add-ability <package>@^1.0.0`) — v1 always
   installs latest; ranges are a straightforward follow-on once the
   provenance-tracking above exists to check against.
-- **Per-user enable/disable of an installed package** (Pi's own
+- **Per-user enable/disable of an installed ability** (Pi's own
   extension model supports this) — v1's install is binary, in the
   agent's tree or not; toggling without uninstalling is a real gap this
   spec doesn't attempt to close yet.
 
 ## Open questions — not yet decided
 
-- Should a package be allowed to target more than one agent in a single
+- Should an ability be allowed to target more than one agent in a single
   install (a monorepo with several agents that all want the same
   tools), or is `--agent` always singular and a multi-agent install is
   just running the command more than once?
 - `actauth` rule scope today is written relative to one agent
-  (`run-agent.ts` appends `/<agentName>` automatically) — does a
-  package's `actauth/rules.yml` ever need to express a scope narrower
+  (`run-agent.ts` appends `/<agentName>` automatically) — does an
+  ability's `actauth/rules.yml` ever need to express a scope narrower
   than "this whole agent," and if so, how does the manifest express
-  that without the package author needing to know the installing
+  that without the ability author needing to know the installing
   agent's name in advance?
 - Does `loopengineVersion` need to be checked against `actauth`'s own
-  version too, given a package's tool content could equally depend on
+  version too, given an ability's tool content could equally depend on
   an actauth feature that's version-gated?
 - There's one `.env` per *project*, not per agent — if two agents in the
-  same project each install a (possibly different) package that happens
+  same project each install a (possibly different) ability that happens
   to declare the same env var name for an unrelated purpose, the Admin
   UI's "set/not set" status and the single value in `.env` can't
   actually distinguish them. Does the manifest need to namespace/prefix
   declared names somehow, or is a same-name collision across unrelated
-  packages rare enough in practice to leave undetected for v1?
+  abilities rare enough in practice to leave undetected for v1?

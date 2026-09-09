@@ -1111,9 +1111,9 @@ export const agentsConfigPageHtml: string = `<!doctype html>
       });
   }
 
-  // ---- Environment tab: every env var a package (see PACKAGES.md,
-  // bin/package-manager.ts) declared it needs for this agent, across
-  // every package installed — status only, a value is never shown once
+  // ---- Environment tab: every env var an ability (see ABILITIES.md,
+  // bin/ability-manager.ts) declared it needs for this agent, across
+  // every ability installed — status only, a value is never shown once
   // set, matching env-admin.ts's own never-echo-a-secret rule. Lazily
   // loaded the same way Actauth is, for the same reason (avoid a
   // redundant fetch on every agent switch for a tab that isn't always
@@ -1127,7 +1127,7 @@ export const agentsConfigPageHtml: string = `<!doctype html>
     return '<tr>' +
       '<td><code>' + escapeHtml(v.name) + '</code></td>' +
       '<td>' + escapeHtml(v.description || '') + '</td>' +
-      '<td class="hint">' + escapeHtml(v.packageName) + '</td>' +
+      '<td class="hint">' + escapeHtml(v.abilityName) + '</td>' +
       '<td>' + (v.set ? '<span class="hint">set</span>' : '<span class="error">not set</span>') + '</td>' +
       '<td><form class="add-source env-var-form" data-name="' + escapeHtml(v.name) + '">' +
         '<input type="' + (v.secret ? 'password' : 'text') + '" name="value" placeholder="' + (v.set ? 'unchanged unless you type a new value' : 'value') + '" required>' +
@@ -1137,9 +1137,9 @@ export const agentsConfigPageHtml: string = `<!doctype html>
   }
 
   function renderEnvConfigHtml(vars) {
-    if (!vars.length) return '<p class="hint">No installed package has declared any environment variables for this agent yet.</p>';
+    if (!vars.length) return '<p class="hint">No installed ability has declared any environment variables for this agent yet.</p>';
     var rows = vars.map(renderEnvRow).join('');
-    return '<table><thead><tr><th>Name</th><th>Description</th><th>Package</th><th>Status</th><th>Set value</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    return '<table><thead><tr><th>Name</th><th>Description</th><th>Ability</th><th>Status</th><th>Set value</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
 
   function envContentEl() {

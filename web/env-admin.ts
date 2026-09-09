@@ -1,13 +1,13 @@
-// Backs the Admin UI's "Environment" section — every env var a package
-// (see PACKAGES.md, bin/package-manager.ts) declared as required,
-// across every package installed for an agent, with set/not-set status
+// Backs the Admin UI's "Environment" section — every env var an ability
+// (see ABILITIES.md, bin/ability-manager.ts) declared as required,
+// across every ability installed for an agent, with set/not-set status
 // only. A value marked `secret` is never echoed back once set — same
 // never-echo-a-secret rule web/http-tool-admin.ts's own `{{ENV_VAR}}`
 // header handling already establishes for a tool's own secrets.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { agentDir } from '../core/gateway-tools.js'
-import type { InstalledPackageRecord } from '../bin/package-manager.js'
+import type { InstalledAbilityRecord } from '../bin/ability-manager.js'
 
 export class EnvVarNameError extends Error {}
 
@@ -19,18 +19,18 @@ export interface DeclaredEnvVar {
   name: string
   description?: string
   secret: boolean
-  packageName: string
+  abilityName: string
   set: boolean
 }
 
 function provenancePath(agentName: string): string {
-  return join(agentDir(agentName), '.loopengine-packages.json')
+  return join(agentDir(agentName), '.loopengine-abilities.json')
 }
 
-/** Every env var any package installed for `agentName` declared it
- * needs, deduplicated by name — PACKAGES.md's own open question on
- * cross-package name collisions applies here too (one .env per
- * *project*, not per agent, so two unrelated packages declaring the
+/** Every env var any ability installed for `agentName` declared it
+ * needs, deduplicated by name — ABILITIES.md's own open question on
+ * cross-ability name collisions applies here too (one .env per
+ * *project*, not per agent, so two unrelated abilities declaring the
  * same name can't actually be told apart; the first one seen wins the
  * description shown). `set` is read live off `process.env`, not cached,
  * so it reflects whatever the last `setEnvVar` call — or a plain
@@ -39,10 +39,10 @@ export function listDeclaredEnvVars(agentName: string): DeclaredEnvVar[] {
   const path = provenancePath(agentName)
   if (!existsSync(path)) return []
 
-  const provenance = JSON.parse(readFileSync(path, 'utf8')) as Record<string, InstalledPackageRecord>
+  const provenance = JSON.parse(readFileSync(path, 'utf8')) as Record<string, InstalledAbilityRecord>
   const seen = new Set<string>()
   const result: DeclaredEnvVar[] = []
-  for (const [packageName, record] of Object.entries(provenance)) {
+  for (const [abilityName, record] of Object.entries(provenance)) {
     for (const decl of record.env) {
       if (seen.has(decl.name)) continue
       seen.add(decl.name)
@@ -50,7 +50,7 @@ export function listDeclaredEnvVars(agentName: string): DeclaredEnvVar[] {
         name: decl.name,
         description: decl.description,
         secret: decl.secret === true,
-        packageName,
+        abilityName,
         set: process.env[decl.name] !== undefined,
       })
     }
@@ -81,7 +81,7 @@ function serializeEnvValue(value: string): string {
 /** Upserts `NAME=VALUE` into the project's `.env` file — preserving
  * every other line (comments, blank lines, unrelated keys) — and
  * applies it to *this* running process immediately via `process.env`,
- * so a newly-installed package's tools work without a restart. Callers
+ * so a newly-installed ability's tools work without a restart. Callers
  * (the PUT route in adapters/http.ts) are responsible for refusing to
  * call this at all when `LOOPENGINE_ADMIN_AUTH` isn't set — this
  * function itself has no notion of HTTP auth, it just writes. */

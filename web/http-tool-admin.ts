@@ -231,8 +231,8 @@ export function addToolToIndex(toolsIndexPath: string, toolFileName: string, exp
     throw new HttpToolIndexShapeError(`${toolsIndexPath} doesn't match the expected "export const tools: ToolDefinition[] = [...]" shape — add this tool to it by hand instead.`)
   }
 
-  // Idempotent — a caller that adds the same tool twice (e.g. package-
-  // manager.ts's removePackage not having cleaned up this same file
+  // Idempotent — a caller that adds the same tool twice (e.g. ability-
+  // manager.ts's removeAbility not having cleaned up this same file
   // before a re-add, or simply calling this twice by mistake) gets a
   // no-op the second time instead of a duplicate `import { X }`
   // declaration, which is a TypeScript syntax error ("Duplicate
@@ -256,9 +256,9 @@ export function addToolToIndex(toolsIndexPath: string, toolFileName: string, exp
 
 /** addToolToIndex's own undo — removes the named tool's import line and
  * array entry. Best-effort, not "refuse rather than guess" like
- * addToolToIndex: this only ever runs against a tool package-manager.ts
+ * addToolToIndex: this only ever runs against a tool ability-manager.ts
  * itself installed (so the exact shape addToolToIndex wrote is known),
- * and the caller (removePackage) has already deleted the tool's .ts
+ * and the caller (removeAbility) has already deleted the tool's .ts
  * file — leaving a stale entry behind, the previous behavior, means a
  * dangling import that fails the next build, which is strictly worse
  * than a no-op here if the file turns out not to match (hand-edited
