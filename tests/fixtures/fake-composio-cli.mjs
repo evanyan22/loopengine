@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-// A stand-in for the real `composio` binary, same shape mcpplug's own
-// test fixture uses — see its tests/fixtures/fake-composio-cli.mjs.
-// Copied rather than shared across repos since mcpplug is a published
-// dependency here, not a workspace sibling this repo can reach into.
+// A stand-in for the real `composio` binary — shared by both
+// gateway-tools.test.ts and mcpplug.test.ts, since both exercise the
+// same `execute <slug> --get-schema` / `execute <slug> -d <json>` shape,
+// just through two different callers (loadGatewayToolsFromDir's cached
+// path vs. connectComposioSource's live one — see core/mcpplug.ts's own
+// header comment for why those two paths are deliberately separate).
 // COMPOSIO_FAKE_LOG, if set, gets one line appended per invocation — how
 // gateway-tools.test.ts's caching test verifies whether a given call
 // actually shelled out again or hit loadGatewayToolsFromDir's cache.

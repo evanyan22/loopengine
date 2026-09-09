@@ -110,6 +110,9 @@ export {
 } from './core/gateway-tools.js'
 export type { GatewayToolEntry, GatewayToolDecision } from './core/gateway-tools.js'
 
+export { connectComposioSource } from './core/mcpplug.js'
+export type { ToolSource, ComposioSourceOptions } from './core/mcpplug.js'
+
 export { WebhookNotifier } from './core/http-notify-triggers/webhook.js'
 
 // answerQuestion above (core/client.ts) is the HTTP client-side helper —

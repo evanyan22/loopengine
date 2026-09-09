@@ -1,7 +1,7 @@
 // Lets an operator register external tool gateways (Composio today —
-// Nango, Arcade, Scalekit are meant to slot in later as thin mcpplug
-// ToolSource adapters, same shape, once this mechanism is proven) against
-// an agent, without hand-writing a tools/index.ts. The registry is
+// Nango, Arcade, Scalekit are meant to slot in later as thin
+// mcpplug.ts ToolSource adapters, same shape, once this mechanism is
+// proven) against an agent, without hand-writing a tools/index.ts. The registry is
 // agents/<name>/gateway-tools.yml — plain data, read fresh off disk every
 // call, same "no restart to see an edit" behavior actauth.yml already
 // has (see run-agent.ts's loadRules). adapters/http.ts's admin routes are
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { parse as parseYaml, parseDocument, stringify as stringifyYaml } from 'yaml'
-import { connectComposioSource } from 'mcpplug'
+import { connectComposioSource } from './mcpplug.js'
 import type { Decision } from 'actauth'
 import type { ToolDefinition } from './agent-config.js'
 

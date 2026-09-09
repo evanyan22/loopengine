@@ -173,14 +173,13 @@ tools: [...ownTools, sharedTool]
 
 Tools don't have to be hand-written either. For SaaS actions (GitHub,
 Slack, etc.) where you'd rather not own the vendor's OAuth flow yourself,
-[`mcpplug`](https://www.npmjs.com/package/mcpplug) connects through
-[Composio](https://composio.dev), which already holds the OAuth
-relationship with 1000+ apps, and returns tools in the same
-`ToolDefinition` shape — so they drop into `tools` right alongside your
-own:
+`connectComposioSource` connects through [Composio](https://composio.dev),
+which already holds the OAuth relationship with 1000+ apps, and returns
+tools in the same `ToolDefinition` shape — so they drop into `tools`
+right alongside your own:
 
 ```ts
-import { connectComposioSource } from 'mcpplug'
+import { connectComposioSource } from 'loopengine'
 
 const composioTools = await connectComposioSource('composio', {
   slugs: ['GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER'],
@@ -263,10 +262,10 @@ A few things worth knowing before reaching for this:
 ### 5. Gateway tool sources — connecting external tools from a web page
 
 Beyond hand-written tools and subagents, an agent can pull tools from an
-external gateway — [Composio](https://composio.dev) today, with
-[`mcpplug`](https://www.npmjs.com/package/mcpplug)'s `ToolSource`
-interface designed so more providers (Nango, Arcade, Scalekit, ...) slot
-in later as thin adapters, same shape. Unlike hand-written tools, these
+external gateway — [Composio](https://composio.dev) today, with a
+`ToolSource` interface designed so more providers (Nango, Arcade,
+Scalekit, ...) slot in later as thin adapters, same shape. Unlike
+hand-written tools, these
 are meant to be managed by an operator at runtime, not committed to code:
 run the HTTP adapter, open `/agents/config`, pick an agent, and switch to
 its "Gateway tools" tab — alongside "Overview" and "Actauth" — to see its
@@ -493,7 +492,7 @@ testing), export your own `createModelCall(): ModelCall` instead.
 | [`sessionknit`](https://www.npmjs.com/package/sessionknit) | Durable session log with crash-interruption detection |
 | [`skillgarden`](https://www.npmjs.com/package/skillgarden) | `SKILL.md` discovery and lazy loading |
 | [`toollane`](https://www.npmjs.com/package/toollane) | Parallel/solo tool-call scheduling |
-| [`mcpplug`](https://www.npmjs.com/package/mcpplug) | Gateway tool sourcing (e.g. Composio) |
+| `core/mcpplug.ts` | Gateway tool sourcing (e.g. Composio) (vendored in-repo, not an external dependency) |
 
 Installing `loopengine` pulls all of these in as regular dependencies —
 install one directly only if you want to use it standalone.
