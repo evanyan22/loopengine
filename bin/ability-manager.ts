@@ -18,7 +18,7 @@
 // "Upgrading" section).
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { parse as parseYaml } from 'yaml'
@@ -44,6 +44,33 @@ export class AbilityAlreadyInstalledError extends Error {}
 // the agent's own root instead of its skills/ folder.
 const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/
 const SKILL_ID_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
+
+/** Two abilities can each declare a skill with the same bare id (both
+ * ship a "web-search" skill, say) — refusing the second install outright
+ * would make them mutually exclusive for no real reason, since skills
+ * don't have to be globally unique the way a model-callable tool name
+ * does. Namespacing under the ability's own name only when the bare id
+ * is already taken — never unconditionally — keeps the common,
+ * no-conflict case's directory layout exactly as it's always been.
+ * Reuses SkillGarden's own nested-directory namespacing (discovery.ts:
+ * `deploy/web/SKILL.md` -> addressable as `deploy:web`) for free, so a
+ * namespaced skill just becomes addressable as `<abilityName>:<skillId>`
+ * with no changes needed on the loading side at all. */
+function namespacedSkillId(abilityName: string, skillId: string): string {
+  // abilityName came off the ability's own package.json "name" — for a
+  // scoped npm name ("@company/pkg") this is two path segments, which is
+  // fine (SkillGarden namespaces however deep the nesting goes), but each
+  // segment still has to be a safe path component on its own: same
+  // '..'-as-a-path-segment guard TOOL_NAME_PATTERN/SKILL_ID_PATTERN's own
+  // comment above already explains the need for, just for a manifest's
+  // "name" field instead of a tool/skill declaration.
+  for (const segment of abilityName.split('/')) {
+    if (segment === '' || segment === '.' || segment === '..') {
+      throw new AbilityManifestError(`Ability name '${abilityName}' isn't safe to use as a skill namespace.`)
+    }
+  }
+  return `${abilityName}/${skillId}`
+}
 
 export interface AbilityEnvDecl {
   name: string
@@ -311,14 +338,19 @@ export async function installAbility(agentName: string, spec: string, options: F
   }
   const skillIds: string[] = []
   for (const skillDir of skillDirs) {
-    const skillId = basename(skillDir)
-    if (!SKILL_ID_PATTERN.test(skillId)) {
+    const bareSkillId = basename(skillDir)
+    if (!SKILL_ID_PATTERN.test(bareSkillId)) {
       throw new AbilityManifestError(`Skill directory '${skillDir}' doesn't name a valid skill id (must be lowercase, hyphen-separated).`)
     }
-    skillIds.push(skillId)
-    if (existsSync(join(skillsDirPath, skillId))) {
-      throw new AbilityCollisionError(`agents/${agentName}/skills/${skillId}/ already exists.`)
+    // The bare id if it's free; otherwise namespace under this ability's
+    // own name rather than refusing the install outright — see
+    // namespacedSkillId's own doc comment for why this is safe to do
+    // (skills, unlike tools, don't need a single global namespace).
+    const installedSkillId = existsSync(join(skillsDirPath, bareSkillId)) ? namespacedSkillId(manifest.name, bareSkillId) : bareSkillId
+    if (existsSync(join(skillsDirPath, installedSkillId))) {
+      throw new AbilityCollisionError(`agents/${agentName}/skills/${installedSkillId}/ already exists.`)
     }
+    skillIds.push(installedSkillId)
   }
   const existingRuleNames = new Set(readActauthConfig(agentName).rules.map((r) => r.name))
   for (const rule of rules) {
@@ -355,12 +387,20 @@ export async function installAbility(agentName: string, spec: string, options: F
     }
   }
 
-  // Copy skill directories verbatim.
-  for (const skillDir of skillDirs) {
-    const skillId = basename(skillDir)
+  // Copy skill directories verbatim — skillIds[i] is skillDirs[i]'s
+  // already-resolved installed id (bare, or namespaced under this
+  // ability's own name if the bare id collided — computed once, above,
+  // not recomputed here, so this loop can't disagree with the collision
+  // check that already ran against it).
+  for (const [i, skillDir] of skillDirs.entries()) {
+    const skillId = skillIds[i]
     const srcPath = join(abilityDir, skillDir)
     const destPath = join(skillsDirPath, skillId)
-    mkdirSync(skillsDirPath, { recursive: true })
+    // dirname(destPath), not skillsDirPath — a namespaced skillId
+    // ("<abilityName>/<skillId>") needs its own intermediate directory
+    // created first; cpSync creates destPath itself but not necessarily
+    // parents beyond that.
+    mkdirSync(dirname(destPath), { recursive: true })
     cpSync(srcPath, destPath, { recursive: true })
     const skillMdPath = join(destPath, 'SKILL.md')
     if (existsSync(skillMdPath)) {
@@ -511,8 +551,13 @@ export async function upgradeAbility(agentName: string, abilityName: string, opt
 
   for (const skillId of record.skills) {
     const relPath = `skills/${skillId}/SKILL.md`
-    const oldSkillDir = (oldManifest.skills ?? []).find((s) => basename(s) === skillId)
-    const newSkillDir = (newManifest.skills ?? []).find((s) => basename(s) === skillId)
+    // basename(skillId), not skillId itself — a namespaced install
+    // ("<abilityName>/<skillId>") still has to match against the
+    // manifest's own bare skill dir names, which never carry the
+    // namespace (that's only ever added at install time, on collision).
+    const bareSkillId = basename(skillId)
+    const oldSkillDir = (oldManifest.skills ?? []).find((s) => basename(s) === bareSkillId)
+    const newSkillDir = (newManifest.skills ?? []).find((s) => basename(s) === bareSkillId)
     const oldFile = oldSkillDir ? join(oldDir, oldSkillDir, 'SKILL.md') : null
     const newFile = newSkillDir ? join(newDir, newSkillDir, 'SKILL.md') : null
     if (!oldFile || !newFile || !existsSync(oldFile) || !existsSync(newFile)) {

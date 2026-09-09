@@ -118,7 +118,12 @@ two numbers to keep in sync instead of one.
   admin-generated tools are both valid ability contents unmodified.
 - `skills` — directory paths, each a complete `SKILL.md` (+ any
   scripts/assets alongside it), copied as-is into the installing agent's
-  `skills/` directory.
+  `skills/` directory. Two abilities declaring the same skill id (both
+  ship a "web-search" skill, say) can coexist: if the bare id is already
+  taken, the second one installs namespaced under its own ability name
+  instead (`skills/<ability-name>/<id>/`) rather than refusing outright
+  — see "Installing" below for why this is safe for skills specifically,
+  unlike a tool or actauth rule name collision.
 - `actauth` — one YAML file of rule objects (`name`, `scope`, `tool`,
   `decision` — same shape `agents/<name>/actauth.yml` already uses),
   appended into the installing agent's own `actauth.yml` rather than
@@ -181,12 +186,22 @@ the first check that fails:
 3. **Collision check.** For every tool the manifest lists, check whether
    `agents/<agent>/tools/<name>.ts` already exists; for every actauth
    rule, check whether a rule of that `name` already exists in the
-   target `actauth.yml`; for every skill, check whether
-   `agents/<agent>/skills/<id>/` already exists. Refuse the whole
-   install on any collision — same "refuse rather than guess" rule
-   `HttpToolExistsError`/`HttpToolIndexShapeError` already enforce for a
-   single admin-created tool, just applied ability-wide so an install is
-   all-or-nothing, never half-applied.
+   target `actauth.yml`. Refuse the whole install on either collision —
+   same "refuse rather than guess" rule `HttpToolExistsError`/
+   `HttpToolIndexShapeError` already enforce for a single admin-created
+   tool, just applied ability-wide so an install is all-or-nothing, never
+   half-applied. A tool name has to be globally unique per agent (it's
+   what the model calls by name — two tools can't share one), and so
+   does an actauth rule name, so there's no coexistence option for
+   either. A skill id is different: it's only addressed through the
+   `Skill` meta-tool's own argument, which already supports a
+   `<namespace>:<id>` form (`SkillGarden`'s existing nested-directory
+   convention). So for every skill the manifest lists, check whether
+   `agents/<agent>/skills/<id>/` already exists — if it does, install
+   under `agents/<agent>/skills/<ability-name>/<id>/` instead (refusing
+   only if even *that* is somehow already taken) rather than refusing
+   the whole install over a name two unrelated abilities happened to
+   both pick.
 4. **Write tool files**, then patch `tools/index.ts` — reusing
    `addToolToIndex` (`web/http-tool-admin.ts`) exactly as-is, called once
    per tool in the ability.

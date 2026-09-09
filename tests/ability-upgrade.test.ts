@@ -155,4 +155,35 @@ describe('upgradeAbility', () => {
     expect(ruleResult?.status).toBe('conflict')
     expect(readFileSync(actauthPath, 'utf8')).toMatch(/decision:\s*deny/)
   })
+
+  it('upgrades a namespaced skill correctly — matching against the manifest\'s bare id, not the installed namespaced one', async () => {
+    // Occupies the bare "fixture-skill" id first, so the second
+    // ability's own install below is forced to namespace under its own
+    // name (see ability-manager.ts's namespacedSkillId).
+    const occupant = buildFixtureAbilityVersion('1.0.0', 'occupant-result', 'occupant skill body', 'allow')
+    await installAbility(AGENT_NAME, 'fixture-ability', { fetchAbilityDir: () => occupant })
+
+    function buildSecondAbilityVersion(version: string, skillBody: string): string {
+      const abilityDir = mkdtempSync(join(tmpdir(), 'loopengine-fixture-ability-two-'))
+      mkdirSync(join(abilityDir, 'skills', 'fixture-skill'), { recursive: true })
+      writeFileSync(join(abilityDir, 'skills', 'fixture-skill', 'SKILL.md'), `---\nname: fixture-skill\ndescription: "A second fixture skill"\n---\n\n${skillBody}\n`)
+      writeFileSync(join(abilityDir, 'package.json'), JSON.stringify({ name: 'fixture-ability-two', version, private: true }, null, 2))
+      writeFileSync(
+        join(abilityDir, 'loopengine.ability.json'),
+        JSON.stringify({ loopengineVersion: '*', skills: ['skills/fixture-skill'], env: [] }, null, 2),
+      )
+      return abilityDir
+    }
+
+    const v1 = buildSecondAbilityVersion('1.0.0', 'v1 skill body')
+    const v2 = buildSecondAbilityVersion('2.0.0', 'v2 skill body')
+    await installAbility(AGENT_NAME, 'fixture-ability-two', { fetchAbilityDir: () => v1 })
+    expect(existsSync(join(AGENT_DIR, 'skills', 'fixture-ability-two', 'fixture-skill', 'SKILL.md'))).toBe(true)
+
+    const { files } = await upgradeAbility(AGENT_NAME, 'fixture-ability-two', { fetchAbilityDir: makeFetch(v1, v2) })
+
+    const skillResult = files.find((f) => f.path === 'skills/fixture-ability-two/fixture-skill/SKILL.md')
+    expect(skillResult?.status).toBe('updated')
+    expect(readFileSync(join(AGENT_DIR, 'skills', 'fixture-ability-two', 'fixture-skill', 'SKILL.md'), 'utf8')).toContain('v2 skill body')
+  })
 })

@@ -113,6 +113,31 @@ describe('installAbility', () => {
     expect(typeof provenance['fixture-ability'].contentHashes['tools/fixture_tool.ts']).toBe('string')
   })
 
+  it('namespaces a second ability\'s colliding skill id under its own name instead of refusing the install', async () => {
+    const firstDir = buildFixtureAbility()
+    await installAbility(AGENT_NAME, 'fixture-ability', { fetchAbilityDir: () => firstDir })
+
+    // Same bare skill id ("fixture-skill") as the first ability, but a
+    // distinct tool/rule name — isolates the skill-id collision from the
+    // tool-file/actauth-rule collisions, which still refuse outright
+    // (only skills get namespaced instead of refused).
+    const secondDir = buildFixtureAbility({
+      name: 'fixture-ability-two',
+      toolName: 'fixture_tool_two',
+      ruleName: 'fixture-tool-two-allowed',
+    })
+
+    const result = await installAbility(AGENT_NAME, 'fixture-ability-two', { fetchAbilityDir: () => secondDir })
+
+    expect(result.installed).toContain('skills/fixture-ability-two/fixture-skill/')
+    expect(existsSync(join(AGENT_DIR, 'skills', 'fixture-skill', 'SKILL.md'))).toBe(true)
+    expect(existsSync(join(AGENT_DIR, 'skills', 'fixture-ability-two', 'fixture-skill', 'SKILL.md'))).toBe(true)
+
+    const provenance = JSON.parse(readFileSync(join(AGENT_DIR, '.loopengine-abilities.json'), 'utf8'))
+    expect(provenance['fixture-ability'].skills).toEqual(['fixture-skill'])
+    expect(provenance['fixture-ability-two'].skills).toEqual(['fixture-ability-two/fixture-skill'])
+  })
+
   it('installs an ability with no tools (skill + actauth only) without creating a tools/ dir', async () => {
     const abilityDir = buildFixtureAbility()
     const manifestPath = join(abilityDir, 'loopengine.ability.json')
