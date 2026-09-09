@@ -490,12 +490,13 @@ testing), export your own `createModelCall(): ModelCall` instead.
 | `core/recovery.ts` | Retries prompt-too-long / truncated-output failures (vendored in-repo, not an external dependency) |
 | `core/durable-approvals.ts` | `TurnCheckpoint`/`CheckpointStore` (file/Redis) backing durable, resumable `ask` decisions — see `HUMAN_IN_THE_LOOP.md` |
 | `core/sessionknit.ts` | Durable session log with crash-interruption detection (vendored in-repo, not an external dependency) |
-| [`skillgarden`](https://www.npmjs.com/package/skillgarden) | `SKILL.md` discovery and lazy loading |
+| `core/skillgarden/` | `SKILL.md` discovery and lazy loading, plus `loopengine add-skill` (vendored in-repo, not an external dependency) |
 | `core/toollane.ts` | Parallel/solo tool-call scheduling (vendored in-repo, not an external dependency) |
 | `core/mcpplug.ts` | Gateway tool sourcing (e.g. Composio) (vendored in-repo, not an external dependency) |
 
-Installing `loopengine` pulls all of these in as regular dependencies —
-install one directly only if you want to use it standalone.
+Installing `loopengine` pulls in `actauth` as a regular dependency —
+install it directly only if you want to use it standalone. Everything
+else in this table ships inside `loopengine` itself.
 
 ## Deployment
 

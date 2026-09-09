@@ -11,7 +11,7 @@
 // only adding/editing/removing one through this UI is out of scope.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { parseSkillFile } from 'skillgarden'
+import { parseSkillFile } from '../core/skillgarden/index.js'
 import { agentDir } from '../core/gateway-tools.js'
 
 export class SkillInvalidIdError extends Error {}

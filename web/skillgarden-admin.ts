@@ -1,15 +1,13 @@
 // Lets an operator browse skillgarden's own bundled skill registry from
 // the Skills tab in /agents/config, and add one straight into an agent's
 // agents/<name>/skills/ folder — a shortcut for the same thing
-// `npx skillgarden add <skill> --agent <name>` already does from a
+// `npx loopengine add-skill <skill> --agent <name>` already does from a
 // terminal, surfaced in the UI instead. This module only ever *reads*
-// the registry and delegates the actual copy to skillgarden's own
+// the registry and delegates the actual copy to core/skillgarden's own
 // exported `addSkill` (see below) — it never re-implements that logic.
-import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { SkillGarden, addSkill as skillgardenAddSkill } from 'skillgarden'
-
-export class SkillgardenUnavailableError extends Error {}
+import { fileURLToPath } from 'node:url'
+import { SkillGarden, addSkill as skillgardenAddSkill } from '../core/skillgarden/index.js'
 
 export interface SkillgardenCatalogEntry {
   category: string
@@ -21,24 +19,16 @@ export interface SkillgardenCatalogDetail extends SkillgardenCatalogEntry {
   body: string
 }
 
-// skillgarden's own CLI resolves its bundled registry/ relative to its
-// own compiled dist/cli.js location (see its cli.ts's own
-// DEFAULT_REGISTRY_DIR), but doesn't export that path — `addSkill`
-// itself defaults to it internally, which is enough for *installing* a
-// skill, but browsing/previewing the catalog needs the directory path
-// itself. Re-derived here the same way Node's own module resolution
-// would: from package.json's real installed location, not assumed
-// relative to this file (skillgarden is a real npm dependency, not a
-// vendored copy).
+// core/skillgarden/add-skill.ts resolves its own DEFAULT_REGISTRY_DIR
+// the same way (relative to its own compiled location) but doesn't
+// export that path — addSkill itself defaults to it internally, which
+// is enough for *installing* a skill, but browsing/previewing the
+// catalog needs the directory path itself. Re-derived here relative to
+// *this* file's own compiled location instead — core/skill-registry is
+// vendored in this repo now, not a separate npm dependency, so there's
+// no package.json to resolve through anymore.
 function registryDir(): string {
-  const require = createRequire(import.meta.url)
-  let pkgJsonPath: string
-  try {
-    pkgJsonPath = require.resolve('skillgarden/package.json')
-  } catch {
-    throw new SkillgardenUnavailableError('skillgarden is not installed — run `npm install skillgarden` to enable the skill catalog.')
-  }
-  return join(dirname(pkgJsonPath), 'registry')
+  return join(dirname(fileURLToPath(import.meta.url)), '..', 'core', 'skill-registry')
 }
 
 // A large, fixed budget, not run-agent.ts's own live skillIndexBudgetTokens

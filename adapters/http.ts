@@ -41,7 +41,7 @@ import { createCheckpointStore, type TurnCheckpoint } from '#core/durable-approv
 import { runAgent, resumeAgent, loadRules, loadDefaultTools, loadSubagentAsTools, systemTools, systemSkillsDir } from '#core/run-agent.js'
 import type { AgentConfig, ToolDefinition } from '#core/agent-config.js'
 import type { ModelContentBlock, RunAgentResult } from '#core/run-agent.js'
-import { SkillGarden } from 'skillgarden'
+import { SkillGarden } from '../core/skillgarden/index.js'
 import { playgroundHtml } from '../web/playground.js'
 import { agentsConfigPageHtml } from '../web/agents-config-page.js'
 import { agentsListPageHtml } from '../web/agents-list-page.js'
@@ -63,7 +63,7 @@ import {
 } from '#core/gateway-tools.js'
 import { readSkill, writeSkill, deleteSkill, SkillInvalidIdError, SkillNotFoundError } from '#web/skills-admin.js'
 import { listDeclaredEnvVars, setEnvVar, EnvVarNameError } from '#web/env-admin.js'
-import { listSkillgardenCatalog, readSkillgardenCatalogEntry, addSkillgardenSkillToAgent, SkillgardenUnavailableError } from '#web/skillgarden-admin.js'
+import { listSkillgardenCatalog, readSkillgardenCatalogEntry, addSkillgardenSkillToAgent } from '#web/skillgarden-admin.js'
 import {
   createHttpTool,
   updateHttpTool,
@@ -954,8 +954,7 @@ function handleSkillgardenCatalogGet(res: ServerResponse): void {
     const catalog = listSkillgardenCatalog()
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(catalog))
   } catch (err) {
-    const status = err instanceof SkillgardenUnavailableError ? 503 : 500
-    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
   }
 }
 
@@ -974,17 +973,15 @@ function handleSkillgardenCatalogEntryGet(res: ServerResponse, category: string,
     const entry = readSkillgardenCatalogEntry(category, id)
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(entry))
   } catch (err) {
-    const status = err instanceof SkillgardenUnavailableError ? 503 : 404
-    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
   }
 }
 
 // Installs a catalog entry into agents/:name/skills/ — delegates to
-// skillgarden's own addSkill (see skillgarden-admin.ts), which throws
-// plain Errors (no typed classes) for "unknown skill"/"already exists",
-// so those two are told apart by message shape rather than instanceof,
-// same as any other dependency that doesn't export typed errors for its
-// own failure modes.
+// core/skillgarden's own addSkill (see skillgarden-admin.ts), which
+// throws plain Errors (no typed classes) for "unknown skill"/"already
+// exists", so those two are told apart by message shape rather than
+// instanceof.
 async function handleSkillgardenCatalogAdd(req: IncomingMessage, res: ServerResponse, agentName: string, category: string, id: string): Promise<void> {
   if (!getEntry(agentName)) {
     res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: `unknown agent '${agentName}'` }))
@@ -997,7 +994,7 @@ async function handleSkillgardenCatalogAdd(req: IncomingMessage, res: ServerResp
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true, id: result.id }))
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    const status = err instanceof SkillgardenUnavailableError ? 503 : /already exists/.test(message) ? 409 : /^Unknown skill/.test(message) ? 404 : 500
+    const status = /already exists/.test(message) ? 409 : /^Unknown skill/.test(message) ? 404 : 500
     res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: message }))
   }
 }
