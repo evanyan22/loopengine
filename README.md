@@ -491,7 +491,7 @@ testing), export your own `createModelCall(): ModelCall` instead.
 | `core/durable-approvals.ts` | `TurnCheckpoint`/`CheckpointStore` (file/Redis) backing durable, resumable `ask` decisions — see `HUMAN_IN_THE_LOOP.md` |
 | [`sessionknit`](https://www.npmjs.com/package/sessionknit) | Durable session log with crash-interruption detection |
 | [`skillgarden`](https://www.npmjs.com/package/skillgarden) | `SKILL.md` discovery and lazy loading |
-| [`toollane`](https://www.npmjs.com/package/toollane) | Parallel/solo tool-call scheduling |
+| `core/toollane.ts` | Parallel/solo tool-call scheduling (vendored in-repo, not an external dependency) |
 | `core/mcpplug.ts` | Gateway tool sourcing (e.g. Composio) (vendored in-repo, not an external dependency) |
 
 Installing `loopengine` pulls all of these in as regular dependencies —

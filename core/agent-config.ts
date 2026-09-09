@@ -2,7 +2,7 @@
 // here runs anything — run-agent.ts is the one place that interprets it.
 import type { Rule, Decision, Scope } from 'actauth'
 import type { Redis } from 'ioredis'
-import type { SafetyClassifier } from 'toollane'
+import type { SafetyClassifier } from './toollane.js'
 import type { Summarizer } from './compaction.js'
 
 /** Which channel a runAgent() call is on — the value RunAgentOptions.channel

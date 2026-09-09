@@ -113,6 +113,9 @@ export type { GatewayToolEntry, GatewayToolDecision } from './core/gateway-tools
 export { connectComposioSource } from './core/mcpplug.js'
 export type { ToolSource, ComposioSourceOptions } from './core/mcpplug.js'
 
+export { ToolLane, buildLanes, runLanes } from './core/toollane.js'
+export type { ToolLaneOptions, SafetyClassifier, ToolCall, Lane, LaneResult } from './core/toollane.js'
+
 export { WebhookNotifier } from './core/http-notify-triggers/webhook.js'
 
 // answerQuestion above (core/client.ts) is the HTTP client-side helper —

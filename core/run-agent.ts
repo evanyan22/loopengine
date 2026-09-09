@@ -11,7 +11,7 @@ import { Gate, RuleSet, ConsoleApprover, type Approver, type Scope, type Decisio
 import { SkillGarden } from 'skillgarden'
 import { BudgetTracker, type Message as BudgetMessage } from './budget.js'
 import { Compactor } from './compaction.js'
-import { ToolLane, type ToolCall as LaneCall, type SafetyClassifier } from 'toollane'
+import { ToolLane, type ToolCall as LaneCall, type SafetyClassifier } from './toollane.js'
 import { Recovery } from './recovery.js'
 import type { AgentConfig, ApproverChannel, QuestionHandler, ToolDefinition, ToolSchema } from '#core/agent-config.js'
 import { loadAgentModule } from './discover-agents.js'
