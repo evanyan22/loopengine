@@ -1,6 +1,6 @@
 {
   "name": "loopengine",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "type": "module",
   "description": "Runtime for tool-using AI agents with a transparent ReAct loop.",
   "license": "MIT",
@@ -75,7 +75,6 @@
     "dist/core/system-tools",
     "dist/core/system-skills",
     "dist/core/skillgarden",
-    "dist/core/skill-registry",
     "dist/core/durable-approvals.js",
     "dist/core/durable-approvals.d.ts",
     "dist/web",
@@ -84,7 +83,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc; s=$?; chmod +x dist/bin/cli.js; cp -r core/system-skills dist/core/system-skills; cp -r core/skill-registry dist/core/skill-registry; tsx scripts/write-dist-package-json.ts; exit $s",
+    "build": "tsc; s=$?; chmod +x dist/bin/cli.js; cp -r core/system-skills dist/core/system-skills; tsx scripts/write-dist-package-json.ts; exit $s",
     "prepublishOnly": "npm run build",
     "start": "node --env-file-if-exists=.env dist/adapters/http.js",
     "test": "vitest run"

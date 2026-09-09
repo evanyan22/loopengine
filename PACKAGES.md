@@ -148,8 +148,8 @@ operation as adding a *package* to one — that's `loopengine`'s own
 territory already, not `create-loopengine`'s (whole-project creation and
 template-file upgrades only). Second, reliability: `create-loopengine`
 is never a dependency of the scaffolded project itself (its own
-template's `package.json` only lists `loopengine`/`actauth`/
-`skillgarden`), so every `npx create-loopengine@latest ...` invocation
+template's `package.json` only lists `loopengine`/`actauth`), so every
+`npx create-loopengine@latest ...` invocation
 re-fetches the CLI package over the network — fine for `upgrade`, a
 rare per-release operation, but not for something that could be invoked
 as often as adding a package might be. `loopengine add-package` runs off
@@ -311,10 +311,12 @@ today.
 
 ## Explicitly out of scope for v1
 
-- **A public catalog/marketplace UI.** loopengine already has the seed
-  of this for skills alone (the Admin UI's Skills tab has a skillgarden
-  catalog browser) — extending that same browsing UI to tool packages is
-  a natural v2, not required to ship v1's install/upgrade mechanics.
+- **A public catalog/marketplace UI.** The Admin UI's Skills tab used to
+  have a small bundled-skill catalog browser, removed once it became
+  clear a two-entry, hand-maintained registry wasn't earning its keep —
+  see `add-package` install straight from a spec instead of a curated
+  catalog. A real catalog/marketplace UI for tool packages is a bigger,
+  separate bet, not required to ship v1's install/upgrade mechanics.
 - **Inter-package dependencies.** A package can't declare "requires
   package X installed first." Every package is self-contained.
 - **Semver-range installs** (`add-package <package>@^1.0.0`) — v1 always
@@ -337,9 +339,9 @@ today.
   than "this whole agent," and if so, how does the manifest express
   that without the package author needing to know the installing
   agent's name in advance?
-- Does `loopengineVersion` need to be checked against `actauth`/
-  `skillgarden` versions too, given a package's skill content could
-  equally depend on a skillgarden feature that's version-gated?
+- Does `loopengineVersion` need to be checked against `actauth`'s own
+  version too, given a package's tool content could equally depend on
+  an actauth feature that's version-gated?
 - There's one `.env` per *project*, not per agent — if two agents in the
   same project each install a (possibly different) package that happens
   to declare the same env var name for an unrelated purpose, the Admin

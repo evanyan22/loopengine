@@ -14,7 +14,6 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { installPackage, upgradePackage, removePackage } from './package-manager.js'
-import { addSkill } from '../core/skillgarden/index.js'
 
 const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
 
@@ -413,33 +412,6 @@ async function main(): Promise<void> {
     return
   }
 
-  // Copies a bundled skill package (core/skill-registry/<category>/<skill>/)
-  // into an agent's own skills/ folder — formerly `npx skillgarden add`,
-  // a separate CLI, before skillgarden folded into loopengine core (see
-  // core/skillgarden/add-skill.ts's own header comment). <skill> is a
-  // bare name or an explicit <category>/<skill> — see addSkill's own doc
-  // comment for the disambiguation rule.
-  if (command === 'add-skill') {
-    const { value: agent, rest: withoutAgent } = extractFlagValue(rest, '--agent')
-    const { value: dir, rest: withoutDir } = extractFlagValue(withoutAgent, '--dir')
-    const { present: force, rest: withoutForce } = extractFlagPresence(withoutDir, '--force')
-    const [skill] = withoutForce
-    if (!skill) {
-      console.error('Usage: loopengine add-skill <skill> [--agent <agent>] [--dir <dir>] [--force]')
-      process.exitCode = 1
-      return
-    }
-
-    try {
-      const result = addSkill({ skill, agent, skillsDir: dir, force })
-      console.log(`Added ${result.namespacedName} -> ${path.join(result.destination, 'SKILL.md')}`)
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err))
-      process.exitCode = 1
-    }
-    return
-  }
-
   // One-shot: sends one message, prints the reply, exits — exactly
   // adapters/cli.ts's own contract (see its own header comment), not a
   // REPL. `rest` after `<agent>` is forwarded through as-is (--session,
@@ -525,7 +497,6 @@ async function main(): Promise<void> {
   console.error('       loopengine add-package <spec> --agent <name>')
   console.error('       loopengine upgrade-package <packageName> --agent <name> [--spec <spec>]')
   console.error('       loopengine remove-package <packageName> --agent <name> [--force]')
-  console.error('       loopengine add-skill <skill> [--agent <agent>] [--dir <dir>] [--force]')
   console.error('       loopengine run <agent> [--session <id>] "<message>"')
   console.error('       loopengine serve')
   console.error('       loopengine dev')
