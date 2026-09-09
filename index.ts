@@ -51,6 +51,9 @@ export type {
 export { FileSessionStore, RedisSessionStore, createSessionStore } from './core/session-store.js'
 export type { SessionStore, SessionResult, RedisSessionStoreOptions } from './core/session-store.js'
 
+export { SessionKnit, FileStorage, MemoryStorage, reconstructChain } from './core/sessionknit.js'
+export type { Storage, SessionEntry, ResumeResult, SessionKnitOptions, ReconstructResult } from './core/sessionknit.js'
+
 export { VectorIndex, embed, cosineSimilarity } from './core/vector-index.js'
 export type { Document, ScoredDocument } from './core/vector-index.js'
 

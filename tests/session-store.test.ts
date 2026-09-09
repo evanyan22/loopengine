@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
-import { FileStorage } from 'sessionknit'
+import { FileStorage } from '#core/sessionknit.js'
 import type { Message } from '#core/run-agent.js'
 import { FileSessionStore } from '../core/session-store.js'
 

@@ -29,7 +29,7 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { Redis } from 'ioredis'
-import { SessionKnit, FileStorage, type Storage, type SessionEntry } from 'sessionknit'
+import { SessionKnit, FileStorage, type Storage, type SessionEntry } from './sessionknit.js'
 import type { Message } from '#core/run-agent.js'
 
 export interface SessionResult<T> {
