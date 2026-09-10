@@ -7,7 +7,7 @@
   "homepage": "https://loopengine.co",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/evanyan22/loopengine.git"
+    "url": "git+https://github.com/loopengine-co/loopengine.git"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

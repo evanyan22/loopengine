@@ -1,6 +1,6 @@
 # LoopEngine
 
-[![CI](https://github.com/evanyan22/loopengine/actions/workflows/ci.yml/badge.svg)](https://github.com/evanyan22/loopengine/actions/workflows/ci.yml)
+[![CI](https://github.com/loopengine-co/loopengine/actions/workflows/ci.yml/badge.svg)](https://github.com/loopengine-co/loopengine/actions/workflows/ci.yml)
 
 LoopEngine is a runtime for building AI agents: a persona, a set of tools,
 and permission rules, run through a transparent ReAct loop. No chain DSL,
