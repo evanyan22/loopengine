@@ -13,6 +13,7 @@ import {
   AbilityVersionError,
   type AbilityEnvDecl,
 } from '../bin/ability-manager.js'
+import { readActauthConfig } from '../web/actauth-admin.js'
 
 // Same real-fixture-agent-dir-under-the-repo's-own-agents/ approach as
 // tests/http-tool-admin.test.ts — installAbility resolves paths through
@@ -220,7 +221,7 @@ describe('installAbility', () => {
     }
   })
 
-  it('refuses when an actauth rule of the same name already exists', async () => {
+  it('namespaces its own actauth rule under its own name when the bare rule name is already taken, without touching the existing rule', async () => {
     mkdirSync(AGENT_DIR, { recursive: true })
     writeFileSync(
       join(AGENT_DIR, 'actauth.yml'),
@@ -228,8 +229,58 @@ describe('installAbility', () => {
     )
     const abilityDir = buildFixtureAbility()
 
+    const result = await installAbility(AGENT_NAME, 'fixture-ability', { fetchAbilityDir: () => abilityDir })
+
+    expect(result.installed).toContain('actauth:fixture_ability__fixture-tool-allowed')
+    const config = readActauthConfig(AGENT_NAME)
+    const preexisting = config.rules.find((r) => r.name === 'fixture-tool-allowed')
+    expect(preexisting?.tool).toBe('something_else')
+    const installed = config.rules.find((r) => r.name === 'fixture_ability__fixture-tool-allowed')
+    expect(installed?.tool).toBe('fixture_tool')
+
+    const provenance = JSON.parse(readFileSync(join(AGENT_DIR, '.loopengine-abilities.json'), 'utf8'))
+    expect(provenance['fixture-ability'].actauthRules).toEqual(['fixture_ability__fixture-tool-allowed'])
+  })
+
+  it('refuses when an actauth rule of the same name already exists and even the namespaced name is taken', async () => {
+    mkdirSync(AGENT_DIR, { recursive: true })
+    writeFileSync(
+      join(AGENT_DIR, 'actauth.yml'),
+      'default_decision: deny\nrules:\n  - name: fixture-tool-allowed\n    scope: "*/*"\n    tool: something_else\n    decision: allow\n  - name: fixture_ability__fixture-tool-allowed\n    scope: "*/*"\n    tool: yet_another\n    decision: allow\n',
+    )
+    const abilityDir = buildFixtureAbility()
+
     await expect(installAbility(AGENT_NAME, 'fixture-ability', { fetchAbilityDir: () => abilityDir })).rejects.toThrow(AbilityCollisionError)
     expect(existsSync(join(AGENT_DIR, 'tools', 'fixture_tool.ts'))).toBe(false)
+  })
+
+  it('namespaces a second ability\'s colliding rule name so both remain independent policy', async () => {
+    const firstDir = buildFixtureAbility()
+    await installAbility(AGENT_NAME, 'fixture-ability', { fetchAbilityDir: () => firstDir })
+
+    // Same bare rule name ("fixture-tool-allowed") as the first ability,
+    // but a distinct tool/skill name — isolates the rule-name collision
+    // from the tool/skill ones, already covered by their own tests.
+    const secondDir = buildFixtureAbility({
+      name: 'fixture-ability-two',
+      toolName: 'fixture_tool_two',
+      skillId: 'fixture-skill-two',
+      ruleDecision: 'ask',
+    })
+
+    const result = await installAbility(AGENT_NAME, 'fixture-ability-two', { fetchAbilityDir: () => secondDir })
+
+    expect(result.installed).toContain('actauth:fixture_ability_two__fixture-tool-allowed')
+
+    const config = readActauthConfig(AGENT_NAME)
+    const first = config.rules.find((r) => r.name === 'fixture-tool-allowed')
+    const second = config.rules.find((r) => r.name === 'fixture_ability_two__fixture-tool-allowed')
+    expect(first?.decision).toBe('allow')
+    expect(second?.decision).toBe('ask')
+
+    const provenance = JSON.parse(readFileSync(join(AGENT_DIR, '.loopengine-abilities.json'), 'utf8'))
+    expect(provenance['fixture-ability'].actauthRules).toEqual(['fixture-tool-allowed'])
+    expect(provenance['fixture-ability-two'].actauthRules).toEqual(['fixture_ability_two__fixture-tool-allowed'])
   })
 
   it('refuses when the ability is already installed for this agent', async () => {

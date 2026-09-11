@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { installAbility, upgradeAbility } from '../bin/ability-manager.js'
+import { readActauthConfig } from '../web/actauth-admin.js'
 
 // Same real-fixture-agent-dir-under-the-repo's-own-agents/ approach as
 // tests/ability-install.test.ts — a plain constant is fine, no registry
@@ -219,5 +220,36 @@ describe('upgradeAbility', () => {
     const toolResult = files.find((f) => f.path === 'tools/fixture_ability_two__fixture_tool.ts')
     expect(toolResult?.status).toBe('updated')
     expect(readFileSync(join(AGENT_DIR, 'tools', 'fixture_ability_two__fixture_tool.ts'), 'utf8')).toContain('v2-result')
+  })
+
+  it('upgrades a namespaced actauth rule correctly — matching against the manifest\'s bare name, not the installed namespaced one', async () => {
+    // Occupies the bare "fixture-tool-allowed" rule name first, so the
+    // second ability's own install below is forced to namespace under
+    // its own name (see ability-manager.ts's namespacedRuleName).
+    const occupant = buildFixtureAbilityVersion('1.0.0', 'occupant-result', 'occupant skill body', 'allow')
+    await installAbility(AGENT_NAME, 'fixture-ability', { fetchAbilityDir: () => occupant })
+
+    function buildSecondAbilityVersion(version: string, ruleDecision: string): string {
+      const abilityDir = mkdtempSync(join(tmpdir(), 'loopengine-fixture-ability-two-'))
+      mkdirSync(join(abilityDir, 'actauth'), { recursive: true })
+      writeFileSync(join(abilityDir, 'actauth', 'rules.yml'), `- name: fixture-tool-allowed\n  scope: "*/*"\n  tool: fixture_tool_two\n  decision: ${ruleDecision}\n`)
+      writeFileSync(join(abilityDir, 'package.json'), JSON.stringify({ name: 'fixture-ability-two', version, private: true }, null, 2))
+      writeFileSync(
+        join(abilityDir, 'loopengine.ability.json'),
+        JSON.stringify({ loopengineVersion: '*', actauth: 'actauth/rules.yml', env: [] }, null, 2),
+      )
+      return abilityDir
+    }
+
+    const v1 = buildSecondAbilityVersion('1.0.0', 'allow')
+    const v2 = buildSecondAbilityVersion('2.0.0', 'ask')
+    await installAbility(AGENT_NAME, 'fixture-ability-two', { fetchAbilityDir: () => v1 })
+    expect(readActauthConfig(AGENT_NAME).rules.find((r) => r.name === 'fixture_ability_two__fixture-tool-allowed')?.decision).toBe('allow')
+
+    const { files } = await upgradeAbility(AGENT_NAME, 'fixture-ability-two', { fetchAbilityDir: makeFetch(v1, v2) })
+
+    const ruleResult = files.find((f) => f.path === 'actauth:fixture_ability_two__fixture-tool-allowed')
+    expect(ruleResult?.status).toBe('updated')
+    expect(readActauthConfig(AGENT_NAME).rules.find((r) => r.name === 'fixture_ability_two__fixture-tool-allowed')?.decision).toBe('ask')
   })
 })

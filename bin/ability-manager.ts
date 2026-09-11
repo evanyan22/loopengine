@@ -119,6 +119,36 @@ function matchesInstalledToolName(abilityName: string, manifestToolFile: string,
   return bareToolName === installedToolName || namespacedToolName(abilityName, bareToolName) === installedToolName
 }
 
+/** Two abilities can each declare a rule with the same bare `name` too —
+ * unlike a genuine `actauth` scope/tool/decision collision (which would
+ * be a real policy conflict worth refusing over), a bare *name* clash is
+ * just an addressing problem: `actauth`'s own Gate.evaluate()/
+ * RuleSet.resolve() never reads a rule's `name` at all (see
+ * models.js's own ruleSpecificity/scopeKey — resolution is entirely
+ * tool+scope+when), so two identically-named rules would never actually
+ * behave ambiguously at decision time. `name` only matters as
+ * addActauthRule's own lookup key (and the Admin UI's Actauth tab
+ * :ruleName route) — the same "it's an addressing problem, not a policy
+ * one" reasoning namespacedSkillId already applies to skill ids.
+ * Namespaced under the ability's own name only when the bare name is
+ * already taken, same fallback tools/skills already get; still refuses
+ * if even *that's* somehow already taken (two same-named installs of
+ * the same ability can't happen anyway — see AbilityAlreadyInstalledError
+ * above — so this only bites on a truly pathological manual edit). */
+function namespacedRuleName(abilityName: string, ruleName: string): string {
+  return `${sanitizeForToolName(abilityName)}__${ruleName}`
+}
+
+/** matchesInstalledToolName's own sibling for rules — upgradeAbility needs
+ * this to recompute forward from a freshly re-parsed manifest's bare rule
+ * name and compare against provenance's possibly-namespaced one, rather
+ * than comparing bare names directly (which would silently treat every
+ * namespaced rule as unmatched, reporting it 'unchanged' instead of
+ * actually diffing it against the new version). */
+function matchesInstalledRuleName(abilityName: string, manifestRuleName: string, installedRuleName: string): boolean {
+  return manifestRuleName === installedRuleName || namespacedRuleName(abilityName, manifestRuleName) === installedRuleName
+}
+
 export interface AbilityEnvDecl {
   name: string
   description?: string
@@ -406,10 +436,18 @@ export async function installAbility(agentName: string, spec: string, options: F
     skillIds.push(installedSkillId)
   }
   const existingRuleNames = new Set(readActauthConfig(agentName).rules.map((r) => r.name))
+  const ruleNames: string[] = []
   for (const rule of rules) {
-    if (existingRuleNames.has(rule.name)) {
-      throw new AbilityCollisionError(`An actauth rule named '${rule.name}' already exists for '${agentName}'.`)
+    // The bare name if it's free; otherwise namespace under this
+    // ability's own name rather than refusing the install outright —
+    // see namespacedRuleName's own doc comment for why this is safe
+    // (a rule's `name` is an addressing key, not something `actauth`'s
+    // own resolution logic reads).
+    const installedRuleName = existingRuleNames.has(rule.name) ? namespacedRuleName(manifest.name, rule.name) : rule.name
+    if (existingRuleNames.has(installedRuleName)) {
+      throw new AbilityCollisionError(`An actauth rule named '${installedRuleName}' already exists for '${agentName}'.`)
     }
+    ruleNames.push(installedRuleName)
   }
 
   const contentHashes: Record<string, string> = {}
@@ -478,9 +516,13 @@ export async function installAbility(agentName: string, spec: string, options: F
     }
   }
 
-  // Append actauth rules.
-  for (const rule of rules) {
-    addActauthRule(agentName, rule)
+  // Append actauth rules — ruleNames[i] is rules[i]'s already-resolved
+  // installed name (bare, or namespaced under this ability's own name if
+  // the bare name collided — computed once, above, not recomputed here,
+  // so this loop can't disagree with the collision check that already
+  // ran against it, same reasoning the skills-copy loop above follows).
+  for (const [i, rule] of rules.entries()) {
+    addActauthRule(agentName, { ...rule, name: ruleNames[i] })
   }
 
   provenance[manifest.name] = {
@@ -488,13 +530,13 @@ export async function installAbility(agentName: string, spec: string, options: F
     spec,
     tools: toolNames,
     skills: skillIds,
-    actauthRules: rules.map((r) => r.name),
+    actauthRules: ruleNames,
     env: manifest.env ?? [],
     contentHashes,
   }
   writeProvenance(agentName, provenance)
 
-  return { installed: [...toolNames.map((n) => `tools/${n}.ts`), ...skillIds.map((id) => `skills/${id}/`), ...rules.map((r) => `actauth:${r.name}`)] }
+  return { installed: [...toolNames.map((n) => `tools/${n}.ts`), ...skillIds.map((id) => `skills/${id}/`), ...ruleNames.map((n) => `actauth:${n}`)] }
 }
 
 // ---- Upgrade ----
@@ -655,8 +697,11 @@ export async function upgradeAbility(agentName: string, abilityName: string, opt
   const newRules = parseActauthRules(newDir, newManifest)
   const currentRules = new Map(readActauthConfig(agentName).rules.map((r) => [r.name, r]))
   for (const ruleName of record.actauthRules) {
-    const oldRule = oldRules.find((r) => r.name === ruleName)
-    const newRule = newRules.find((r) => r.name === ruleName)
+    // matchesInstalledRuleName, not a bare r.name === ruleName comparison
+    // — ruleName may be namespaced (see namespacedRuleName), and the
+    // freshly re-parsed old/new manifests only ever carry the bare name.
+    const oldRule = oldRules.find((r) => matchesInstalledRuleName(abilityName, r.name, ruleName))
+    const newRule = newRules.find((r) => matchesInstalledRuleName(abilityName, r.name, ruleName))
     const current = currentRules.get(ruleName)
     const path = `actauth:${ruleName}`
     if (!oldRule || !newRule || !current) {
